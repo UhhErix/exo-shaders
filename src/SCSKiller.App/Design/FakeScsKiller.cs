@@ -81,6 +81,9 @@ public sealed class FakeScsKiller : IScsKiller
             G("1627720", "Lies of P", "4.27", "LOP-Win64-Shipping.exe", 52_880, GameStatus.Ready, Core.Planning.Planner.NoRecording) with { ReShade = true },
             G("1139900", "Ghostrunner", "4.25", "Ghostrunner-Win64-Shipping.exe", 18_770, GameStatus.Ready, Core.Planning.Planner.Untested) with { Middleware = [new("DLSS", ["nvngx_dlss.dll"], 0)] },
             G("3489700", "Stellar Blade Demo", "4.26", "SB-Win64-Shipping.exe", 94_473, GameStatus.Ready, Core.Planning.Planner.Untested),
+            // shaders delivered by Advanced Shader Delivery, compiled by this driver: the tag and the game page's line
+            G("Microsoft.Halcyon_8wekyb3d8bbwe", "Gears of War: E-Day", "5.6", "GoWEDay.exe", 61_000, GameStatus.Ready, Core.Planning.Planner.Untested, at: "xbox")
+                with { DeliveredShaders = 5_240_000_000, DeliveryFits = true },
             G("1522820", "Orcs Must Die! 3", "4.26", "OrcsMustDie3.exe", 20_932, GameStatus.Ready, Core.Planning.Planner.NoRecording),
             // a compile over 16 GB (480,000 shaders: about 32 GB of cache), the queue's large-compile warning
             G("1285190", "Borderlands 4", "5.5", "Borderlands4.exe", 480_000, GameStatus.Ready, Core.Planning.Planner.Untested),
@@ -436,6 +439,7 @@ public sealed class FakeScsKiller : IScsKiller
         return true;
     }
 
+    public void SetGameCacheCap(string gameId, int? gb) { }   // the design mock keeps no cap
     public void SetCarefulCompile(string gameId, bool on)
     {
         GameState g;
@@ -713,7 +717,7 @@ public sealed class FakeScsKiller : IScsKiller
             : g.Status is not (GameStatus.Ready or GameStatus.Warmed or GameStatus.Stale or GameStatus.NeedsRecording) ? g.StatusReason
             : g.Playing ? $"{g.Game.Name} is running" : null;
     }
-    public void StartBeforeAfter(string gameId, int minutes, bool overlay = true) => SetBeforeAfter(gameId, new BeforeAfterInfo(BeforeAfterStage.BeforeArmed, minutes, null, 0));
+    public void StartBeforeAfter(string gameId, int minutes, bool overlay = true, bool max = false) => SetBeforeAfter(gameId, new BeforeAfterInfo(BeforeAfterStage.BeforeArmed, minutes, null, 0));
     public void BeforeAfterRecorderReady(string gameId) { }
     public void ContinueBeforeAfter(string gameId) => SetBeforeAfter(gameId, new BeforeAfterInfo(
         Games.First(x => x.Game.Id == gameId).BeforeAfter?.ClearPending == true ? BeforeAfterStage.BeforeArmed : BeforeAfterStage.AfterArmed, MinutesOf(gameId), null, 0));

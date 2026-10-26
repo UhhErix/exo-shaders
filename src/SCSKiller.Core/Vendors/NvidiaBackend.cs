@@ -317,11 +317,13 @@ public sealed unsafe class NvidiaBackend : IGpuVendorBackend, IRefreshableGpu
                 {
                     using var k = cls!.OpenSubKey(name);
                     if (k == null || (k.GetValue("MatchingDeviceId") as string)?.Contains("VEN_10DE", StringComparison.OrdinalIgnoreCase) != true) continue;
-                    if (k.GetValue("UserModeDriverName") is not string[] { Length: > 0 } umd || Path.GetDirectoryName(umd[0]) is not { } dir) continue;
+                    // A bare file name ("nvldumdx.dll") has an empty folder: skip it (GetFullPath("") threw and stopped the engine, SCSKiller #229).
+                    if (k.GetValue("UserModeDriverName") is not string[] { Length: > 0 } umd || Path.GetDirectoryName(umd[0]) is not { Length: > 0 } dir) continue;
                     var full = Path.GetFullPath(dir);
                     if (full.StartsWith(store, StringComparison.OrdinalIgnoreCase) && Directory.Exists(full)) found.Add(full);
                 }
-                catch (System.Security.SecurityException) { }
+                // One bad display key (locked, or a path Windows can't read) never takes the engine down.
+                catch (Exception e) when (e is System.Security.SecurityException or ArgumentException or NotSupportedException or IOException) { }
             }
         }
         catch (Exception e) when (e is System.Security.SecurityException or UnauthorizedAccessException or IOException) { }

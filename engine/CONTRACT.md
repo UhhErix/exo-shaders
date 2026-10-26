@@ -49,7 +49,7 @@ relays each one); `ui.visible {visible: true}` sends a fresh `state` at once. A 
 every event. `notice`, `log`, `ready` and `exiting` are always sent.
 | `notice` | `Notice` (below) | things the official app shows as a toast/notification |
 | `log` | `{line: string}` | engine log lines, only after `logs.subscribe {on: true}` |
-| `exiting` | `{reason: "shutdown" \| "stdinClosed" \| "signal" \| "conflict"}` | right before the process exits cleanly (`conflict`: the official app started on the same data folder, see Process) |
+| `exiting` | `{reason: "shutdown" \| "stdinClosed" \| "signal" \| "conflict" \| "idle", idleWork: boolean}` | right before the process exits cleanly (`conflict`: the official app started on the same data folder, see Process; `idle`: nothing needed it for the time `exitWhenIdle` set). `idleWork`: work waits for the PC to be idle (queued "when idle" items: never-compiled games, plan checks; precompiled shader databases to rebuild), or a compile was stopped: start the service again once the PC is idle. |
 
 `rev` (in `state.data.rev` and `progress.data.rev`) increases with every event, so a UI can drop stale ones.
 
@@ -91,10 +91,17 @@ ExoShaders.Service.exe --asd-remove-all              (Exo Shaders' uninstall: ta
   while the service runs). If it starts anyway on the same data folder, the service notices within ~3 s, sends a
   `conflict` notice and stops like a quit (`exiting` reason `conflict`). The service's own bundled `cli\scskiller.exe`
   doesn't count.
-- Exit: on `shutdown`, when stdin closes, or on Ctrl+C/Ctrl+Break. Like the official app's Quit: if a compile is
-  running, waiting items are removed from the queue and the compile is stopped so the graphics driver writes its
-  shader cache, then the service waits for it to finish (up to `shutdown.params.waitSeconds`, default 120), stops the
-  game watcher, flushes the log and exits 0.
+- Exit: on `shutdown`, when stdin closes, on Ctrl+C/Ctrl+Break, or after `exitWhenIdle` once nothing needs it. Like
+  the official app's Quit: if a compile is running, waiting items are removed from the queue and the compile is stopped
+  so the graphics driver writes its shader cache, then the service waits for it to finish (up to
+  `shutdown.params.waitSeconds`, default 120), stops the game watcher, writes `<dataDir>\exo-snapshot.json` (the
+  `Snapshot` as a page shows it while the service isn't running: `rev` 0, an empty queue, not scanning), flushes the
+  log and exits 0.
+- Games listed: a new service lists the games of its last run as its first scan starts (a second or two after
+  `ready`), and the scan's own list once it ends. A request that names a game (anything but `snapshot`, `ui.visible`,
+  `exitWhenIdle`, `shutdown`, `logs.subscribe`, `whatsNew*`, `settings.get`, `policy.preview`,
+  `app.dismissGpuNotice`, `scan`, `exo.library` and the cache page's reads) waits for that first list, at most a
+  minute, so a page showing the last state can act on its games while the service starts.
 - Reads from SCSKiller's servers (api.scskiller.com, api.scskiller.io as its fallback) only what the official app reads
   signed out, and sends nothing: after a scan, at most about daily, the engine-support updates (plan-rules.json, game
   verdicts, Maximum suggestions, news; each used only when it verifies with SCSKiller's pinned rules keys, stable
@@ -125,6 +132,7 @@ never runs in `--safe` (it would write the data folder). It never queues, starts
 | `hddMode` | `false` (the engine default) |
 | `onDriverUpdate` | `whenIdle` |
 | `onNewShaders` | `notify` (no automatic compile) |
+| `compileNewGames` | `true`: a game never compiled that Compile would take is queued "when idle" by the new-shaders check, once per run, and compiles while the PC is idle (paused while a game runs, like every compile) |
 | `scanAtStart`, `recordAllGames` | `true` |
 | `recordAntiCheatGames` | `false` |
 | `recordingLimitMB` | the engine default (1024) |
@@ -427,6 +435,7 @@ All per-game methods take `{id: string}` (the game id) plus the listed params, a
 | `policy.preview` | – | what the settings policy would change now, without changing anything (works in `--safe`): `{applies: boolean, settings: string, games: {id, name, api?, bothApis: boolean, changes: string[]}[]}` (games listed when something would change or they ship both DirectX 11 and 12) |
 | `app.dismissGpuNotice` | – | hides `app.gpu.notice` for this GPU |
 | `shutdown` | `{waitSeconds?: number}` | `{ok: true}` then a clean exit (see Process) |
+| `exitWhenIdle` | `{seconds: number}` | the service exits by itself (`exiting` reason `idle`) once nothing has needed it for `seconds` (5 to 3600; `0`: never, the default). Needed: the page shown (no `ui.visible {visible: false}` yet), a request being answered (each one starts the wait again), a scan, a compile or plan check running or the started queue, the settings policy or the new-shaders check, an elevated driver change, the engine's passes after a scan (settings refresh, server lists, community downloads, recorder indexes, recording migration), or work that waits for the PC to be idle while the user has been away 2 minutes and no game runs (it starts then). Work that waits for idle while the user is here doesn't keep it: `exiting.idleWork` says to start it again when the PC is idle. |
 
 ### Library and scanning
 

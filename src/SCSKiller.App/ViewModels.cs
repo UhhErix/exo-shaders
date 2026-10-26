@@ -53,11 +53,11 @@ static class Fmt
         _ => g.Id[..Math.Max(0, g.Id.IndexOf(':'))] switch { "gog" => "GOG", "ubisoft" => "Ubisoft Connect", "battlenet" => "Battle.net", "purple" => "PURPLE", "hoyoplay" => "HoYoPlay", "gaijin" => "Gaijin", "riot" => "Riot Client", _ => "Other" },
     };
     /// <summary>Measured driver cache when known, else the estimate.</summary>
-    public static string Cache(GameState s) => s.CacheOnDisk is { } c ? Format.Bytes(c) : s.EstimatedCacheBytes is { } b ? "≈ " + Format.Bytes(b) : Format.Dash;
+    public static string Cache(GameState s) => s.DiskBytes is { } c ? Format.Bytes(c) : s.EstimatedCacheBytes is { } b ? "≈ " + Format.Bytes(b) : Format.Dash;
     /// <summary>The last compile's measured time, else the estimate: the estimate's rate is measured on a cold cache only.</summary>
     public static TimeSpan? CompileTime(GameState s) => s.LastWarmTime ?? s.EstimatedWarmTime;
     /// <summary>Tooltip for an estimated (not measured) cache value; null when measured.</summary>
-    public static string? CacheTip(GameState s) => s.CacheOnDisk == null && s.EstimatedCacheBytes != null ? "Estimated driver cache if compiled" : null;
+    public static string? CacheTip(GameState s) => s.DiskBytes == null && s.EstimatedCacheBytes != null ? "Estimated driver cache if compiled" : null;
     /// <summary>One middleware tag: what it compiles and its DLLs.</summary>
     public static string TagTip(MiddlewareTag t) => Format.Middleware(t) + "\n    " + string.Join(", ", t.Dlls);
     public static bool Active(QueueItem q) => q.Stage is not (QueueStage.Done or QueueStage.Failed or QueueStage.Stopped);
@@ -252,7 +252,10 @@ static class Icons
 }
 
 /// <summary>A small tag on a library row (a middleware label, or "+N").</summary>
-public sealed record TagChip(string Text, string Tip);
+public sealed record TagChip(string Text, string Tip, double Width = 90, double Side = 6)   // Width: the text's most, trimmed past it
+{
+    public Thickness Pad => new(Side, 0, Side, 0);
+}
 
 /// <summary>A game's row in the Library. The list keeps one row per game and <see cref="Update"/>s it in place, so the
 /// row's container, the scroll position and hover survive a re-evaluation.</summary>
@@ -284,7 +287,7 @@ public sealed class GameRow(GameState s, bool queued = false, bool compiling = f
     /// <summary>Search: the name, the store as players name it, or the engine ("UE 5", "Unreal"), case-insensitive.</summary>
     public bool Matches(string term) => Name.Contains(term, StringComparison.OrdinalIgnoreCase) || StoreName.Contains(term, StringComparison.OrdinalIgnoreCase)
         || Fmt.Engine(s.Engine).Contains(term, StringComparison.OrdinalIgnoreCase) || s.Engine?.Family.Contains(term, StringComparison.OrdinalIgnoreCase) == true;
-    public bool HasTags => s.Middleware is { Count: > 0 } || ModChip(s) != null;
+    public bool HasTags => s.Middleware is { Count: > 0 } || ModChip(s) != null || ScsKiller.DeliveryChip(s) != null;
     public bool HasTagLine => HasTags || IsKnownStutter || IsNoStutter || HasBaChip;
     /// <summary>A before and after recording in progress; the tile has no button for it, the game page has.</summary>
     public string BaChip => BeforeAfterUi.Voided(s.BeforeAfter) ? "" : s.BeforeAfter?.Stage switch
@@ -308,8 +311,9 @@ public sealed class GameRow(GameState s, bool queued = false, bool compiling = f
     {
         var m = s.Middleware ?? [];
         var mod = ModChip(s);
-        List<TagChip> tags = [.. mod != null ? [mod] : Array.Empty<TagChip>(), .. m.Select(t => new TagChip(t.Label, Fmt.TagTip(t)))];
-        return s.KnownStutter != null || s.NoStutter != null ? tags.Count > 1 ? [mod ?? new TagChip($"{m.Count} upscalers", string.Join("\n", m.Select(Fmt.TagTip)))] : tags
+        var asd = ScsKiller.DeliveryChip(s) is { } d ? new TagChip(d, ScsKiller.DeliveryTip, 190, 4) : null;
+        List<TagChip> tags = [.. mod != null ? [mod] : Array.Empty<TagChip>(), .. asd != null ? [asd] : Array.Empty<TagChip>(), .. m.Select(t => new TagChip(t.Label, Fmt.TagTip(t)))];
+        return s.KnownStutter != null || s.NoStutter != null ? tags.Count > 1 ? [mod ?? asd ?? new TagChip($"{m.Count} upscalers", string.Join("\n", m.Select(Fmt.TagTip)))] : tags
             : tags.Count <= MaxTags ? tags
             : [.. tags.Take(MaxTags), new TagChip($"+{tags.Count - MaxTags}", string.Join("\n", tags.Skip(MaxTags).Select(t => t.Tip)))];
     }
@@ -330,6 +334,7 @@ public sealed class GameRow(GameState s, bool queued = false, bool compiling = f
     {
         _ when s.CompileUnreached => "The compile didn't help",
         _ when PartlyCompiled => "Partly compiled",
+        _ when ScsKiller.NotReached(s.StatusReason) => "Not reached yet",
         GameStatus.Warmed when Partly => "Partly warmed",
         GameStatus.Warmed when s.Plan?.RecordedOnly == true => "Warmed (recorded pipelines only)",
         GameStatus.Warmed => "Warmed",
@@ -346,7 +351,7 @@ public sealed class GameRow(GameState s, bool queued = false, bool compiling = f
     /// <summary>The whole reason: the row's tooltip and the game page's status text.</summary>
     public string FullNote => s.Status switch
     {
-        _ when s.CompileUnreached || PartlyCompiled => s.StatusReason,
+        _ when s.CompileUnreached || PartlyCompiled || ScsKiller.NotReached(s.StatusReason) => s.StatusReason,
         GameStatus.Warmed when Partly => $"driver {s.WarmedDriverVersion} · {s.Careful!.LaunchCompiled * 100:0}% still compiled at its first launch",
         GameStatus.Warmed => $"driver {s.WarmedDriverVersion}" + (ScsKiller.IsPartial(s.Plan) ? " · a recording compiles the rest"
             : ScsKiller.RtAfterRecording(s) ? " · " + ScsKiller.RtAfterRecordingNote : ""),
@@ -366,7 +371,7 @@ public sealed class GameRow(GameState s, bool queued = false, bool compiling = f
     public string RowTip => (Playing ? "Playing now · " : "") + FullNote;
     public Style StatusStyle => Fmt.Style(s.Status switch
     {
-        _ when s.CompileUnreached || PartlyCompiled => "StatusWarn",
+        _ when s.CompileUnreached || PartlyCompiled || ScsKiller.NotReached(s.StatusReason) => "StatusWarn",
         GameStatus.Warmed when Partly => "StatusWarn",
         GameStatus.Warmed => "StatusAccent",
         GameStatus.Ready => "StatusPrimary",
@@ -768,6 +773,8 @@ public sealed class DetailVm(string id) : Bindable
     public const string MaxCompileWhy = "Compiles every combination of this game's shaders, not just each one once. It takes longer and uses more disk space, but potentially fewer shaders compile while you play. Seems to help most on AMD.";
     public string? GuessNote => s.Engine is { } e && s.Status is GameStatus.Ready or GameStatus.Warmed or GameStatus.Stale ? ScsKiller.GuessNote(e) : null;
     public bool HasGuessNote => GuessNote != null;
+    public string? DeliveryLine => ScsKiller.DeliveryLine(s);
+    public bool HasDeliveryLine => DeliveryLine != null;
     // warmed: nothing urgent, unless only partly (the careful compile is offered); RT: Record comes first; no shader stutter: not needed
     public Style CompileStyle => Fmt.Style((OffersCareful || s.Status != GameStatus.Warmed && !RtPartial) && s.NoStutter == null ? "AccentButtonStyle" : "DefaultButtonStyle");
     bool Queued => App.Core.Queue.Any(q => q.GameId == id && Fmt.Active(q) && !q.PlanCheck);
@@ -899,7 +906,7 @@ public sealed class DetailVm(string id) : Bindable
         try { return App.Core.GameCaches(id).Where(p => p.Name != ScsKiller.DriverPart).Sum(p => p.Bytes); }
         catch (Exception) { return 0; }   // e.g. the game is gone after a rescan
     }
-    public bool HasCache => s.CacheOnDisk != null || otherBytes > 0 || s.Status is GameStatus.Warmed or GameStatus.Stale;
+    public bool HasCache => s.DiskBytes != null || otherBytes > 0 || s.Status is GameStatus.Warmed or GameStatus.Stale;
     // compiled before a verdict changed: the cache stays until the user clears it
     public string? KeptCacheNote => (s.Status == GameStatus.Unsupported || s.NoStutter != null) && s.WarmedAt != null && s.CacheOnDisk > 0
         ? $"SCSKiller compiled {DiskValue} of cache for this game before it was marked {(s.NoStutter != null ? "as having no shader stutter" : "not supported")}."
@@ -920,8 +927,8 @@ public sealed class DetailVm(string id) : Bindable
     public string MaximumAction => MaximumSuggested ? "Turn on for this game" : "Turn off for this game";
     public bool CanSetMaximum => MaximumPending == null && !Queued;
     public bool ShowClearCache => HasCache || CanCompile;
-    // the driver cache, as Disk space shows it; the dialog lists Windows' cache with its own size
-    public string ClearCacheText => s.CacheOnDisk != null ? $"Clear cache ({DiskValue})" : "Clear cache";
+    // as Disk space shows it
+    public string ClearCacheText => s.DiskBytes != null ? $"Clear cache ({DiskValue})" : "Clear cache";
     public string ClearCacheTip => BaInProgressAny ? BaBusyTip : HasCache ? "Deletes this game's shader caches (the driver's and Windows', and the game's own if you choose) so its next run starts cold"
         : "SCSKiller learns this game's driver cache files the first time it compiles it or sees it running";
 
@@ -979,6 +986,9 @@ public sealed class DetailVm(string id) : Bindable
     public bool HasModChip => GameRow.ModChip(s) != null;
     public string ModChip => GameRow.ModChip(s)?.Text ?? "";
     public string ModTip => GameRow.ModChip(s)?.Tip ?? "";
+    public bool HasDeliveryChip => ScsKiller.DeliveryChip(s) != null;
+    public string DeliveryChip => ScsKiller.DeliveryChip(s) ?? "";
+    public string DeliveryTip => ScsKiller.DeliveryTip;
     IReadOnlyList<MiddlewareTag> Mw => s.Middleware ?? [];
     /// <summary>"Also compiles" only names tags with known pipelines (and DLSS, by the driver); else what was detected.</summary>
     public string MiddlewareChip => Mw.Where(t => t.Pipelines > 0).Select(t => t.Label)
@@ -1125,11 +1135,11 @@ public sealed class DetailVm(string id) : Bindable
     public string TimeLabel => s.LastWarmTime != null ? "Compile time" : "Compile time (estimate)";
     public string TimeValue => s.LastWarmTime is { TotalMinutes: >= 1, TotalHours: < 1 } t ? $"{t.Minutes} min {t.Seconds} s"   // measured: to the second
         : Format.Duration(Fmt.CompileTime(s));
-    public bool HasDiskValue => s.CacheOnDisk != null || s.EstimatedCacheBytes != null;
-    public string DiskLabel => s.CacheOnDisk != null ? "Disk space" : "Disk space (estimate)";
+    public bool HasDiskValue => s.DiskBytes != null || s.EstimatedCacheBytes != null;
+    public string DiskLabel => s.DiskBytes != null ? "Disk space" : "Disk space (estimate)";
     public string DiskValue => Format.Bytes(OnDisk ?? s.EstimatedCacheBytes);
     // the kept-aside copy of what the driver removed takes disk space too
-    long? OnDisk => s.CacheOnDisk + (s.Kept?.Frees ?? 0);
+    long? OnDisk => s.DiskBytes + (s.Kept?.Frees ?? 0);
     public bool HasShaderCount => s.ShaderCount != null;
     public string ShaderCount => Fmt.N(s.ShaderCount);
     // measured frames when the recorder timed them, else the compile count
@@ -1162,7 +1172,9 @@ public sealed class DetailVm(string id) : Bindable
         P != null ? new("Shader layouts", $"{P.RootSignatures:N0} · {RootSigSource(P)}") : null,
         P is { } u && u.ExactUnits + u.InferredUnits + u.GuessedUnits > 0 ? new("Stage units exact / inferred / guessed", $"{u.ExactUnits:N0} / {u.InferredUnits:N0} / {u.GuessedUnits:N0}") : null,
         P is { LayoutCoverage: > 0 } ? new("Vertex layouts from a recording", $"{P.LayoutCoverage:P1}") : null,
-        s.CacheOnDisk != null || s.EstimatedCacheBytes != null ? new("Driver cache", Fmt.Cache(s) + (s.CacheOnDisk != null ? " measured" : " estimated")) : null,
+        s.CacheOnDisk is { } disk ? new("Driver cache", Format.Bytes(disk) + " measured") : s.EstimatedCacheBytes is { } est ? new("Driver cache", "≈ " + Format.Bytes(est) + " estimated") : null,
+        s.WindowsCache is { } w ? new(ScsKiller.WindowsPart, Format.Bytes(w)) : null,
+        s.DeliveredShaders is { } asd ? new("Shaders delivered by Advanced Shader Delivery", Format.Bytes(asd)) : null,
     }.OfType<DetailRow>().ToList();
 
 
@@ -1895,7 +1907,7 @@ public sealed class CacheVm : Bindable
 
     long OldDriver => read?.Bytes(CacheGroupKind.OldDriver) ?? 0;
     public bool HasOldDriver => OldDriver > 0;
-    public string OldDriverText => $"{Format.Bytes(OldDriver)} of cache files are from before the current driver was installed on {read?.DriverInstalled?.ToLocalTime():d}. It doesn't read them.";
+    public string OldDriverText => $"{Format.Bytes(OldDriver)} of cache files are from before the current driver was installed on {read?.DriverInstalled?.ToLocalTime():d}. It hasn't used them since.";
     public string FreeText => $"Free {Format.Bytes(OldDriver)}";
     public IReadOnlyList<CacheItem> OldDriverItems => read?.Groups.Where(g => g.Kind == CacheGroupKind.OldDriver).SelectMany(g => g.Items).ToList() ?? [];
 
@@ -1919,7 +1931,7 @@ public sealed class CacheVm : Bindable
     {
         CacheGroupKind.Installed => ("Installed games", "Games in your library, by the cache keys SCSKiller learned for them."),
         CacheGroupKind.Uninstalled => ("Uninstalled games", "Games SCSKiller compiled or saw running that aren't in your library now. Named by their exe."),
-        CacheGroupKind.OldDriver => ("Old driver", $"Written before the current driver was installed on {installed?.ToLocalTime():d}. It doesn't read them."),
+        CacheGroupKind.OldDriver => ("Old driver", $"Written before the current driver was installed on {installed?.ToLocalTime():d}. It hasn't used them since."),
         CacheGroupKind.OldBuild => ("Earlier SCSKiller compiles", "Left by earlier compiles. The games don't read them."),
         CacheGroupKind.OtherVendor => ("Other GPU vendor", "Caches for another brand of GPU than the one SCSKiller compiles for."),
         _ => ("Other apps and games", "Desktop apps, and games SCSKiller hasn't compiled or seen running. A game moves to its group once SCSKiller sees it running."),
@@ -1930,7 +1942,7 @@ public sealed class CacheVm : Bindable
     {
         CacheGroupKind.Installed or CacheGroupKind.Uninstalled =>
             $"These games compile their shaders again on their next compile, and stutter until then: {string.Join(", ", items.Select(i => i.Name))}.",
-        CacheGroupKind.OldDriver => "The current driver doesn't read these files. Nothing needs to compile again.",
+        CacheGroupKind.OldDriver => "The current driver hasn't used these files since it was installed. Nothing needs to compile again.",
         CacheGroupKind.OldBuild => "The games don't read these files. Nothing needs to compile again.",
         CacheGroupKind.OtherVendor => "Apps that run on that GPU build their cache again as they run.",
         _ => "These apps and games build their cache again as they run, and may stutter until they have.",

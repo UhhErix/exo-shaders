@@ -32,12 +32,14 @@ internal sealed partial class Host
 
     public object Snapshot() => Snapshot(null);
 
-    /// <summary>With <paramref name="fixedRev"/> the snapshot carries that rev instead of taking the next one.</summary>
-    public object Snapshot(long? fixedRev)
+    /// <summary>With <paramref name="fixedRev"/> the snapshot carries that rev instead of taking the next one.
+    /// <paramref name="atRest"/>: as the page shows the engine while it isn't running (no queue, no scan).</summary>
+    public object Snapshot(long? fixedRev, bool atRest = false)
     {
         ScsKiller k = _k;
         IReadOnlyList<GameState> games = k.Games;
-        IReadOnlyList<QueueItem> queue = k.Queue;
+        IReadOnlyList<QueueItem> queue = atRest ? [] : k.Queue;
+        bool scanning = !atRest && Scanning;
         ViewContext ctx = Context(games, queue);
         Settings settings = ctx.Settings;
         List<GameState> sorted = Library.Sorted(games, Sort).ToList();
@@ -51,7 +53,7 @@ internal sealed partial class Host
         List<string> stores = launchers.Select(l => l.Name).Where(n => n != Fmt.AddedByYou).ToList();
         string storeText = stores.Count > 2 ? $"{stores.Count} stores" : string.Join(" and ", stores);
         bool allUnreal = games.Count > 0 && games.All(g => g.Engine?.Family == "Unreal");
-        string summary = Scanning && games.Count == 0
+        string summary = scanning && games.Count == 0
             ? "Looking for games…"
             : $"{games.Count} {(allUnreal ? "Unreal Engine " : "")}game{(games.Count == 1 ? "" : "s")} found{(storeText.Length > 0 ? " in " + storeText : "")} · {readyStale} ready to compile";
         double? rate = ScsKiller.MeasuredRate(games);
@@ -59,7 +61,7 @@ internal sealed partial class Host
 
         QueueItem? running = queue.FirstOrDefault(Format.Running);
         string status = running is not null ? running.PlanCheck ? "checking" : running.Stage == QueueStage.Paused ? "paused" : "compiling"
-            : Scanning ? "scanning" : "idle";
+            : scanning ? "scanning" : "idle";
         string runningName = running is null ? "" : games.FirstOrDefault(g => g.Game.Id == running.GameId)?.Game.Name ?? running.GameId;
 
         IReadOnlyList<GameState> stale = SafeList(k.DriverStaleGames);
@@ -76,10 +78,10 @@ internal sealed partial class Host
             app = new
             {
                 status,
-                statusLine = Format.TrayStatus(running, running is null ? null : runningName, Quitting).Line,
-                scanning = Scanning,
-                scanProgress = k.ScanProgress,
-                afterUpdateLine = k.AfterUpdateLine,
+                statusLine = Format.TrayStatus(running, running is null ? null : runningName, !atRest && Quitting).Line,
+                scanning,
+                scanProgress = atRest ? null : k.ScanProgress,
+                afterUpdateLine = atRest ? null : k.AfterUpdateLine,
                 summary,
                 readyCount = views.Count(v => ScsKiller.InAddAllReady(v.S) && !queued.Contains(v.S.Game.Id)),
                 recommendedCount = views.Count(v => ctx.Recommended.Contains(v.S.Game.Id) && v.IsAdd && !queued.Contains(v.S.Game.Id)),
@@ -134,7 +136,7 @@ internal sealed partial class Host
             },
             games = views.Select(v => v.ToDto()),
             hidden = k.HiddenGames.Select(g => new { id = g.Id, name = g.Name, store = Fmt.StoreName(g) }),
-            queue = QueueDto(games, queue),
+            queue = QueueDto(games, queue, atRest),
             settings = SettingsDto(),
             policy = PolicyDto(),
             manualFolders = k.Manual?.Folders ?? [],
@@ -169,7 +171,7 @@ internal sealed partial class Host
 
     // =================================================================== queue (QueueVm)
 
-    public object QueueDto(IReadOnlyList<GameState> games, IReadOnlyList<QueueItem> queue)
+    public object QueueDto(IReadOnlyList<GameState> games, IReadOnlyList<QueueItem> queue, bool atRest = false)
     {
         ScsKiller k = _k;
         Settings settings = k.Settings;
@@ -232,8 +234,8 @@ internal sealed partial class Host
         bool paused = cur is { Stage: QueueStage.Paused };
         return new
         {
-            running = k.QueueRunning,
-            compiling = k.Compiling,
+            running = !atRest && k.QueueRunning,
+            compiling = !atRest && k.Compiling,
             paused,
             summary,
             planChecks = ScsKiller.PlanCheckLine(queue),

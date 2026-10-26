@@ -6,6 +6,28 @@ repository's root `CHANGELOG.md`.
 
 ## [Unreleased]
 
+**Starts on every NVIDIA PC**
+
+- A display driver whose registry names its user-mode driver by file name alone (no folder) made the engine stop at
+  start with "The path is empty" (SCSKiller #229, seen on a GTX 1070); that entry is skipped now, and one unreadable
+  display key never stops the engine.
+
+**Runs only while it's needed**
+
+- With `exitWhenIdle` the service exits by itself once nothing has needed it for that long: no page shown, no request,
+  scan, compile, plan check or background pass running, and no work waiting for the PC to be idle while the user is
+  away. Exo Launcher starts it for its page, a compile, a check or idle-time work, and otherwise nothing of it runs.
+  `exiting` says whether work waits for the PC to be idle (`idleWork`), and every clean exit leaves the page's state in
+  `exo-snapshot.json` for the host to show until the service runs again.
+- A request about a game waits for the first scan's list (a second or two after start), so a click on the page's last
+  state while the service starts finds its game.
+- The precompiled shader databases a driver update left behind are looked for once the games are listed, and only then
+  does the service wait for the PC to be idle; a start with nothing to rebuild no longer checks for idle twice a second
+  for as long as the user is at the PC.
+- Blocking garbage collections with no background thread: a page visit's scan peaked at 142 MB instead of 186 MB.
+- Games never compiled now compile while the PC is idle, as the settings policy said since 1.4.0-alpha.3
+  (`compileNewGames`): nothing queued them.
+
 **Precompiled shaders built on this PC**
 
 - A compiled DirectX 12 game also gets Windows' precompiled shader database (Advanced Shader Delivery) built on the PC
@@ -65,6 +87,29 @@ repository's root `CHANGELOG.md`.
   into the cache the game reads on AMD.
 - Naughty Dog games, God of War and God of War Ragnarök, Ghost of Tsushima, Ratchet & Clank: Rift Apart, the Riot
   Client's games, and DirectX 11 games on AMD, as in 1.3.0.
+
+**From SCSKiller 1.3.1 and 1.3.2 (engine 1.4.0-alpha.4)**
+
+- The engine now carries SCSKiller 1.3.2 on top of 1.4.0-alpha.3's source: every change of 1.3.1 and 1.3.2 is in, in
+  alpha.3's form where alpha.3 had reworked the same code (the root `CHANGELOG.md` lists theirs). The history is merged,
+  so the next SCSKiller release merges in the same way. Nothing in the service's protocol changed.
+- On NVIDIA from driver 621.01, DirectX 12 compiles no longer wait for Windows' shader cache to flush each write: about
+  1.7 times as fast. The time estimate uses the rate measured on the current driver only.
+- A compile counts as done only once its shaders are in the game's Windows shader cache, which is never written while the
+  game runs. Shaders that couldn't go in yet go in when the game exits or the engine starts, and the game says so until
+  then ("the compiled pipelines go into the game's cache when the game exits or SCSKiller starts", Warmed). A damaged
+  Windows shader cache reads as Stale and compiles again.
+- Games that get shaders through Advanced Shader Delivery in the Xbox app keep the pipelines compiled for them; a game's
+  disk space counts the part of its compiled shaders Windows keeps in D3DSCache; older drivers' cache under
+  AppData\LocalLow\NVIDIA\PerDriverVersion\DXCache is found; a path with ".exe" in a folder name, a junction or a
+  subst drive no longer keeps a compile out of the cache.
+- A compile no longer makes the PC unresponsive: its work, the graphics driver's too, runs below other programs, and
+  reading a game's files follows the Threads setting.
+- After a driver update, the pipelines that crashed the old driver are retried one at a time before the rest.
+- Roblox is an anti-cheat game: the recorder stays out of it, and is taken out if it was in. The anti-cheat rules are
+  unchanged otherwise: the engine only reads such a game's files.
+- Unreal games whose store starts another exe beside the Shipping exe (STAR WARS Jedi: Fallen Order) compile for that
+  exe after its next launch.
 
 **New engine: Glacier 2**
 

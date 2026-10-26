@@ -184,7 +184,7 @@ internal sealed partial class Host
                     try { k.ApplyDriverUpdateMode(); }
                     catch (Exception e) { _log.Report("[exo] driver-update task not registered: " + e.Message); }
                 }
-                if (NewShaders.Global(s) != NewShaders.Global(was)) RequestNewShadersCheck();
+                if (NewShaders.Global(s) != NewShaders.Global(was) || s.CompileNewGames != was.CompileNewGames) RequestNewShadersCheck();
                 _log.Report("[exo] settings policy applied: " + Changed(was, s));
             }
             finally

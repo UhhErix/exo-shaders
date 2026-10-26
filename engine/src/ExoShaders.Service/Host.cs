@@ -88,7 +88,7 @@ internal sealed partial class Host
 
         string reason = await _exit.Task;
         _stopping.Cancel();
-        _io.Event("exiting", new { reason });
+        _io.Event("exiting", new { reason, idleWork = _idleWorkAtExit });
         return 0;
     }
 
@@ -158,6 +158,7 @@ internal sealed partial class Host
         {
             _io.Event("notice", new { kind = "error", text = "Scan failed: " + Fmt.Describe(e) });
         }
+        _firstList.TrySetResult();
         ShowDriverNotice();
         if (!_opt.Safe) RequestNewShadersCheck();
         StartPolicy();
@@ -234,6 +235,7 @@ internal sealed partial class Host
             System.Text.Json.JsonElement? reqId = id;
             string name = method;
             Params args = new(p);
+            Interlocked.Increment(ref _inflight);
             _ = Task.Run(async () =>
             {
                 try
@@ -247,6 +249,11 @@ internal sealed partial class Host
                 {
                     if (e is not ServiceError) _log.Report($"[exo] {name} failed: {e}");
                     _io.Error(reqId, Fmt.Describe(e));
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref _inflight);
+                    Touch();
                 }
             });
         }
@@ -294,9 +301,13 @@ internal sealed partial class Host
 
     public void MarkState()
     {
+        if (!_firstList.Task.IsCompleted && _k.Games.Count > 0) _firstList.TrySetResult();
         Interlocked.Exchange(ref _stateDirty, 1);
         Signal();
     }
+
+    /// <summary>The games are listed: the last list shown as the first scan starts, or that scan's end.</summary>
+    private readonly TaskCompletionSource _firstList = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private void MarkProgress()
     {
@@ -379,6 +390,7 @@ internal sealed partial class Host
     {
         _uiVisible = visible;
         _uiHidden = !visible;
+        Touch();
         if (visible)
         {
             _lastState = null;   // the page may have missed states while hidden: the next one goes out in any case
@@ -469,6 +481,7 @@ internal sealed partial class Host
     // =================================================================== new shaders (App.NotifyNewShaders)
 
     private readonly HashSet<string> _autoQueued = [];
+    private readonly HashSet<string> _newGamesTried = [];   // NewShaders.NewGames: the never-compiled games this run queued
     private readonly DateTimeOffset _session = DateTimeOffset.UtcNow;   // NewShaders.Plan: what an earlier service queued was lost with it
     private Dictionary<string, string>? _told;
     private int _newShadersPending;
@@ -506,6 +519,12 @@ internal sealed partial class Host
         {
             k.Remove(id);
             _autoQueued.Remove(id);
+        }
+        // 1.4.0-alpha.3 (Settings.CompileNewGames): a game never compiled waits for the PC to be idle, once per run
+        foreach (GameState g in NewShaders.NewGames(k.Games, k.Queue, settings, k.Compiling, _newGamesTried))
+        {
+            k.EnqueueWhenIdle(g.Game.Id);
+            _autoQueued.Add(g.Game.Id);
         }
         _told ??= k.Store.LoadNotified();
         // 1.3.0: forget (left the queue) and the session start let a game waiting for idle be queued again after a restart,
@@ -581,6 +600,7 @@ internal sealed partial class Host
             try
             {
                 _log.Report($"[exo] stopping ({reason})");
+                _idleWorkAtExit = IdleWork() || _k.Compiling;
                 if (_k.Compiling)
                 {
                     StopAll();
@@ -591,6 +611,7 @@ internal sealed partial class Host
                 }
                 _stopWatching.Cancel();
                 await Task.WhenAny(_watcher, Task.Delay(1000));
+                SaveAtRest();
                 await _log.FlushAsync(TimeSpan.FromSeconds(1));
             }
             catch (Exception e)

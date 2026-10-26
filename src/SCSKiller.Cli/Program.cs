@@ -214,7 +214,7 @@ async Task<int> Status(string? query)
           exe        {g.Game.ExePath}
           runs as    {(rec.LaunchedExeName is { } l0 ? $"{l0} (seen {rec.LaunchedExeSeenAt:yyyy-MM-dd HH:mm})" : "not seen yet")}; warms stage {ScsKiller.WarmExeName(g.Game, rec)}
           engine     {(g.Engine is { } e ? string.Join(' ', new[] { Format.Engine(e) + (e.VersionGuessed ? " (guessed)" : ""), e.Fork, e.GraphicsApi }.OfType<string>()) + (e.Encrypted ? " encrypted" : "") : "-")}
-          status     {StatusName(g)}: {g.StatusReason}
+          status     {StatusName(g)}: {g.StatusReason}{(ScsKiller.DeliveryLine(g) is { } asd ? $"\n             {asd}" : "")}
           anti-cheat {g.AntiCheat}
           shaders    {g.ShaderCount?.ToString() ?? "-"}
           plan       {(g.Plan is { } p ? $"{p.Recorded} recorded + {p.Generated} generated + {p.D3D11Shaders} DirectX 11 shaders{(p.D3D11Draws > 0 ? $" ({p.D3D11Draws} vertex shaders with recorded layouts)" : "")} + {p.MiddlewareItems} middleware, {p.RootSignatures} root sigs, rule verified: {p.RootSigRuleVerified}" : "-")}
@@ -223,7 +223,7 @@ async Task<int> Status(string? query)
           estimate   {(g.EstimatedCacheBytes is { } est ? Format.Bytes(est) : "-")} of cache, {Hms(g.EstimatedWarmTime)}
           careful    {CarefulLine(g.Careful, g.Plan)}
           warmed     {(g.WarmedAt is { } w ? $"{w:yyyy-MM-dd HH:mm} for driver {g.WarmedDriverVersion} in {Hms(g.LastWarmTime)}" + (ScsKiller.WarmCounts(g.LastWarmFailed ?? 0, g.LastWarmSkipped ?? 0, g.LastWarmCrashed ?? 0, g.LastWarmDriverSkipped ?? 0, g.LastWarmUnbuilt ?? 0) is { } counts ? $"; {counts}" : "") : "never")}
-          cache      {(g.CacheOnDisk is { } c ? $"{Format.Bytes(c)} on disk (driver-cache files its warms or the game had open)" : "-")}
+          cache      {(g.CacheOnDisk is { } c ? $"{Format.Bytes(c)} on disk (driver-cache files its warms or the game had open)" : "-")}{(g.WindowsCache is { } wc ? $", {Format.Bytes(wc)} in its D3DSCache folder" : "")}
           keys       {(rec.CacheKeys.Count > 0 ? string.Join(", ", rec.CacheKeys.Order()) : "-")}{(k.WarmAgs(g.Game.Id) is { } ags ? $" (compiles register its AGS app name {ags.App}, key {k.AgsKey(g.Game.Id)}: the exe name's case doesn't matter)" : AmdAppCache.IsNameHashed(rec.CacheKeys, ScsKiller.WarmExeName(g.Game, rec)) == false ? " (an app profile's key, not the exe name's hash: the name's case doesn't matter)" : "")}
           recorder   {(g.RecorderInstalled ? "installed" : "not installed")}{(g.RecorderRefused is { } why ? $"; {(ScsKiller.NeverRecorded(g) ? ScsKiller.NothingRecordedTitle + ". " : "")}{why}" : "")}
           recording  {(g.RecordingBytes > 0 ? $"{(g.RecordingBytes < 1 << 20 ? $"{Math.Max(1, g.RecordingBytes >> 10)} KB" : Format.Bytes(g.RecordingBytes))} (the game folder's files and SCSKiller's copy)" : "-")}, limit {ScsKiller.LimitText(k.Settings.RecordingLimitMB)} per game{(g.RecordingPaused ? $"; {ScsKiller.PausedNote(k.Settings)}" : "")}

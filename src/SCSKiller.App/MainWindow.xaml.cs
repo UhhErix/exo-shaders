@@ -351,8 +351,26 @@ public sealed partial class MainWindow : Window
             }
             Root.RequestedTheme = ElementTheme.Dark;
         }
+        // Shaders delivered by Advanced Shader Delivery for this driver: the library's tag, the game page's tag and line.
+        // SCSKILLER_SHOTS=asd takes only these.
+        async Task Asd()
+        {
+            const string id = "xbox:Microsoft.Halcyon_8wekyb3d8bbwe";
+            foreach (var theme in themes)
+            {
+                Root.RequestedTheme = theme;
+                Navigate(typeof(DetailPage), id);
+                await Shot("detail-asd");
+                Navigate(typeof(LibraryPage));
+                await Task.Delay(800);
+                ((LibraryPage)ContentFrame.Content).ScrollTo(id);
+                await Shot("library-asd", 600);
+            }
+        }
+
         switch (Environment.GetEnvironmentVariable("SCSKILLER_SHOTS"))
         {
+            case "asd": await Asd(); Application.Current.Exit(); return;
             case "amd-profiles": await AmdProfiles(); Application.Current.Exit(); return;
             case "problem": await Problem(); Application.Current.Exit(); return;
         }

@@ -76,7 +76,8 @@ limits and quotas. The client side of every exchange is in Core's *Community* an
    out of time or failed keeps the recorder out but is never held: the 2-minute pass walks the game again while no compile
    runs, and a full check begun after it that finds none clears it.
 2. **Read.** The engine reader builds the `ShaderIndex`. Archive keys come from the user or a pinned download and stay
-   local.
+   local. Read, Plan and Materialize run on below-normal threads, no more than the compile's thread setting
+   (`ScsKiller.Lowered`, every reader's loop through `ReaderLoops`).
 3. **Check.** `Planner.Check` gives `Unsupported`, `NeedsRecording` or `Ready`. Without a recording, `Ready` needs a
    state-independent cache (NVIDIA) and a root-signature rule for the engine version (for a Nixxes port, for the game build:
    `RuleMatch.Games`), or records that name their root signatures (`Carved/DawnStores`). Wuthering Waves (Kuro's 4.26) has
@@ -357,13 +358,16 @@ compiles.
 - **Unreached:** NVIDIA Aftermath with shader debug info makes the driver compile every pipeline under another key
   (GenerateShaderDebugInfo with crash dumps on, not its other flags or DRED's device flags: `selftest amwarm`). The warm
   starts Aftermath through the game's own DLL as the game does (`--aftermath`, `NvAftermath.Of`): as the recorder logged
-  it, else the plan rules' entry for the game (`nv.aftermath.v1`), else Unreal's call for `EngineInfo.AftermathShaderDebug`.
+  it, else the plan rules' entry for the game (`nv.aftermath.v1`), else an Unreal game's logged DX12_Initialize with Unreal's
+  crash dumps. Only the game's own run counts, never its config or the DLL being in the install (`DllFor` only finds the
+  path). After an unreached plain warm, a game whose newest session loaded the DLL gets one try with that session's logged
+  flags, else 0xa (`NvAftermath.Retry`). A guessed 0xa is judged by its first launch (`GameRecord.AftermathLost`).
   A warm process that fails or dies starting it, before its first item, makes the warm start over once without it
   (`WarmResult.AftermathDropped`), and a stopped compile resumes only in the same mode (`GameRecord.ResumeAftermath`).
   A warm that didn't while the game does is Stale (`GameRecord.WarmedAftermath`), and an unreached verdict on it doesn't
   apply. The first launch after a warm is judged, and enough of the warm's pipelines still compiling cold mark the game
-  (`GameRecord.UnreachedWarm`, "the compile didn't help this game on NVIDIA") until a later warm completes. The scan's
-  `EngineInfo.AftermathShaderDebug` alone doesn't change the status. `Unsupported` and partly compiled come first.
+  (`GameRecord.UnreachedWarm`, "the compile didn't help this game on NVIDIA") until a later warm completes.
+  `Unsupported` and partly compiled come first.
 - The D3D12 runtime version isn't in the key. The warm runs on the game's Agility SDK when it ships one (`--d3d12`).
 - RayQuery compute PSOs are never full hits (`SessionLog.RayQueryFloorMs`).
 

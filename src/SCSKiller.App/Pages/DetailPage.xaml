@@ -96,6 +96,7 @@
                         <TextBlock Text="{x:Bind Vm.StatusTitle, Mode=OneWay}" Style="{x:Bind Vm.Row.StatusStyle, Mode=OneWay}" FontSize="20" TextWrapping="Wrap" />
                         <TextBlock Text="{x:Bind Vm.StatusReason, Mode=OneWay}" Style="{StaticResource Secondary}" TextWrapping="Wrap" />
                         <TextBlock Text="{x:Bind Vm.GuessNote, Mode=OneWay}" Visibility="{x:Bind Vm.HasGuessNote, Mode=OneWay}" Style="{StaticResource Secondary}" TextWrapping="Wrap" />
+                        <TextBlock Text="{x:Bind Vm.DeliveryLine, Mode=OneWay}" Visibility="{x:Bind Vm.HasDeliveryLine, Mode=OneWay}" Style="{StaticResource Secondary}" TextWrapping="Wrap" />
                         <StackPanel Orientation="Horizontal" Spacing="8" Visibility="{x:Bind Vm.HasKeptCache, Mode=OneWay}">
                             <TextBlock Text="{x:Bind Vm.KeptCacheNote, Mode=OneWay}" Style="{StaticResource Secondary}" TextWrapping="Wrap" VerticalAlignment="Center" />
                             <HyperlinkButton Content="Clear it" Padding="0" Click="OnClearCache" VerticalAlignment="Center" />
@@ -214,6 +215,9 @@
                 </Border>
                 <Border Style="{StaticResource Chip}" Visibility="{x:Bind Vm.HasModChip, Mode=OneWay}" ToolTipService.ToolTip="{x:Bind Vm.ModTip, Mode=OneWay}">
                     <TextBlock Text="{x:Bind Vm.ModChip, Mode=OneWay}" Style="{StaticResource ChipText}" />
+                </Border>
+                <Border Style="{StaticResource Chip}" Visibility="{x:Bind Vm.HasDeliveryChip, Mode=OneWay}" ToolTipService.ToolTip="{x:Bind Vm.DeliveryTip, Mode=OneWay}">
+                    <TextBlock Text="{x:Bind Vm.DeliveryChip, Mode=OneWay}" Style="{StaticResource ChipText}" />
                 </Border>
                 <Border Style="{StaticResource Chip}" ToolTipService.ToolTip="{x:Bind Vm.AntiCheatTip, Mode=OneWay}">
                     <TextBlock Text="{x:Bind Vm.AntiCheatChip, Mode=OneWay}" Style="{StaticResource ChipText}" />

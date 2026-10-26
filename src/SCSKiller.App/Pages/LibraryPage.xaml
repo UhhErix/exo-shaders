@@ -321,8 +321,8 @@
                                             </ItemsControl.ItemsPanel>
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate x:DataType="local:TagChip">
-                                                    <Border Style="{StaticResource Chip}" Height="18" Padding="6,0" CornerRadius="9" ToolTipService.ToolTip="{x:Bind Tip}" x:DefaultBindMode="OneTime">
-                                                        <TextBlock Text="{x:Bind Text}" FontSize="11" MaxWidth="90" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                                    <Border Style="{StaticResource Chip}" Height="18" Padding="{x:Bind Pad}" CornerRadius="9" ToolTipService.ToolTip="{x:Bind Tip}" x:DefaultBindMode="OneTime">
+                                                        <TextBlock Text="{x:Bind Text}" FontSize="11" MaxWidth="{x:Bind Width}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                                                     </Border>
                                                 </DataTemplate>
                                             </ItemsControl.ItemTemplate>

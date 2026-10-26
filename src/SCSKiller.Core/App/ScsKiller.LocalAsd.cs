@@ -50,11 +50,14 @@ public sealed partial class ScsKiller
         {
             if (!value) { _asdListener?.Dispose(); _asdListener = null; return; }
             if (_asdListener != null || !OperatingSystem.IsWindows() || !AsdInstaller.Present()) return;
-            try { _asdListener = AsdInstaller.Listen(() => _ = Task.Run(RefreshLocalAsd)); }
+            try { _asdListener = AsdInstaller.Listen(() => _ = Task.Run(() => RefreshLocalAsd(driverUpdated: true))); }
             catch (IOException e) { Log?.Report($"precompiled shaders: no driver-update listener ({e.Message})"); }
-            _ = Task.Run(RefreshLocalAsd);
+            _ = Task.Run(() => RefreshLocalAsd(driverUpdated: false));
         }
     }
+
+    /// <summary>A refresh waits for the PC to be idle (<see cref="RefreshLocalAsd"/>): Exo Shaders keeps running for it.</summary>
+    public bool LocalAsdPending => Volatile.Read(ref _asdRefreshing) == 1;
 
     /// <summary>The adapter of <paramref name="gpu"/> as the compiler lists it, when its driver has a compiler plugin; null
     /// otherwise (or the compiler can't be had).</summary>
@@ -166,12 +169,19 @@ public sealed partial class ScsKiller
     }
 
     /// <summary>Once the PC is idle and nothing compiles: registrations of exes gone (an uninstalled game) taken out, and the
-    /// databases another driver built rebuilt from their SODBs, one game at a time under its compile lock.</summary>
-    async Task RefreshLocalAsd()
+    /// databases another driver built rebuilt from their SODBs, one game at a time under its compile lock. At start it waits
+    /// for nothing when there's nothing to do (<see cref="LocalAsdDue"/>, the usual start); Windows' driver-update
+    /// listener (<paramref name="driverUpdated"/>) always waits, as the driver may still be installing.</summary>
+    async Task RefreshLocalAsd(bool driverUpdated)
     {
         if (Interlocked.Exchange(ref _asdRefreshing, 1) == 1) return;
         try
         {
+            if (!driverUpdated)
+            {
+                while (Volatile.Read(ref _listed) == 0) await Task.Delay(Poll);   // the first scan's list: the games to look at
+                if (!LocalAsdDue()) return;
+            }
             while (Compiling || QueueRunning || !UserIdle || _playing.Count > 0) await Task.Delay(Poll);
             RedetectGpu();
             var gpu = Snapshot().Gpu;
@@ -194,6 +204,17 @@ public sealed partial class ScsKiller
         }
         catch (Exception e) { Log?.Report($"precompiled shaders: refresh stopped ({e.Message})"); }
         finally { Volatile.Write(ref _asdRefreshing, 0); }
+    }
+
+    /// <summary>What <see cref="RefreshLocalAsd"/> has to do now: a registration whose exe is gone, a store's pipelines this
+    /// copy can take (marked here, built by the refresh), or a database built for another driver than this one.</summary>
+    bool LocalAsdDue()
+    {
+        if (AsdInstaller.List().Any(r => !File.Exists(r.ExePath))) return true;
+        AdoptStoreSodbs();
+        RedetectGpu();
+        var driver = Snapshot().Gpu.DriverVersion;
+        return Games.Any(g => LoadLocalAsd(g.Game.Id) is { Off: false } s && (s.Registered || s.Source != null) && s.Driver != driver);
     }
 
     /// <summary>

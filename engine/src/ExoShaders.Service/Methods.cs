@@ -43,11 +43,21 @@ internal sealed partial class Host
         "recorder.checkRisk", "recorder.startRisk", "driver.setAutoShader",
     ];
 
+    /// <summary>Methods that don't name a game: they don't wait for the first scan's list (<see cref="_firstList"/>).</summary>
+    private static readonly HashSet<string> NoGameNeeded =
+    [
+        "snapshot", "ui.visible", "exitWhenIdle", "shutdown", "logs.subscribe", "whatsNew", "whatsNew.atStart", "settings.get",
+        "policy.preview", "app.dismissGpuNotice", "scan", "exo.library", "cache.refreshSizes", "cache.inventory",
+    ];
+
     private async Task<object?> Dispatch(string method, Params p)
     {
         if (Quitting && method != "shutdown" && method != "snapshot") throw new ServiceError("the service is stopping");
         if (PolicyOwned.Contains(method)) throw new ServiceError("Exo Shaders sets this itself: there is no option for it");
         if (_opt.Safe && Unsafe.Contains(method)) throw new ServiceError("not available in safe mode");
+        // Exo's page shows the games from the last state the service left; the first scan lists them again a second or
+        // two after start. A click on one in that time waits for the list (at most a minute) and finds its game.
+        if (!NoGameNeeded.Contains(method)) await Task.WhenAny(_firstList.Task, Task.Delay(TimeSpan.FromMinutes(1)));
         ScsKiller k = _k;
         switch (method)
         {
@@ -73,6 +83,9 @@ internal sealed partial class Host
                 return Ok;
             case "shutdown":
                 return Ok;   // the clean exit starts once this answer is out (ReadLoop)
+            case "exitWhenIdle":
+                ExitWhenIdle(p.ReqInt("seconds"));
+                return Ok;
 
             // ------------------------------------------------------------ library
             case "scan":

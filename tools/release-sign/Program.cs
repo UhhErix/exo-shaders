@@ -91,6 +91,16 @@ static int SignContent(string bodyFile, string name, string keyFile, string kid)
     if (name == SCSKiller.Core.Games.GameVerdicts.Name && (SCSKiller.Core.Games.GameVerdicts.TryParse(body) is not { } verdicts
             || verdicts.Count != System.Text.Json.JsonDocument.Parse(body).RootElement.GetProperty("games").GetArrayLength()))
         throw new ArgumentException($"{bodyFile}: the app would skip it or one of its games (fields, verdict, reason code, ids, dates)");
+    string[] identities = [];
+    if (name == SCSKiller.Core.Planning.RulesFile.Name)
+    {
+        var rules = SCSKiller.Core.Planning.RulesFile.TryParse(body) ?? throw new ArgumentException($"{bodyFile}: the app would refuse the whole file");
+        var ids = System.Text.Json.JsonDocument.Parse(body).RootElement.GetProperty("rules").EnumerateArray()
+            .Where(e => e.GetRawText().Contains(SCSKiller.Core.Planning.RulesFile.IdentityCap)).Select(e => e.TryGetProperty("id", out var i) ? i.ToString() : "?").ToList();
+        if (rules.Dropped.FirstOrDefault(d => ids.Any(id => d.StartsWith(id + ": ", StringComparison.Ordinal))) is { } bad)
+            throw new ArgumentException($"{bodyFile}: the app would drop the identity rule {bad}");
+        identities = [.. rules.Identities.Select(r => r.Id)];
+    }
     var outFile = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(bodyFile))!, name + ".json");
     if (string.Equals(outFile, Path.GetFullPath(bodyFile), StringComparison.OrdinalIgnoreCase))
         throw new ArgumentException($"{bodyFile}: name the body something other than {name}.json, the signed file goes there");
@@ -106,6 +116,8 @@ static int SignContent(string bodyFile, string name, string keyFile, string kid)
         throw new ArgumentException($"the signed file is over {ContentFile.MaxBytes / 1024} KB, which the app refuses");
     File.WriteAllText(outFile, envelope);
     Console.WriteLine($"wrote {outFile} ({name}, {kid})");
+    if (identities.Length > 0)
+        Console.WriteLine($"identity rules: {string.Join(", ", identities)}. Each needs that game's measured case: a wrong one empties the game's D3DSCache db for everyone at their next launch");
     return 0;
 }
 
