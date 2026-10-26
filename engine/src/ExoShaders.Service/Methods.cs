@@ -92,7 +92,10 @@ internal sealed partial class Host
             {
                 try
                 {
-                    IReadOnlyList<GameState> games = await ScanAsync(p.Bool("force") ?? false, userRequested: true);
+                    bool force = p.Bool("force") ?? false;
+                    // Refresh started the service: its start scan is that refresh.
+                    IReadOnlyList<GameState> games = !force && !_startScan.IsCompleted ? await _startScan
+                        : await ScanAsync(force, userRequested: true);
                     if (!_opt.Safe) RequestNewShadersCheck();
                     return new { games = games.Count };
                 }

@@ -88,7 +88,7 @@ internal sealed partial class Host
 
         string reason = await _exit.Task;
         _stopping.Cancel();
-        _io.Event("exiting", new { reason, idleWork = _idleWorkAtExit });
+        _io.Event("exiting", new { reason });
         return 0;
     }
 
@@ -123,6 +123,9 @@ internal sealed partial class Host
         k.UseChannels(null);   // what the app does while signed out
         k.Unseen = () => !_uiVisible;
         k.IdleWatchInterval = TimeSpan.FromSeconds(8);   // 3 s while a game plays, is followed or compiles
+        // "When idle" work starts, and goes on, only while the PC is really idle: nobody at it, nothing playing, no call,
+        // no other program at work, no game, not on battery (PcIdle); not only after two minutes without input.
+        k.IdleTime = () => PcIdle.Now(() => k.Games.Any(g => g.Playing)) ? TimeSpan.MaxValue : TimeSpan.Zero;
         k.WatchPipelineCache = !_opt.Safe;   // D3D12's own cache hit counts during play (needs the ETW rights: PipelineCacheWatch)
 
         k.LocalAsd = !_opt.Safe;   // Windows' driver-update listener for Exo's own precompiled shader databases (ScsKiller.LocalAsd)
@@ -135,15 +138,7 @@ internal sealed partial class Host
         foreach (GameState g in k.Games) _baSeen[g.Game.Id] = (g.BeforeAfter?.Stage, false);
 
         if (!_opt.Safe) _watcher = k.WatchGames(_stopWatching.Token);
-        // The driver-update task names the program it runs; the official app registers
-        // it again at every start, so after a move (or SCSKiller's uninstall, which
-        // removes it) it points at this engine's command line.
-        if (!_opt.Safe && k.Settings.OnDriverUpdate != DriverUpdateMode.Off)
-            _ = Task.Run(() =>
-            {
-                try { k.ApplyDriverUpdateMode(); }
-                catch (Exception e) { _log.Report("[exo] driver-update task not registered: " + e.Message); }
-            });
+        if (!_opt.Safe) _ = Task.Run(RemoveRewarmTask);
         RequestCacheInfo(force: true);
     }
 
@@ -152,7 +147,7 @@ internal sealed partial class Host
         // The Library page scans when it loads (LibraryVm.Load); a --tray start scans too.
         try
         {
-            await ScanAsync(force: false, userRequested: false);
+            await (_startScan = ScanAsync(force: false, userRequested: false));
         }
         catch (Exception e)
         {
@@ -181,6 +176,44 @@ internal sealed partial class Host
     }
 
     public bool Scanning => Volatile.Read(ref _scans) > 0 || _k.ScanProgress != null;
+
+    /// <summary>The scan every start makes: a Refresh that started the service takes it rather than scanning twice.</summary>
+    private Task<IReadOnlyList<GameState>> _startScan = Task.FromResult<IReadOnlyList<GameState>>([]);
+
+    /// <summary>
+    /// SCSKiller's "re-warm after a driver update" task runs its command line at every logon and whenever the PC goes idle,
+    /// and it reads every game and may compile then. Exo Shaders starts nothing by itself, so a task left by an earlier
+    /// Exo Shaders (any copy of its command line: the add-on's folder, or this one's) is removed; one the official app
+    /// registered for its own copy is left to it.
+    /// </summary>
+    private void RemoveRewarmTask()
+    {
+        try
+        {
+            var info = new System.Diagnostics.ProcessStartInfo("schtasks.exe")
+            {
+                UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
+                ArgumentList = { "/Query", "/TN", ScheduledTask.Name, "/XML" },
+            };
+            string xml;
+            using (var p = System.Diagnostics.Process.Start(info)!)
+            {
+                _ = p.StandardError.ReadToEndAsync();
+                xml = p.StandardOutput.ReadToEnd();
+                p.WaitForExit();
+                if (p.ExitCode != 0) return;   // no task
+            }
+            string? command = System.Xml.Linq.XDocument.Parse(xml).Descendants().FirstOrDefault(e => e.Name.LocalName == "Command")?.Value.Trim('"', ' ');
+            if (command is null || !(command.Contains(@"\addons\shaders\", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(command, ScheduledTask.TaskExe(), StringComparison.OrdinalIgnoreCase))) return;
+            ScheduledTask.Unregister();
+            _log.Report($"[exo] removed the re-warm task ({command}): the engine starts only when Compile or Refresh is pressed");
+        }
+        catch (Exception e)
+        {
+            _log.Report("[exo] the re-warm task wasn't checked: " + e.Message);
+        }
+    }
 
     /// <summary>
     /// The official app can't see the service (its single-instance key is its own), so if it starts on the same data
@@ -600,7 +633,6 @@ internal sealed partial class Host
             try
             {
                 _log.Report($"[exo] stopping ({reason})");
-                _idleWorkAtExit = IdleWork() || _k.Compiling;
                 if (_k.Compiling)
                 {
                     StopAll();

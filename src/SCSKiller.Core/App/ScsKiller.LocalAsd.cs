@@ -56,8 +56,9 @@ public sealed partial class ScsKiller
         }
     }
 
-    /// <summary>A refresh waits for the PC to be idle (<see cref="RefreshLocalAsd"/>): Exo Shaders keeps running for it.</summary>
-    public bool LocalAsdPending => Volatile.Read(ref _asdRefreshing) == 1;
+    /// <summary>A rebuild runs now (<see cref="RefreshLocalAsd"/>): only while the PC is idle, it stops the moment it isn't.</summary>
+    public bool LocalAsdBuilding => Volatile.Read(ref _asdBuilding) == 1;
+    int _asdBuilding;
 
     /// <summary>The adapter of <paramref name="gpu"/> as the compiler lists it, when its driver has a compiler plugin; null
     /// otherwise (or the compiler can't be had).</summary>
@@ -193,17 +194,45 @@ public sealed partial class ScsKiller
                 }
             AdoptStoreSodbs();
             foreach (var game in Games.Select(g => g.Game))
-            {
-                // Built before for another driver, or a store's pipelines adopted and not built yet.
-                if (LoadLocalAsd(game.Id) is not { Off: false } s || !(s.Registered || s.Source != null) || s.Driver == gpu.DriverVersion) continue;
-                while (Compiling || QueueRunning || !UserIdle || _playing.Count > 0) await Task.Delay(Poll);
-                using var own = CompileLock(game.Id);
-                if (own == null) continue;   // a compile of it runs: its own build follows its warm
-                await CompileLocalAsd(game, CancellationToken.None);
-            }
+                await RebuildLocalAsdWhileIdle(game, gpu.DriverVersion);
         }
         catch (Exception e) { Log?.Report($"precompiled shaders: refresh stopped ({e.Message})"); }
         finally { Volatile.Write(ref _asdRefreshing, 0); }
+    }
+
+    /// <summary>The game's database rebuilt for <paramref name="driver"/> while the PC is idle: the moment it isn't (input,
+    /// sound, another program's work, a game: <see cref="IdleTime"/>), Windows' compiler is stopped (the last registration
+    /// stays) and the build starts again once the PC is idle again.</summary>
+    async Task RebuildLocalAsdWhileIdle(Game game, string driver)
+    {
+        while (true)
+        {
+            // Built before for another driver, or a store's pipelines adopted and not built yet.
+            if (LoadLocalAsd(game.Id) is not { Off: false } s || !(s.Registered || s.Source != null) || s.Driver == driver) return;
+            while (Compiling || QueueRunning || !UserIdle || _playing.Count > 0) await Task.Delay(Poll);
+            using var own = CompileLock(game.Id);
+            if (own == null) return;   // a compile of it runs: its own build follows its warm
+            using var inUse = new CancellationTokenSource();
+            using var built = new CancellationTokenSource();
+            var watch = Task.Run(async () =>
+            {
+                try
+                {
+                    while (UserIdle && _playing.Count == 0) await Task.Delay(Poll, built.Token);
+                    inUse.Cancel();
+                }
+                catch (OperationCanceledException) { }
+            });
+            Interlocked.Exchange(ref _asdBuilding, 1);
+            try { await CompileLocalAsd(game, inUse.Token); }
+            finally
+            {
+                Volatile.Write(ref _asdBuilding, 0);
+                built.Cancel();
+                await watch;
+            }
+            if (!inUse.IsCancellationRequested) return;
+        }
     }
 
     /// <summary>What <see cref="RefreshLocalAsd"/> has to do now: a registration whose exe is gone, a store's pipelines this

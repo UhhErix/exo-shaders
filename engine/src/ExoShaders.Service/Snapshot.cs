@@ -117,7 +117,7 @@ internal sealed partial class Host
                 },
                 driverModeNote = settings.OnDriverUpdate switch
                 {
-                    DriverUpdateMode.Ask => "A notification offers compile now, when idle, or skip",
+                    DriverUpdateMode.Ask => "Shows which games need compiling again; Compile rebuilds them",
                     DriverUpdateMode.WhenIdle => "Rebuilds on its own while you're away from the PC",
                     _ => "Rebuild games yourself from the Library",
                 },

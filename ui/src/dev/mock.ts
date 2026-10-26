@@ -79,8 +79,8 @@ snap.policy ??= {
   on: true, summary: 'Balanced settings sized to this PC. Pauses while you play or run on battery.', threads: 9, processorCount: 12, memoryGB: 4, ramGB: 15,
   lines: [
     'Compiles with 9 of 12 CPU threads at below-normal priority, and up to 2 GB of memory', 'Pauses while you play',
-    'Games with both DirectX 11 and 12 are compiled for both', 'Ray tracing shaders are included', 'Rebuilds after a driver update when the PC is idle',
-    'Tells you when a game update brings new shaders', 'Records DirectX 12 games while you play, never anti-cheat games',
+    'Games with both DirectX 11 and 12 are compiled for both', 'Ray tracing shaders are included', 'Compiles only when you press Compile, never by itself',
+    'Shows which games a driver update or a game update needs compiled again', 'Records DirectX 12 games while you play, never anti-cheat games',
   ],
 }
 if (snap.app.cache) snap.app.cache.largest ??= snap.app.cache.limitCurrent === 'Unlimited'

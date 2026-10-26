@@ -7901,6 +7901,9 @@ public sealed partial class ScsKiller : IScsKiller
 
     public bool Compiling { get { lock (_lock) return _current != null; } }
 
+    /// <summary>The running item is "when idle" work (<see cref="EnqueueWhenIdle"/>, a plan check), not one the user started.</summary>
+    public bool RunningWhenIdle { get { lock (_lock) return _current != null && _whenIdle.Contains(_current); } }
+
     /// <summary>Adds the game at the end of the waiting items. Runs when the queue is started (or right away if it is
     /// running). On a queued "when idle" item: it becomes a normal item (runs with the queue, in the foreground).</summary>
     public void Enqueue(string gameId) => Add(gameId, whenIdle: false);

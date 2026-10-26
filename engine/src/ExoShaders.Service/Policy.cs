@@ -7,9 +7,10 @@
 // version, with the additional permission in LICENSE-EXCEPTION.txt. It is distributed WITHOUT ANY WARRANTY; see LICENSE.
 //
 // The settings policy: Exo Shaders has no settings. One fixed set of values, the same rules on every PC, is applied
-// through the engine's own setters (so their side effects run: the driver-update task, recorder reconciliation, the
-// re-evaluation of every game) after the first scan and again whenever the settings or a game change. It only
-// decides options: it never queues or starts a compile. Nothing runs in --safe (it would write the data folder).
+// through the engine's own setters (so their side effects run: recorder reconciliation, the re-evaluation of every
+// game) after the first scan and again whenever the settings or a game change. It only
+// decides options: it never queues or starts a compile, and none of them makes the engine compile by itself (a compile
+// starts only from Compile on Exo's page). Nothing runs in --safe (it would write the data folder).
 
 using SCSKiller.Core;
 using SCSKiller.Core.App;
@@ -54,16 +55,18 @@ internal sealed partial class Host
             CompileRayTracing = true,
             HddMode = false,             // never every drive: HddDrives names the hard disks the games are on
             HddDrives = HardDiskDrives(s.HddDrives),
-            // 1.4.0-alpha.3: games never compiled compile while the PC is idle (the games Add all ready takes), paused
-            // while a game runs like every other compile; Exo has no "start it yourself" step to wait for.
-            CompileNewGames = true,
-            OnDriverUpdate = DriverUpdateMode.WhenIdle,
+            // Nothing compiles by itself: a game never compiled waits for Compile like every other (no "when idle" queue),
+            // a driver update only says which games need compiling again, and so do a game's new shaders.
+            CompileNewGames = false,
+            OnDriverUpdate = DriverUpdateMode.Ask,
             OnNewShaders = NewShadersMode.Notify,
             ScanAtStart = true,
             RecordAllGames = true,
             RecordAntiCheatGames = false,
             RecordingLimitMB = defaults.RecordingLimitMB,
-            KeepCachesAside = true,      // AMD only in effect (ScsKiller checks AmdAppCache); the engine default elsewhere
+            // AMD: keeping a compiled cache aside needs the engine watching each game start to put it back, and the engine
+            // runs only for Compile and Refresh. Off; what was kept goes back into the driver's cache first (ApplyPolicy).
+            KeepCachesAside = false,
             ExperimentalIntel = CompileGpuIsIntel(),
             Gpu = null,                  // automatic: GpuBackends.Pick, the adapter with the most video memory
             MaxCompileConfirmed = true,
@@ -177,13 +180,9 @@ internal sealed partial class Host
             _settingsGate.Wait();
             try
             {
+                if (was.KeepCachesAside && !s.KeepCachesAside) PutBackKept();
                 k.Settings = s;   // re-evaluates the games, reconciles recorders, re-detects the GPU as needed
                 _blocked.Clear();
-                if (s.OnDriverUpdate != was.OnDriverUpdate)
-                {
-                    try { k.ApplyDriverUpdateMode(); }
-                    catch (Exception e) { _log.Report("[exo] driver-update task not registered: " + e.Message); }
-                }
                 if (NewShaders.Global(s) != NewShaders.Global(was) || s.CompileNewGames != was.CompileNewGames) RequestNewShadersCheck();
                 _log.Report("[exo] settings policy applied: " + Changed(was, s));
             }
@@ -208,6 +207,20 @@ internal sealed partial class Host
             }
         }
         if (changed) MarkState();
+    }
+
+    /// <summary>
+    /// AMD: every cache kept aside (listed and hidden games) goes back into the driver's cache before keeping caches aside
+    /// is turned off, which drops the kept copies: no compile is lost with them. Kept for another driver, or after the
+    /// driver's cache was reset, they're dropped as before (that driver no longer reads them). A service that exits midway
+    /// hasn't turned it off yet, so the next run puts back the rest.
+    /// </summary>
+    private void PutBackKept()
+    {
+        if (_k.Vendor.Vendor != GpuVendor.Amd) return;   // kept files of an AMD card no longer in use are only dropped
+        foreach (string id in _k.Games.Select(g => g.Game.Id).Concat(_k.HiddenGames.Select(g => g.Id)).Distinct())
+            _k.PutBackKept(id);
+        _log.Report("[exo] keeping AMD caches aside is off: the kept caches went back into the driver's cache");
     }
 
     /// <summary>One game's changes: what each is, and the engine call that makes it (each setter refreshes the game).</summary>
@@ -364,8 +377,8 @@ internal sealed partial class Host
                 "Pauses while you play or run on battery",
                 "Games with both DirectX 11 and 12 are compiled for both",
                 "Ray tracing shaders are included",
-                "Rebuilds after a driver update when the PC is idle",
-                "Tells you when a game update brings new shaders",
+                "Compiles only when you press Compile, never by itself",
+                "Shows which games a driver update or a game update needs compiled again",
                 "Records DirectX 12 games while you play, never anti-cheat games",
             },
         };

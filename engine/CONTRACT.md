@@ -49,7 +49,7 @@ relays each one); `ui.visible {visible: true}` sends a fresh `state` at once. A 
 every event. `notice`, `log`, `ready` and `exiting` are always sent.
 | `notice` | `Notice` (below) | things the official app shows as a toast/notification |
 | `log` | `{line: string}` | engine log lines, only after `logs.subscribe {on: true}` |
-| `exiting` | `{reason: "shutdown" \| "stdinClosed" \| "signal" \| "conflict" \| "idle", idleWork: boolean}` | right before the process exits cleanly (`conflict`: the official app started on the same data folder, see Process; `idle`: nothing needed it for the time `exitWhenIdle` set). `idleWork`: work waits for the PC to be idle (queued "when idle" items: never-compiled games, plan checks; precompiled shader databases to rebuild), or a compile was stopped: start the service again once the PC is idle. |
+| `exiting` | `{reason: "shutdown" \| "stdinClosed" \| "signal" \| "conflict" \| "idle"}` | right before the process exits cleanly (`conflict`: the official app started on the same data folder, see Process; `idle`: nothing needed it for the time `exitWhenIdle` set). Nothing is left for the host to start it again for: it starts only when the user asks for work (Exo: Compile or Refresh). |
 
 `rev` (in `state.data.rev` and `progress.data.rev`) increases with every event, so a UI can drop stale ones.
 
@@ -59,7 +59,7 @@ every event. `notice`, `log`, `ready` and `exiting` are always sent.
 type Notice =
   | { kind: "driverStale", driver: string, vendor: string, games: {id: string, name: string}[], title: string, text: string }
       // title "NVIDIA driver updated", text "Driver 617.42 cleared the shader cache. 2 games need rebuilding: A, B, about 20 min."
-      // "NVIDIA driver updated" toast: offer gameIds via driverStale.compileNow / driverStale.whenIdle / driverStale.skip
+      // "NVIDIA driver updated" toast: offer gameIds via driverStale.compileNow / driverStale.skip
   | { kind: "newShaders", compiling: boolean, games: {id: string, name: string, newPipelines: number}[], title: string, text: string }
       // compiling=true: they were queued to compile when idle (setting "Compile automatically and notify me")
   | { kind: "beforeAfterTimeUp", id: string, name: string }   // play time of a before/after run is up (sound setting is the UI's job)
@@ -91,6 +91,10 @@ ExoShaders.Service.exe --asd-remove-all              (Exo Shaders' uninstall: ta
   while the service runs). If it starts anyway on the same data folder, the service notices within ~3 s, sends a
   `conflict` notice and stops like a quit (`exiting` reason `conflict`). The service's own bundled `cli\scskiller.exe`
   doesn't count.
+- Starts nothing by itself and is started by nothing but its host: no scheduled task, no service, no run at logon. A
+  "re-warm after a driver update" task (`SCSKiller\RewarmStale`, which ran the command line at every logon and whenever
+  the PC went idle) that an earlier Exo Shaders registered for its own command line (a path under `addons\shaders\`, or
+  this service's) is removed at start; one the official app registered for its own copy is left to it.
 - Exit: on `shutdown`, when stdin closes, on Ctrl+C/Ctrl+Break, or after `exitWhenIdle` once nothing needs it. Like
   the official app's Quit: if a compile is running, waiting items are removed from the queue and the compile is stopped
   so the graphics driver writes its shader cache, then the service waits for it to finish (up to
@@ -118,7 +122,8 @@ ExoShaders.Service.exe --asd-remove-all              (Exo Shaders' uninstall: ta
 Exo Shaders has no settings. The service sets every option itself (`Policy.cs`), through the same engine setters the
 methods used (so their side effects run: the driver-update task, recorder reconciliation, re-evaluating the games),
 once the first scan is done and again, debounced by 500 ms, after any settings or game change. It is idempotent and
-never runs in `--safe` (it would write the data folder). It never queues, starts or stops a compile.
+never runs in `--safe` (it would write the data folder). It never queues, starts or stops a compile, and no value makes
+the engine compile by itself: a compile starts only from a request (`game.compile`, `queue.start`, ...).
 
 | setting | value |
 |---|---|
@@ -130,13 +135,13 @@ never runs in `--safe` (it would write the data folder). It never queues, starts
 | `maximumPlans` | `false` (Maximum is per game, below) |
 | `compileRayTracing` | `true` |
 | `hddMode` | `false` (the engine default) |
-| `onDriverUpdate` | `whenIdle` |
+| `onDriverUpdate` | `ask`: no automatic compile; the games a driver update cleared read "Needs rebuilding" and `driverStale` lists them (the scheduled re-warm task is never registered, see Process) |
 | `onNewShaders` | `notify` (no automatic compile) |
-| `compileNewGames` | `true`: a game never compiled that Compile would take is queued "when idle" by the new-shaders check, once per run, and compiles while the PC is idle (paused while a game runs, like every compile) |
+| `compileNewGames` | `false`: a game never compiled waits for Compile like every other |
 | `scanAtStart`, `recordAllGames` | `true` |
 | `recordAntiCheatGames` | `false` |
 | `recordingLimitMB` | the engine default (1024) |
-| `keepCachesAside` | `true` (only has an effect on AMD) |
+| `keepCachesAside` | `false`: keeping an AMD cache aside needs the engine running as each game starts, to put it back. Turning it off (from an earlier policy's `true`) first puts every kept cache, of listed and hidden games, back into the driver's cache (`game.putBackKept` for each), then the kept copies are dropped; a service that exits in between hasn't turned it off yet and does it again at its next run. Kept for another driver, or after the driver's cache was reset, they're dropped as before |
 | `experimentalIntel` | `true` only when the GPU the engine compiles for (the one with the most video memory) is Intel; takes effect at the next start |
 | `gpu` | automatic |
 | `activeCheck`, `activeCheckAsked` (beta.2) | `false`, `true`: the anonymous daily check stays off and is never asked about (its client isn't wired either) |
@@ -435,7 +440,14 @@ All per-game methods take `{id: string}` (the game id) plus the listed params, a
 | `policy.preview` | – | what the settings policy would change now, without changing anything (works in `--safe`): `{applies: boolean, settings: string, games: {id, name, api?, bothApis: boolean, changes: string[]}[]}` (games listed when something would change or they ship both DirectX 11 and 12) |
 | `app.dismissGpuNotice` | – | hides `app.gpu.notice` for this GPU |
 | `shutdown` | `{waitSeconds?: number}` | `{ok: true}` then a clean exit (see Process) |
-| `exitWhenIdle` | `{seconds: number}` | the service exits by itself (`exiting` reason `idle`) once nothing has needed it for `seconds` (5 to 3600; `0`: never, the default). Needed: the page shown (no `ui.visible {visible: false}` yet), a request being answered (each one starts the wait again), a scan, a compile or plan check running or the started queue, the settings policy or the new-shaders check, an elevated driver change, the engine's passes after a scan (settings refresh, server lists, community downloads, recorder indexes, recording migration), or work that waits for the PC to be idle while the user has been away 2 minutes and no game runs (it starts then). Work that waits for idle while the user is here doesn't keep it: `exiting.idleWork` says to start it again when the PC is idle. |
+| `exitWhenIdle` | `{seconds: number}` | the service exits by itself (`exiting` reason `idle`) once nothing has needed it for `seconds` (5 to 3600; `0`: never, the default). Needed: a request being answered (each one starts the wait again), a scan, the started queue or its compile, the settings policy or the new-shaders check, an elevated driver change, or the engine's passes after a scan (settings refresh, server lists, community downloads, recorder indexes, recording migration). Not needed: the page being shown (it reads the state the service leaves), or "when idle" work (a plan check, a precompiled shader database to rebuild) that waits or is paused for the PC to be idle; such work runs only inside a run the user started, only while the PC is really idle (below), and keeps the service only while it runs. |
+
+"The PC is idle" (when "when idle" work starts, and goes on) means nobody is using it, not only no input for a while.
+All of: no keyboard or mouse input for 10 minutes, or for 1 minute while the session is locked or the display is off; no
+app full screen or presenting (`SHQueryUserNotificationState`); no sound on any output device in the last 10 seconds; no
+microphone in use (an active capture session); other processes (not the service and its children) using under 15% of
+the processor over the last minute; no game running; not on battery. It is checked every half second while such work
+runs: the moment one fails, the work pauses (a compile) or stops to start over later (a precompiled shader database).
 
 ### Library and scanning
 
