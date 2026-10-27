@@ -32,8 +32,8 @@
     <Company>Exo Shaders (unofficial fork of SCSKiller)</Company>
     <Authors>The SCSKiller authors; Exo Shaders contributors</Authors>
     <Copyright>Copyright (C) 2026 The SCSKiller authors</Copyright>
-    <Version>1.4.0-alpha.4</Version>
-    <InformationalVersion>1.4.0-alpha.4</InformationalVersion>
+    <Version>1.4.0-alpha.5</Version>
+    <InformationalVersion>1.4.0-alpha.5</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 

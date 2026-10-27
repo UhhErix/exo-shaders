@@ -69,6 +69,8 @@ public sealed class DecimaReader(string? dataDir = null) : IEngineReader
 
     /// <summary>Reads only headers and the smallest archive's chunk table. An encrypted game gets its salts from
     /// <see cref="DecimaKeys"/> (a one-time static scan of its exe) and is otherwise Encrypted.</summary>
+    public int ReaderVersion(EngineInfo engine) => 2;
+
     public EngineInfo? Detect(Game game) => Detect(game, out _);
 
     /// <param name="notes">for an encrypted game, how its salts were found or not (never the salts)</param>
@@ -112,7 +114,7 @@ public sealed class DecimaReader(string? dataDir = null) : IEngineReader
         {
             ct.ThrowIfCancellationRequested();
             var rel = Library(f.FullName);
-            content.AppendData(Encoding.UTF8.GetBytes($"{rel}|{f.Length}|{f.LastWriteTimeUtc.Ticks}\n"));
+            content.AppendData(Encoding.UTF8.GetBytes(ContentStamps.Of(rel, f.FullName)));
             using var a = DecimaArchive.Open(f.FullName, salts, out var why);
             if (a == null) { unopened[why] = unopened.GetValueOrDefault(why) + 1; continue; }
             var seen = new HashSet<string>();

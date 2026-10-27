@@ -69,9 +69,13 @@ public static class Format
     public static string Engine(EngineInfo e, string? family = null) =>
         e.Version is "" or "-" or "?" ? family ?? e.Family : $"{family ?? e.Family} {e.Version}";
 
+    public const string MergingStage = "Copying the cache to the game's folder";
+    public const string SavingStage = "Saving the driver's cache";
+    public const string FinishingStage = "Finishing up";
+
     /// <summary>The item is being compiled: any stage before it finishes, paused included.</summary>
     public static bool Running(QueueItem q) => q.Stage is QueueStage.Indexing or QueueStage.Planning or QueueStage.Materializing
-        or QueueStage.Warming or QueueStage.Paused;
+        or QueueStage.Warming or QueueStage.Merging or QueueStage.Saving or QueueStage.Finishing or QueueStage.Paused;
 
     /// <summary>The notification area's status: a line, and the compile's share done (null = no progress to show).
     /// <paramref name="running"/>: the queue's running item (<see cref="Running"/>), <paramref name="name"/> its game's.</summary>
@@ -83,6 +87,9 @@ public static class Format
             : running.PlanCheck ? ("Checking games for more to compile", null)
             : running.Stage == QueueStage.Paused ? ($"Paused: {name}", done)
             : running.Stage == QueueStage.Warming && done is { } d ? ($"Compiling {name}, {100 * d:0}%", d)
+            : running.Stage == QueueStage.Merging ? ($"{MergingStage}: {name}" + (done is { } m ? $", {100 * m:0}%" : ""), done)
+            : running.Stage == QueueStage.Saving ? ($"{SavingStage}: {name}", null)
+            : running.Stage == QueueStage.Finishing ? ($"{FinishingStage}: {name}", null)
             : ($"Preparing {name}", null);
     }
 

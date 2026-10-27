@@ -252,6 +252,7 @@ internal sealed class GameView(GameState state, ViewContext ctx)
                 string left = r.Progress is { PerSecond: > 0.0 } && Fmt.Left(r, s) is { } t ? " · " + Format.Duration(t) + " left" : "";
                 return text + left;
             }
+            if (Place.Item is { Stage: QueueStage.Waiting, Note: { } waits } && waits != Fmt.IdleNote) return Fmt.Sentence(waits);   // what it waits for (a plan check giving way)
             return GameReason;
         }
     }
@@ -429,6 +430,13 @@ internal sealed class GameView(GameState state, ViewContext ctx)
 
     private string RecorderDll => s.AgsHost ? "amd_ags_x64.dll" : s.Records11 ? "d3d11.dll" : "d3d12.dll";
 
+    /// <summary>What the recorder adds next to the game: its DLL, and the preloader that loads it before DLSS.</summary>
+    private string RecorderFiles => s.Preload is { } p ? RecorderDll + " and " + p : RecorderDll;
+
+    /// <summary>The reconcile's note, else the last install or update's failure kept on the record (SCSKiller 1.3.3): why the
+    /// recorder isn't in the game, for example an antivirus that removed its file.</summary>
+    private string? RecorderNoteOrFailure => s.RecorderNote ?? s.RecorderFailure;
+
     /// <summary>beta.2: a game with DXVK as its d3d11.dll or dxgi.dll runs on Vulkan; on NVIDIA the compile goes through DXVK's own d3d11.dll.</summary>
     public string? DxvkNote => s.Dxvk && s.Status != GameStatus.Unsupported ? (s.DxvkCompiled ? ScsKiller.DxvkCompiledNote : ScsKiller.DxvkNote) : null;
 
@@ -482,8 +490,8 @@ internal sealed class GameView(GameState state, ViewContext ctx)
                 case { } skip:
                     return "Not available: " + skip + ".";
             }
-            return "Adds a small " + RecorderDll + " next to the game to catch anything the plan missed and time each frame, so this page shows what stuttered. Remove any time. If a game has anti-cheat SCSKiller didn't detect, don't turn this on."
-                + (s.RecorderNote is { } n ? " (" + Fmt.Sentence(n) + ")" : "")
+            return "Adds a small " + RecorderFiles + " next to the game to catch anything the plan missed and time each frame, so this page shows what stuttered. Remove any time. If a game has anti-cheat SCSKiller didn't detect, don't turn this on."
+                + (RecorderNoteOrFailure is { } n ? " (" + Fmt.Sentence(n) + ")" : "")
                 + (s.RecorderRefused is { } r && (s.Status != GameStatus.NeedsRecording || !ScsKiller.NeverRecorded(s)) ? " " + r : "");
         }
     }
@@ -725,13 +733,14 @@ internal sealed class GameView(GameState state, ViewContext ctx)
             var rows = new List<object>();
             void Row(string label, string value) => rows.Add(new { label, value });
             PlanStats? p = P;
-            if (p != null) Row("Pipelines in the plan", Fmt.N(p.Recorded + p.Generated + p.MiddlewareItems));
+            if (p != null) Row("Pipelines in the plan", Fmt.N(p.Recorded + p.Generated + p.MiddlewareItems + p.Variants));
             if (s.ShaderCount.HasValue) Row("Shaders in the game files", Fmt.N(s.ShaderCount));
             if (p is { StageSets: > 0 }) Row("Shader combinations found", Fmt.N(p.StageSets));
             if (p is { LeftOut: > 0 }) Row("Left out", ScsKiller.LeftOutValue(p));
             if (p is { StageSets: 0L, Uncovered: > 0 }) Row("Left out for shader slots SCSKiller can't rebuild", Fmt.N(p.Uncovered));
             if (p != null) { Row("Recorded pipelines", Fmt.N(p.Recorded)); Row("Built from the game files", Fmt.N(p.Generated)); }
             if (p is { MiddlewareItems: > 0 }) Row("Upscaler pipelines", Fmt.N(p.MiddlewareItems));
+            if (p is { Variants: > 0 }) Row("At other texture filtering settings", Fmt.N(p.Variants));
             if (p is { D3D11Shaders: > 0 }) Row("DirectX 11 shaders", Fmt.N(p.D3D11Shaders));
             if (p is { RtLibraries: > 0 })
                 Row("Ray tracing shader libraries", $"{p.RtLibraries:N0}" + (s.Engine is { NoRtPipelines: true } ? " (not used by the game)" : s.RtSkipped ? " (skipped, your setting)" : p.RtUncovered > 0 ? $" ({p.RtUncovered:N0} not compiled)" : ""));
@@ -799,7 +808,8 @@ internal sealed class GameView(GameState state, ViewContext ctx)
         else if (RtInline) rt = Fmt.Sentence(ScsKiller.RtInlineNote) + ".";
         else if (!Rt) rt = null;
         else rt = CanRecord ? ScsKiller.RtNeedsRecording + "."
-            : "Ray-traced effects aren't compiled: they need a recording, " + (s.RiskEligible ? ScsKiller.RiskNoRecording : !NoAntiCheat ? "which " + ScsKiller.AntiCheatName(s) + " blocks" : s.RootUnconfirmed ? ScsKiller.ManualNoRecording : ScsKiller.StreamlineNoRecording) + ".";
+            : "Ray-traced effects aren't compiled: they need a recording, " + (s.RiskEligible ? ScsKiller.RiskNoRecording : !NoAntiCheat ? "which " + ScsKiller.AntiCheatName(s) + " blocks" : s.RootUnconfirmed ? ScsKiller.ManualNoRecording
+                : s.PreloadHeld is { } held ? ScsKiller.PreloadHeldNoRecording(held, s.PreloadHeldByOptions) : ScsKiller.StreamlineNoRecording) + ".";
         LeftKind left = LeftCase;
         string? text = left switch
         {
@@ -854,7 +864,7 @@ internal sealed class GameView(GameState state, ViewContext ctx)
                 {
                     notInGame > 0 ? $"{notInGame:N0} {(notInGame == 1 ? "was" : "were")} skipped: {(notInGame == 1 ? "its shader isn't" : "their shaders aren't")} in this version of the game. Nothing to do." : null,
                     crashed > 0 ? $"{crashed:N0} {(crashed == 1 ? "was" : "were")} skipped: {(crashed == 1 ? "it crashes" : "they crash")} the GPU driver. If the game uses {(crashed == 1 ? "it" : "them")}, it compiles {(crashed == 1 ? "it" : "them")} itself." : null,
-                    driverSkipped > 0 ? $"{driverSkipped:N0} {(driverSkipped == 1 ? "was" : "were")} skipped: the GPU driver crashed or hung on {(driverSkipped == 1 ? "it or on what it builds" : "them or on what they build")} on." : null,
+                    driverSkipped > 0 ? $"{driverSkipped:N0} {(driverSkipped == 1 ? "was" : "were")} skipped: the GPU driver crashed or hung on {(driverSkipped == 1 ? "it or on what it builds" : "them or on what they build")} on, or {(driverSkipped == 1 ? "it wasn't" : "they weren't")} tried past a spot where it kept failing." : null,
                     unbuilt > 0 ? $"{unbuilt:N0} {(unbuilt == 1 ? "was" : "were")} skipped: SCSKiller can't build {(unbuilt == 1 ? "it" : "them")} yet." : null,
                     needsRec > 0 ? $"{needsRec:N0} need{(needsRec == 1 ? "s" : "")} a recording on this PC: the game or a mod builds {(needsRec == 1 ? "its shaders" : "their shaders")} while it runs, so they're in no game file. Play with \"Record while I play\" on to catch them." : null,
                 }.OfType<string>());
@@ -1054,7 +1064,7 @@ internal sealed class GameView(GameState state, ViewContext ctx)
                 @override = Fmt.Camel(s.RecorderOverride.ToString()),
                 foreign = s.RecorderForeign,
                 skip = s.RecorderSkip,
-                note = s.RecorderNote,
+                note = RecorderNoteOrFailure,
                 refused = s.RecorderRefused,
                 recordNote = RecordNote,
                 dll = RecorderDll,

@@ -17,8 +17,9 @@ static class BeforeAfterUi
 
     /// <summary>The intro (doc 6.5): the steps (folded behind "How it works" once seen), the play time and the sound.
     /// Null = cancelled, or <see cref="Intro.HowItWorks"/>. <paramref name="frames11"/>: the pair puts a frames-only
-    /// d3d11.dll into the game (<see cref="Core.App.ScsKiller.Frames11"/>).</summary>
-    public static async Task<(int Minutes, bool Sound, bool Overlay)?> IntroAsync(XamlRoot root, string game, Intro mode, bool frames11 = false)
+    /// d3d11.dll into the game (<see cref="Core.App.ScsKiller.Frames11"/>). <paramref name="countdown"/>: the recorder can draw the
+    /// in-game countdown (<see cref="Core.App.ScsKiller.CountdownDraws"/>).</summary>
+    public static async Task<(int Minutes, bool Sound, bool Overlay)?> IntroAsync(XamlRoot root, string game, Intro mode, bool frames11 = false, bool countdown = true)
     {
         var s = App.Core.Settings;
         bool full = mode == Intro.HowItWorks || !s.BeforeAfterIntroSeen;
@@ -41,7 +42,7 @@ static class BeforeAfterUi
         var time = new RadioButtons { Header = "Play time", MaxColumns = 2, Items = { "5 minutes", "10 minutes" }, SelectedIndex = 0 };
         time.SelectionChanged += (_, _) => { minutes = time.SelectedIndex == 1 ? 10 : 5; Steps(); };
         var sound = new CheckBox { Content = "Play a sound when the time is up", IsChecked = s.BeforeAfterSound };
-        var overlay = new CheckBox { Content = "Show the countdown in the game", IsChecked = s.BeforeAfterOverlay };
+        var overlay = new CheckBox { Content = "Show the countdown in the game", IsChecked = s.BeforeAfterOverlay, Visibility = countdown ? Visibility.Visible : Visibility.Collapsed };
         ToolTipService.SetToolTip(overlay, "A small panel at the top right of the game: the time left, your frame times and, on DirectX 12, each shader compilation stutter. SCSKiller counts down here either way. It isn't shown with FSR or XeSS frame generation on.");
         var checks = new StackPanel { VerticalAlignment = VerticalAlignment.Bottom, Children = { sound, overlay } };
         var choices = new Grid { ColumnSpacing = 24, ColumnDefinitions = { new(), new() { Width = GridLength.Auto } }, Children = { time, checks } };
@@ -91,8 +92,8 @@ static class BeforeAfterUi
         var result = await App.ShowAsync(dialog);
         Showing = null;
         if (mode == Intro.HowItWorks || result != ContentDialogResult.Primary) return null;
-        App.Core.Settings = App.Core.Settings with { BeforeAfterIntroSeen = true, BeforeAfterSound = sound.IsChecked == true, BeforeAfterOverlay = overlay.IsChecked == true };
-        return (minutes, sound.IsChecked == true, overlay.IsChecked == true);
+        App.Core.Settings = App.Core.Settings with { BeforeAfterIntroSeen = true, BeforeAfterSound = sound.IsChecked == true, BeforeAfterOverlay = countdown ? overlay.IsChecked == true : s.BeforeAfterOverlay };
+        return (minutes, sound.IsChecked == true, countdown && overlay.IsChecked == true);
     }
 
     /// <summary>The intro, then the before run: the caches cleared (off the UI thread, it deletes files) and the game
@@ -101,7 +102,7 @@ static class BeforeAfterUi
     {
         var g = Game(id);
         bool frames11 = Core.App.ScsKiller.Frames11(g.Engine, App.Core.Vendor.Caps);
-        if (await IntroAsync(root, g.Game.Name, over ? Intro.StartOver : Intro.Start, frames11) is not { } choice) return null;
+        if (await IntroAsync(root, g.Game.Name, over ? Intro.StartOver : Intro.Start, frames11, Core.App.ScsKiller.CountdownDraws(g)) is not { } choice) return null;
         try
         {
             await Task.Run(() =>

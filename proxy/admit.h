@@ -39,9 +39,10 @@ static std::wstring module_path(HMODULE m) {
         if (size == 32768) return L"";
     }
 }
-// Admission, decided once at the first device (any path: D3D12CreateDevice, a device factory, a D3D11 device;
-// D3D12GetInterface's hooks only forward until then). The recorder records for the whole run only when all hold, else it is
-// a pure pass-through (no device hooked, nothing written in the game folder):
+// Admission, decided once at the first device (any path: D3D12CreateDevice, a device factory, a D3D11 device), or earlier
+// when D3D12GetInterface hands out an SDK configuration or a device factory, before either is hooked. The recorder records
+// for the whole run only when all hold, else it is a pure pass-through (no device hooked, nothing written in the game
+// folder):
 //  - scskiller.ini's exe_size= and exe_time= are this process's exe as it is now, and its sig= is the HMAC the app made of
 //    them, the exe's file key, root= (and pid=/pid_time=) with its own key (recorder.key in its recorder folder, outside
 //    every game folder; recorder_sig). The app takes the stamp before a full anti-cheat check of the install
@@ -61,6 +62,14 @@ static std::wstring module_path(HMODULE m) {
 // the marker, Riot, client and VAC checks still run but refuse on nothing they find, and the log names it all once, as it
 // opens. Nothing is hidden from the anti-cheat. risk= without pid= or with another value is refused ("risk= malformed").
 // What a check couldn't inspect (a folder that can't be listed, Steam files that can't be read) refuses as without risk.
+// The D3D12 proxy's: decided early at D3D12GetInterface, the same verdict runs again at the first device, and every device waits for it: a run
+// it refuses becomes a pass-through there, before any device hook, with the SDK configuration's and the factories' slots
+// put back (one another hook took meanwhile stays, forwarding through ours, and the refused line says so). Such a run has
+// already opened scskiller.log, which then ends with that refusal and records nothing after it. A thread already in one of
+// those hooks, or entering one later, forwards: the originals it reads stay valid and this dll stays loaded (pin_self).
+// Inside a DllMain chain (this thread holds the loader lock) D3D12GetInterface decides and hooks nothing: a device factory
+// got there isn't recorded, nor one whose vtable lies outside every module (a wrapper's heap copy), which couldn't be put back,
+// nor one from a second SDK configuration vtable (only one is tracked for the put-back).
 // Accepted limits: a client that loads later in an admitted run isn't caught here, under risk or not (the app removes the
 // recorder at its next check); anti-cheat an update adds deeper in the install than those listings, without changing the
 // exe, is admitted until the app's next check (every 2 minutes while it runs, at its start otherwise) takes the recorder out.
@@ -199,7 +208,7 @@ static void refused(const char* why) {
     CreateDirectoryW(dir.substr(0, dir.find_last_of(L'\\')).c_str(), nullptr), CreateDirectoryW(dir.c_str(), nullptr);
     HANDLE h = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
     if (h == INVALID_HANDLE_VALUE) return;
-    char b[160];
+    char b[320];
     int n = snprintf(b, sizeof b, "%lld %s", unix_ms(), why);
     DWORD w;
     WriteFile(h, b, (DWORD)std::clamp(n, 0, (int)sizeof b - 1), &w, nullptr);
@@ -748,6 +757,7 @@ static const char* vac_now(const std::vector<std::wstring>& dirs) {
     }
 }
 
+static bool g_by_path;  // signed_by_app admitted by the path form
 // This folder's key on the app's revocation list (recorder.revoked in its recorder folder: the file_key of each folder whose
 // scskiller.ini it couldn't take out, one a line, as ScsKiller.Revoke writes them), or the list can't be read whole (only
 // a list that doesn't exist is empty): why it refuses; nullptr: neither.
@@ -765,15 +775,21 @@ static const char* revoked_here() {
     const bool bad = ferror(f) || list.size() > (1 << 20);
     fclose(f);
     if (bad) return "SCSKiller's revocation list can't be read";
+    // admitted by the path form, any revoked folder refuses: this process can't tell the folder at this path from one revoked
+    // elsewhere and moved here, by identity or by path
+    if (g_by_path && list.find_first_not_of(" \t\r\n") != std::string::npos) return "SCSKiller's revocation list isn't empty";
     std::wstring here = admit_dir();
     if (here.size() > 3 && here.back() == L'\\') here.pop_back();
-    std::string key;
+    // the path form too (path_folder_key), as the app writes it beside the identity
+    std::string key, path;
     for (wchar_t c : file_key(here)) key += (char)c;
+    for (wchar_t c : path_folder_key(here)) path += (char)c;
+    if (path.empty()) return "SCSKiller's revocation list can't be read";
     for (size_t at = 0; at < list.size();) {
         size_t end = list.find('\n', at);
         std::string line = list.substr(at, end == std::string::npos ? std::string::npos : end - at);
         if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (line == key) return "revoked by SCSKiller";
+        if (line == key || line == path) return "revoked by SCSKiller";
         if (end == std::string::npos) break;
         at = end + 1;
     }
@@ -785,14 +801,52 @@ static const char* revoked_here() {
 // through a link whose root= resolves to another folder, fails.
 static bool signed_by_app(const std::wstring& root) {
     const std::wstring dir = recorder_dir(admit_dir()), exe = module_path(nullptr), sig = ini_string(L"sig"), pid = ini_string(L"pid");
+    g_by_path = false;
     if (dir.empty() || exe.empty() || sig.size() != 40) return false;
     const std::string key = read_all(dir + L"\\recorder.key", 256);
     if (key.size() < 32 || key.size() > 128) return false;
     const std::wstring stamp = signed_stamp(ini_string(L"exe_size"), ini_string(L"exe_time"), pid, ini_string(L"pid_time"), ini_string(L"risk"), ini_string(L"vendor"),
                                             ini_string(L"overlay"), ini_string(L"ab_play_s"), ini_string(L"ab_tag"));
     const auto no_slash = [](const std::wstring& d) { return d.substr(0, d.size() > 3 ? d.size() - 1 : d.size()); };
-    const std::wstring want = recorder_sig(key, file_key(exe), file_key(no_slash(admit_dir())), stamp, ini_string(L"root"), file_key(no_slash(root)));
-    return !want.empty() && sig == want;
+    const std::wstring exe_key = file_key(exe), want = recorder_sig(key, exe_key, folder_file_key(no_slash(admit_dir())), stamp, ini_string(L"root"),
+                                                                      folder_file_key(no_slash(root)));
+    if (!want.empty() && sig == want) return true;
+    // a process that makes up folder identities (made_up_here), root=. and an exe that is one file with one name (no other
+    // hard link, no link of its own): the same HMAC by the folder's path_folder_key for both folders, which the app keeps in
+    // stamps\<path_folder_key>, one a line (ScsKiller.Signed), never in the game's folder
+    if (ini_string(L"root") != L"." || !made_up_here(no_slash(admit_dir()), exe) || hard_links(exe) != 1
+        || (GetFileAttributesW(long_path(exe).c_str()) & FILE_ATTRIBUTE_REPARSE_POINT)) return false;
+    const std::wstring here = path_folder_key(no_slash(admit_dir()));
+    if (here.empty()) return false;
+    const std::string kept = read_all(dir + L"\\stamps\\" + here, 4096);
+    for (size_t at = 0; at < kept.size();) {
+        size_t end = kept.find('\n', at);
+        std::string line = kept.substr(at, end == std::string::npos ? std::string::npos : end - at);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.size() == 40 && std::wstring(line.begin(), line.end()) == recorder_sig(key, exe_key, here, stamp, L".", here)) return g_by_path = true;
+        if (end == std::string::npos) break;
+        at = end + 1;
+    }
+    return false;
+}
+
+// Admitted by the path form, the exe's folder must list as the app saw it from this process too: the exe, scskiller.ini and,
+// when it was loaded from there, this module, by long or 8.3 name. The anti-cheat walk lists it through the same layer.
+static bool listed_here() {
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)&listed_here, &self);
+    const std::wstring exe = module_path(nullptr), own = module_path(self), dir = admit_dir();
+    const std::wstring want[3] = {exe.substr(exe.find_last_of(L'\\') + 1), L"scskiller.ini", own.substr(own.find_last_of(L'\\') + 1)};
+    bool seen[3] = {false, false, _wcsnicmp(own.c_str(), dir.c_str(), dir.size()) || own.find(L'\\', dir.size()) != std::wstring::npos};
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileExW(long_path(dir + L"*").c_str(), FindExInfoStandard, &fd, FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    for (size_t n = 0; n < 100000; ++n) {
+        for (int i = 0; i < 3; ++i) seen[i] |= !_wcsicmp(fd.cFileName, want[i].c_str()) || !_wcsicmp(fd.cAlternateFileName, want[i].c_str());
+        if (!FindNextFileW(h, &fd)) break;
+    }
+    FindClose(h);
+    return seen[0] && seen[1] && seen[2];
 }
 
 // scskiller.ini's bytes, read whole; false when it can't be, or is over 64 KB (the app's is a few hundred bytes).
@@ -827,6 +881,7 @@ static const char* admission_verdict(bool whole, const std::string& read, bool e
                     : root.empty() ? "no install root"
                     : odd_name(here) || odd_name(root) ? "a folder name ends in a dot or a space"
                     : !signed_by_app(root) ? "not signed by SCSKiller"
+                    : g_by_path && (ini_string(L"root") != L"." || !listed_here()) ? "the game's folder reads differently inside the game"
                     : bound && (unbound = bound_here()) ? unbound
                     : !risk_well_formed(ini_string(L"pid"), ini_string(L"risk")) ? "risk= malformed"
                     : !anti_cheat_markers(markers) ? "markers= malformed" : nullptr;

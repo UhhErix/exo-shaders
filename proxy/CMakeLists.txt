@@ -39,7 +39,7 @@ if(SCSK_VERSION MATCHES "^0[.]0[.]0-internal")
 endif()
 
 # scskiller_ags.dll: the same recorder in front of AMD's AGS, installed as the game's amd_ags_x64.dll where AGS makes the
-# device (the app's GameFiles.AgsMakesTheDevice). The game's own AGS is renamed amd_ags_real.dll: Wrap_AgsCreateDevice is
+# device (the app's GameFiles.AgsMakesTheDevice). The game's own AGS is renamed amd_ags_x64_scskiller.dll: Wrap_AgsCreateDevice is
 # ours, every other export in ags_exports.txt goes to it through an import library made from the same list.
 file(STRINGS ags_exports.txt AGS_NAMES)
 set(AGS_DEF ${CMAKE_CURRENT_BINARY_DIR}/ags_wrap.def)
@@ -49,7 +49,7 @@ set(AGS_DEF_TEXT "EXPORTS
     agsDriverExtensionsDX12_CreateDevice = Wrap_AgsCreateDevice
     SCSKiller_StartWarm
 ")
-set(AGS_REAL_DEF_TEXT "LIBRARY amd_ags_real.dll
+set(AGS_REAL_DEF_TEXT "LIBRARY amd_ags_x64_scskiller.dll
 EXPORTS
 ")
 foreach(n ${AGS_NAMES})

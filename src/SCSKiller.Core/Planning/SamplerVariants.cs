@@ -72,6 +72,24 @@ public static class SamplerVariants
         return foreign;
     }
 
+    /// <summary>The texture filtering settings of this PC's recording <paramref name="own"/>, last recorded first. Only sets
+    /// on a root signature recorded at two sets or more count (a middleware's own samplers aren't a setting). Null when the
+    /// recording has fewer than two.</summary>
+    public static List<string>? Ordered(string own)
+    {
+        if (!File.Exists(own)) return null;
+        var (records, blobs) = Read(own);
+        var of = new Dictionary<string, (string RootSignature, string Samplers)?>();
+        var last = new Dictionary<(string RootSignature, string Samplers), int>();
+        for (var i = 0; i < records.Count; i++)
+            foreach (var h in RootSignatures(records[i]))
+                if ((of.TryGetValue(h, out var x) ? x : of[h] = blobs.GetValueOrDefault(h) is { } b ? Setting(b) : null) is { } s) last[s] = i;
+        var varied = last.Keys.GroupBy(s => s.RootSignature).Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet();
+        var recent = last.Where(l => varied.Contains(l.Key.RootSignature)).GroupBy(l => l.Key.Samplers)
+            .OrderByDescending(g => g.Max(l => l.Value)).Select(g => g.Key).ToList();
+        return recent.Count < 2 ? null : recent;
+    }
+
     static IEnumerable<(string RootSignature, string Samplers)> Settings((List<Rec> Records, Dictionary<string, byte[]> Blobs) db) =>
         db.Records.SelectMany(RootSignatures).Distinct().Select(h => db.Blobs.GetValueOrDefault(h) is { } b ? Setting(b) : null).OfType<(string, string)>();
 

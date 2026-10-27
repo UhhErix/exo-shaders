@@ -86,6 +86,7 @@ static std::wstring beat_name(DWORD parent) { return L"Local\\SCSKiller.Beat." +
 static std::wstring final_name(DWORD parent) { return L"Local\\SCSKiller.Final." + std::to_wstring(parent); }
 static std::wstring started_name(DWORD parent) { return L"Local\\SCSKiller.Started." + std::to_wstring(parent); }
 static std::wstring stop_name(DWORD parent) { return L"Local\\SCSKiller.Stop." + std::to_wstring(parent); }
+static std::wstring loading_name(DWORD parent) { return L"Local\\SCSKiller.Loading." + std::to_wstring(parent); }
 static std::wstring pipe_name(DWORD parent, int fd) { return L"\\\\.\\pipe\\SCSKiller.Warm." + std::to_wstring(parent) + L"." + std::to_wstring(fd); }
 
 enum { RUN, PAUSE, STOP };  // SCSKiller_Control states (proxy.cpp)
@@ -401,9 +402,14 @@ static int child(DWORD parent_pid, const Opts& o) {
     auto crashes = (BOOL(WINAPI*)(const char**, const char**))proc("SCSKiller_Crashes");
     auto warm_pass = (void(WINAPI*)(const uint8_t*, uint64_t, uint32_t))proc("SCSKiller_WarmPass");
     auto workers = (void(WINAPI*)(uint32_t*))proc("SCSKiller_Workers");  // optional: the progress line then has no worker counts
+    auto work = (uint64_t(WINAPI*)())proc("SCSKiller_Work");  // optional: then no work count
     auto skipped = (void(WINAPI*)(uint64_t*))proc("SCSKiller_Skipped");
     auto hung = (BOOL(WINAPI*)(const char**))proc("SCSKiller_Hung");
-    if (!create_device || !options || !start || !progress || !control || !warm_rt || !retry || !memory || !warm_crash || !crashes || !skipped || !hung || (o.pass >= 0 && !warm_pass))
+    auto items12 = (uint64_t(WINAPI*)())proc("SCSKiller_D3D12Items");
+    auto start11 = (void(WINAPI*)(LUID))proc("SCSKiller_StartWarm11");
+    auto load = (void(WINAPI*)())proc("SCSKiller_WarmLoad");
+    if (!create_device || !options || !start || !progress || !control || !warm_rt || !retry || !memory || !warm_crash || !crashes || !skipped || !hung || !load ||
+        (o.pass >= 0 && !warm_pass))
         return fail(L"proxy d3d12.dll missing or too old");
     std::vector<uint8_t> pass_of;
     if (o.pass >= 0) {
@@ -433,12 +439,18 @@ static int child(DWORD parent_pid, const Opts& o) {
     warm_rt(o.rt_threads, o.skip.data(), (uint32_t)o.skip.size());
     memory(o.memory_mb);
     warm_crash(o.skip_keys.data(), (uint32_t)(o.skip_keys.size() / 20), o.isolate.data(), (uint32_t)o.isolate.size());
-    std::wstring am_why = o.aftermath.empty() ? L"" : aftermath_dumps(o);
-    if (!o.ags.empty()) {
+    // the dbs before the device, which would read them: the parent's start window leaves this out (millions of records take minutes)
+    HANDLE loading = OpenEventW(EVENT_MODIFY_STATE, FALSE, loading_name(parent_pid).c_str());
+    if (loading) SetEvent(loading);
+    load();
+    if (loading) ResetEvent(loading), CloseHandle(loading);
+    const bool d3d11_only = items12 && start11 && !items12();
+    std::wstring am_why = o.aftermath.empty() || d3d11_only ? L"" : aftermath_dumps(o);
+    if (!o.ags.empty() && !d3d11_only) {
         std::wstring why = ags_device(o, best, &dev);
         if (!why.empty()) err_printf(L"AGS app %ls: %ls%ls\n", o.ags_app.c_str(), why.c_str(), dev ? L"" : L": a plain device (the exe name's cache)");
     }
-    HRESULT hr = dev ? S_OK : create_device(best, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev));
+    HRESULT hr = dev || d3d11_only ? S_OK : create_device(best, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev));
     if (FAILED(hr) && o.sdk) {
         err_printf(L"D3D12 device creation failed on the game's D3D12 runtime (SDK %u, 0x%08X): the system's runs\n", o.sdk, (unsigned)hr);
         return EXIT_SYSTEM_RUNTIME;
@@ -455,7 +467,7 @@ static int child(DWORD parent_pid, const Opts& o) {
         return code;
     };
 
-    if (!o.aftermath.empty()) {
+    if (!o.aftermath.empty() && dev) {
         if (am_why.empty()) am_why = aftermath_init(o, dev);
         if (am_why.empty()) err_printf(L"NVIDIA Aftermath started as the game starts it (version 0x%x, feature flags 0x%x)\n", o.am[0], o.am[1]);
         else err_printf(L"NVIDIA Aftermath: %ls, compiling without it\n", am_why.c_str());
@@ -468,7 +480,8 @@ static int child(DWORD parent_pid, const Opts& o) {
     if (o.pass >= 0) warm_pass(pass_of.data(), pass_of.size(), (uint32_t)o.pass);
     const uint64_t first = p[0];
     emit("{\"event\":\"start\",\"total\":%llu,\"adapter\":%s,\"exe\":%s}", p[1], json(bd.Description).c_str(), json(exe).c_str());
-    start(dev);  // looks for a layer's device under it: a layer's code still runs
+    if (d3d11_only) start11(bd.AdapterLuid);
+    else start(dev);  // looks for a layer's device under it: a layer's code still runs
     if (HANDLE started = OpenEventW(EVENT_MODIFY_STATE, FALSE, started_name(parent_pid).c_str())) SetEvent(started), CloseHandle(started);
 
     HANDLE stop = o.stop_event.empty() ? nullptr : CreateEventW(nullptr, TRUE, FALSE, o.stop_event.c_str());
@@ -489,8 +502,8 @@ static int child(DWORD parent_pid, const Opts& o) {
         uint32_t w[2] = {0, 0};
         if (workers) workers(w);
         skipped(s);
-        emit("{\"event\":\"progress\",\"done\":%llu,\"total\":%llu,\"failed\":%llu,\"driverSkipped\":%llu,\"rate\":%.1f,\"workers\":%u,\"threads\":%u}", p[0], p[1], p[2],
-             s[0], (p[0] - first) * 1000.0 / (now - t0), w[0], w[1]);
+        emit("{\"event\":\"progress\",\"done\":%llu,\"total\":%llu,\"failed\":%llu,\"driverSkipped\":%llu,\"rate\":%.1f,\"workers\":%u,\"threads\":%u,\"work\":%llu}", p[0], p[1], p[2],
+             s[0], (p[0] - first) * 1000.0 / (now - t0), w[0], w[1], work ? work() : 0ull);
     }
     g_ds_noflush = false;  // d3dscache's checkpoints from here on, its last at exit too, reach the disk
     uint64_t r[5];  // needed, from, ray tracing threads, failed before from, the item that failed alone (~0: none)
@@ -976,6 +989,7 @@ static int parent(int argc, wchar_t** argv, bool vulkan) {
     HANDLE final_event = CreateEventW(nullptr, TRUE, FALSE, final_name(me).c_str());
     // set by the child once its device exists: a layer's code (--layer) runs before that, and may hang
     HANDLE started = CreateEventW(nullptr, TRUE, FALSE, started_name(me).c_str());
+    HANDLE loading = CreateEventW(nullptr, TRUE, FALSE, loading_name(me).c_str());  // set while the child reads the dbs
     // ReShade reads these before the child runs: RESHADE_BASE_PATH_OVERRIDE would load its config and add-ons from elsewhere
     if (wchar_t* env = GetEnvironmentStringsW()) {
         std::vector<std::wstring> reshade;
@@ -996,6 +1010,7 @@ static int parent(int argc, wchar_t** argv, bool vulkan) {
         if (sdk) args += L" --sdk " + std::to_wstring(sdk);
         if (stop_file()) SetEvent(stop);
         DeleteFileW((stage + kItemsFile).c_str());  // a child that dies before its items leaves none to go by
+        if (loading) ResetEvent(loading);  // a child that died reading the dbs left it set
         fflush(stdout);
         // joined on every return: a joinable std::thread's destructor calls std::terminate, which fails fast (0xC0000409)
         struct Relays : std::vector<std::thread> {
@@ -1055,13 +1070,15 @@ static int parent(int argc, wchar_t** argv, bool vulkan) {
         wchar_t lim[16] = {};
         // counted in this loop's turns, not wall time: the caller suspends this process to pause the warm
         uint64_t exit_turns = 10ull * (GetEnvironmentVariableW(L"SCSKILLER_WARM_EXIT_S", lim, 16) ? std::max(1, _wtoi(lim)) : 600), final_turn = 0;
-        uint64_t start_turns = 10ull * (GetEnvironmentVariableW(L"SCSKILLER_WARM_START_S", lim, 16) ? _wtoi(lim) : 180), turns = 0;
+        uint64_t start_turns = 10ull * (GetEnvironmentVariableW(L"SCSKILLER_WARM_START_S", lim, 16) ? _wtoi(lim) : 180), turns = 0, waited = 0;
         bool killed = false, stuck = false, orphaned = false;
         FILETIME alive = {};
         uint64_t alive_turn = 0;  // the turn the alive file's write time last changed
         while (WaitForSingleObject(pi.hProcess, 100) == WAIT_TIMEOUT) {
             InterlockedIncrement(beat);
-            if (++turns > start_turns && started && WaitForSingleObject(started, 0) == WAIT_TIMEOUT) {
+            ++turns;
+            if (!loading || WaitForSingleObject(loading, 0) == WAIT_TIMEOUT) ++waited;
+            if (waited > start_turns && started && WaitForSingleObject(started, 0) == WAIT_TIMEOUT) {
                 TerminateProcess(pi.hProcess, 1), stuck = true;
                 WaitForSingleObject(pi.hProcess, 5000);
                 break;
@@ -1090,7 +1107,7 @@ static int parent(int argc, wchar_t** argv, bool vulkan) {
         relays.join();
         if (stuck)
             return fail(L"the warm process didn't start replaying within " + std::to_wstring(start_turns / 10) + L" s" +
-                        (o.layer.empty() ? L"" : L" (an add-on of the game's layer may hang outside the game)") + L"; ended it");
+                        (o.layer.empty() ? L"" : L" (an add-on of the game's layer may hang outside the game)") + L", so it was ended");
         if (orphaned)
             return fail(L"the alive file " + o.alive_file + L" stayed unchanged for " + std::to_wstring(((uint64_t)o.alive_turns + exit_turns) / 10) + L" s: ended the warm process");
         DWORD code = 1;

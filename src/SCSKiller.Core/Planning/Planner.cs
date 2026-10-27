@@ -50,7 +50,7 @@ public sealed class Planner(string? packDir = null, string? sharedPackDir = null
     /// <summary>Bump when the plan for the same game and inputs changes (new pipeline kinds, root-signature rules, D3D11):
     /// the app then rebuilds plans (warmed games' when idle, ScsKiller.CheckPlans) and offers a re-warm only where the new
     /// plan has records the warm didn't replay.</summary>
-    public const int Version = 45;
+    public const int Version = 46;
 
     /// <summary>The vendor's D3D11 driver cache persists across processes, is keyed on the exe file name and caches per
     /// shader, whatever the state or the other stages (measured on NVIDIA and Intel, proxy/probe11.cpp): a staged warm
@@ -91,6 +91,24 @@ public sealed class Planner(string? packDir = null, string? sharedPackDir = null
     /// <summary>A recorded record a DirectX 11 compile leaves out of the plan, the warm and the count of new pipelines: all but
     /// blobs and D3D11 draws are D3D12's, which the D3D11 driver cache never takes.</summary>
     public static bool LeftOutOnD3D11(Rec r) => r.Tag is not ('B' or 'D');
+
+    /// <summary>Of the recorded state objects (in file order), the community-only ones the replay leaves out: each library it
+    /// names gets a synthesized collection (<paramref name="covered"/>) and all it builds on is left out too, so a pipeline
+    /// linking only collections goes with them.</summary>
+    public static HashSet<string> CommunityLeftOut(IEnumerable<Rec> stateObjects, IReadOnlySet<string>? community, Func<string, bool> covered)
+    {
+        var left = new HashSet<string>();
+        if (community is not { Count: > 0 }) return left;
+        foreach (var r in stateObjects)
+        {
+            if (!community.Contains(r.Key)) continue;
+            StateObject so;
+            try { so = ParseStateObject(r); }
+            catch (InvalidDataException) { continue; }
+            if (so.Libraries.All(covered) && so.Depends.All(left.Contains)) left.Add(r.Key);
+        }
+        return left;
+    }
 
     /// <summary>A shader D3D11 takes: VS/PS/DS/HS/GS/CS in DXBC up to SM 5.0 (5.1 and DXIL are D3D12 only).</summary>
     internal static bool IsD3D11(ShaderInfo s) => s.Stage <= Stage.Compute && s.ShaderModel[^3..] is "4_0" or "4_1" or "5_0";
@@ -439,24 +457,73 @@ public sealed class Planner(string? packDir = null, string? sharedPackDir = null
         // layer's pairing of two records that both replay) stays: a warm through the layer creates what the layer made under it.
         // A ray tracing state object also needs the records it builds on (its collections, its base): in file order they come
         // first, so one pass drops the dependents of a dropped one too
-        long mainCount = 0, flagCount = 0, keptCount = 0, needsRecording = 0;
+        long mainCount = 0, flagCount = 0, keptCount = 0, movedCount = 0, needsRecording = 0;
         var keptKeys = new HashSet<string>();
         var recordedPayloads = new List<uint>();
         var nvOfMain = new List<Rec>();   // its state objects and 'N' records: what the option fixes learn from (RtCollections.OptionFixes)
+        foreach (var r in Read(mainDb))
+        {
+            if (RtCollections.Read(r) is { } c) recordedPayloads.Add(c.Payload);
+            if (r.Tag == 'N' || IsStateObject(r.Tag)) nvOfMain.Add(r);
+        }
+        var rtOptions = RtCollections.RecordedOptions(nvOfMain);
+        // a ray tracing collection per library ('Y'), its exports read from the library: an 'R' record the warm creates like a
+        // recorded one; a library not in this install, or without a ray tracing entry point, is skipped. With rule payload 0 a
+        // ray generation library gets one per payload the other libraries have (RtCollections.Payloads), the recorded ones'
+        // (no 'Y': their collections replay from the recording) included
+        var own = rt.Select(y => y.Library).Distinct().Where(rtBytes.ContainsKey).ToDictionary(h => h, h => RtCollections.OwnPayload(rtBytes[h]));
+        var pipelinePayloads = rt.Where(y => y.Payload == 0).Select(y => own.GetValueOrDefault(y.Library))
+            .Concat(recordedPayloads).Where(p => p > 0).Distinct().Order().ToList();
+        var synthesized = new List<(byte[] So, RtCollections.Nv? Nv)>();
+        var covered = new HashSet<string>();   // libraries a synthesized collection compiles
+        foreach (var y in rt)
+        {
+            var n = 0;
+            if (rtBytes.TryGetValue(y.Library, out var lib))
+                foreach (var p in RtCollections.Payloads(y.Payload, own[y.Library], pipelinePayloads))
+                    if (RtCollections.Collection(lib, y.Library, y.Global, y.LocalRayGen, y.LocalOther, p, y.Attributes, y.Depth, y.Flags) is { } so)
+                    {
+                        synthesized.Add((so, RtCollections.WithOptions(y.Nv, rtOptions)));
+                        n++;
+                    }
+            if (n == 0) skipped++;
+            else covered.Add(y.Library);
+        }
+        foreach (var h in hitGroups)
+        {
+            if (rtBytes.TryGetValue(h.ClosestHit, out var ch) && (h.AnyHit == null || rtBytes.ContainsKey(h.AnyHit))
+                && (engine.Family == FromSoft.FromSoftReader.Family ? FromSoft.SoulsRayTracing.Collection(ch, h, h.AnyHit != null ? rtBytes[h.AnyHit] : [])
+                    : RedEngine.RedRayTracing.Collection(ch, h, h.AnyHit != null ? rtBytes[h.AnyHit] : [])) is { } so)
+            {
+                synthesized.Add((so, RtCollections.WithOptions(h.Nv, rtOptions)));
+                covered.UnionWith(new[] { h.ClosestHit, h.AnyHit }.OfType<string>());
+            }
+            else skipped++;
+        }
+        var synthesizedKeys = synthesized.Select(s => new Rec('R', s.So).Key).ToHashSet();
+        // the community recording's own state objects go last, so a crash storm in them can't keep the plan from compiling,
+        // and are left out where the plan's collections compile their libraries
+        var community = recording?.CommunityStateObjects;
+        var leftOut = CommunityLeftOut(Read(mainDb).Where(r => IsStateObject(r.Tag)), community, covered.Contains);
+        var tail = new List<Rec>();
+        bool Moved(Rec r) => community != null && IsStateObject(r.Tag) && community.Contains(r.Key);
         bool Stays(Rec r)
         {
             if (r.Tag is 'B' or 'W') return true;
-            if (r.Tag == 'L' || !Keep(r) || IsStateObject(r.Tag) && !ParseStateObject(r).Depends.All(keptKeys.Contains)) return false;
+            if (r.Tag == 'L' || Moved(r) || !Keep(r) || IsStateObject(r.Tag) && !ParseStateObject(r).Depends.All(keptKeys.Contains)) return false;
             keptKeys.Add(r.Key);
             return true;
         }
         foreach (var r in Read(mainDb))
         {
             mainCount++;
-            if (RtCollections.Read(r) is { } c) recordedPayloads.Add(c.Payload);
-            if (r.Tag == 'N' || IsStateObject(r.Tag)) nvOfMain.Add(r);
             if (Stays(r)) keptCount++;
             else if (r.Tag == 'L') flagCount++;
+            else if (Moved(r))
+            {
+                movedCount++;
+                if (!leftOut.Contains(r.Key)) tail.Add(r);
+            }
             else if (localOnly.Contains(r.Key)) needsRecording++;
         }
         if (keptCount < mainCount)
@@ -473,46 +540,29 @@ public sealed class Planner(string? packDir = null, string? sharedPackDir = null
             finally { File.Delete(tmp); }
         }
         var keptTemplates = templates.Where(Keep).ToList();
-        skipped += mainCount - flagCount - keptCount + templates.Count - keptTemplates.Count + items.Count - keptItems.Count;
+        skipped += mainCount - flagCount - keptCount - movedCount + templates.Count - keptTemplates.Count + items.Count - keptItems.Count;
         foreach (var r in keptTemplates) Write(gen, r.Tag, r.Payload);
         foreach (var r in keptItems) Write(gen, r.Tag, r.Payload);
         var keptPsos = keptTemplates.Concat(keptItems).Select(r => r.Key).ToHashSet();
         foreach (var r in body.Where(r => r.Tag == 'N' && keptPsos.Contains(NvState.Parse(r).Target))) Write(gen, r.Tag, r.Payload); // the NVAPI state they're created with
         // the recorded state objects' NVAPI creation options where the recording lost them, learned from the whole recording
         // as WarmInputs does; read after the main db's, they win
-        foreach (var r in RtCollections.OptionFixes(nvOfMain).Where(r => keptKeys.Contains(NvState.Parse(r).Target))) Write(gen, r.Tag, r.Payload);
-        var rtOptions = RtCollections.RecordedOptions(nvOfMain);
-        // a ray tracing collection per library ('Y'), its exports read from the library: an 'R' record the warm creates like a
-        // recorded one; a library not in this install, or without a ray tracing entry point, is skipped. With rule payload 0 a
-        // ray generation library gets one per payload the other libraries have (RtCollections.Payloads), the recorded ones'
-        // (no 'Y': their collections replay from the recording) included
-        var own = rt.Select(y => y.Library).Distinct().Where(rtBytes.ContainsKey).ToDictionary(h => h, h => RtCollections.OwnPayload(rtBytes[h]));
-        var pipelinePayloads = rt.Where(y => y.Payload == 0).Select(y => own.GetValueOrDefault(y.Library))
-            .Concat(recordedPayloads).Where(p => p > 0).Distinct().Order().ToList();
-        foreach (var y in rt)
-        {
-            var n = 0;
-            if (rtBytes.TryGetValue(y.Library, out var lib))
-                foreach (var p in RtCollections.Payloads(y.Payload, own[y.Library], pipelinePayloads))
-                    if (RtCollections.Collection(lib, y.Library, y.Global, y.LocalRayGen, y.LocalOther, p, y.Attributes, y.Depth, y.Flags) is { } so)
-                    {
-                        Write(gen, 'R', so);
-                        if (RtCollections.WithOptions(y.Nv, rtOptions) is { } nv) { var r = new NvState(new Rec('R', so).Key, nv.Slot, nv.Space, 2, nv.Options).ToRec(); Write(gen, r.Tag, r.Payload); }
-                        n++;
-                    }
-            if (n == 0) skipped++;
-        }
-        foreach (var h in hitGroups)
-        {
-            if (rtBytes.TryGetValue(h.ClosestHit, out var ch) && (h.AnyHit == null || rtBytes.ContainsKey(h.AnyHit))
-                && (engine.Family == FromSoft.FromSoftReader.Family ? FromSoft.SoulsRayTracing.Collection(ch, h, h.AnyHit != null ? rtBytes[h.AnyHit] : [])
-                    : RedEngine.RedRayTracing.Collection(ch, h, h.AnyHit != null ? rtBytes[h.AnyHit] : [])) is { } so)
+        var tailKeys = new HashSet<string>();   // what builds on a left-out collection finds the plan's (the same key)
+        foreach (var r in tail)
+            if (Keep(r) && ParseStateObject(r).Depends.All(d => keptKeys.Contains(d) || synthesizedKeys.Contains(d) || tailKeys.Contains(d))) tailKeys.Add(r.Key);
+            else
             {
-                Write(gen, 'R', so);
-                if (RtCollections.WithOptions(h.Nv, rtOptions) is { } nv) { var r = new NvState(new Rec('R', so).Key, nv.Slot, nv.Space, 2, nv.Options).ToRec(); Write(gen, r.Tag, r.Payload); }
+                skipped++;
+                if (localOnly.Contains(r.Key)) needsRecording++;
             }
-            else skipped++;
+        foreach (var r in RtCollections.OptionFixes(nvOfMain).Where(r => NvState.Parse(r).Target is var t && (keptKeys.Contains(t) || tailKeys.Contains(t)))) Write(gen, r.Tag, r.Payload);
+        foreach (var (so, nv) in synthesized)
+        {
+            Write(gen, 'R', so);
+            if (nv is { } x) { var r = new NvState(new Rec('R', so).Key, x.Slot, x.Space, 2, x.Options).ToRec(); Write(gen, r.Tag, r.Payload); }
         }
+        foreach (var r in tail.Where(r => tailKeys.Contains(r.Key))) Write(gen, r.Tag, r.Payload);
+        if (movedCount > 0) Log?.Report($"{game.Name}: {leftOut.Count:N0} community ray tracing state objects left out (the plan's collections compile their libraries), {tailKeys.Count:N0} compiled last");
         File.WriteAllText(Path.Combine(workDir, SkippedFile), $"{skipped} {needsRecording}");
         if (skipped > 0) Log?.Report($"{skipped} PSO{(skipped == 1 ? "" : "s")} skipped: a shader not in this install (not replayed, not counted as failed)"
             + (needsRecording > 0 ? $"; {needsRecording} of them flagged by the community recording: built at run time or by a mod, only a recording on this PC has them" : ""));
@@ -675,6 +725,18 @@ public sealed class Planner(string? packDir = null, string? sharedPackDir = null
             if (i.ReadMask != SigElement.UnknownReadMask && o.ReadMask != SigElement.UnknownReadMask && (i.ReadMask & ~o.ReadMask) != 0) return false;
         }
         return true;
+    }
+
+    /// <summary>A DXIL PS's non-system inputs sit in the rows the stage feeding it (GS, DS or VS) writes them in. A pipeline table
+    /// can list pairs that don't (RE Village: 18 VS+PS pairs, PS VEL0 in row 0, VS in row 5 or 8, E_INVALIDARG on AMD; 0 of
+    /// 14,389 game-created DXIL pairs of five games differ). An input no output names is <see cref="Links"/>' to judge. No PS,
+    /// a DXBC one, or a mesh shader feeding it: true.</summary>
+    internal static bool PsRowsLink(IReadOnlyDictionary<Stage, ShaderInfo> st)
+    {
+        if (!st.TryGetValue(Stage.Pixel, out var ps) || st.ContainsKey(Stage.Mesh) || ps.ShaderModel.Split('_') is [_, "4" or "5", ..]) return true;
+        if (new[] { Stage.Geometry, Stage.Domain, Stage.Vertex }.Where(st.ContainsKey).Select(x => st[x]).FirstOrDefault() is not { } src) return true;
+        var rows = src.Outputs.ToLookup(o => (o.Semantic.ToUpperInvariant(), o.Index), o => o.Register);   // a GS's streams may each have one
+        return ps.Inputs.All(i => i.SysValue != 0 || rows[(i.Semantic.ToUpperInvariant(), i.Index)] is var r && (!r.Any() || r.Contains(i.Register)));
     }
 
     internal static bool PerPrimitive(SigElement e) => e.Register >= Unreal.ShaderContainer.PrimitiveRow; // not -1 (SV_Depth: no register)

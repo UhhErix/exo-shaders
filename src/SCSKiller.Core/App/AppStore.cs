@@ -26,6 +26,7 @@ public sealed class GameRecord
     public string? IdleHeldBack { get; set; }                // DriverId|RulesFile.Hash a "when idle" warm was held back for (ScsKiller.RulesGrew); null = none
     public string? PlanItems { get; set; }                   // ScsKiller.PlanFingerprint of plan.bin's records (null: not taken, or not readable)
     public string? WarmedPlanItems { get; set; }             // PlanItems of the plan the last complete warm replayed
+    public long? WarmedPlanCount { get; set; }               // ...and its pipelines (ScsKiller.PlanItems); null = not recorded
     public string? PlanKeysFile { get; set; }                // the plan's planner-made pipelines (KeyFiles), in the game's folder; null = not kept
     public string? WarmKeysFile { get; set; }                // what the last complete warm replayed (KeyFiles); null = a warm from before they were kept
     public PendingCount? Pending { get; set; }               // the last count of pipelines new since the warm (ScsKiller.PendingOf)
@@ -46,7 +47,9 @@ public sealed class GameRecord
     public string? D3DSCacheMade { get; set; }              // the D3DSCache folder SCSKiller made before the game's first run
     public DateTimeOffset? D3DSCacheEmptiedAt { get; set; } // that folder was found emptied after the warm (ScsKiller.D3DSCacheGone): compile again
     public DateTime? D3DSCacheSince { get; set; }           // staged warms' runtime cache folders made since then aren't folded yet
+    public bool D3DSCacheStrandChecked { get; set; }        // AdoptStranded looked once for a 1.3.1 warm's unfolded staged folders
     public bool D3DSCacheDamaged { get; set; }              // a staged db failed SQLite's check at the fold: compile again
+    public Dictionary<string, string>? D3DSCacheChecked { get; set; }   // the game's D3DSCache dbs by path as the last fold checked or wrote them (D3DSCache.CheckStamp)
     public IdentityStamp? D3DSCacheStamp { get; set; }      // the identity the last fold that put dbs in stamped, and why (outcome reports)
     public DateTimeOffset? D3DSCacheStampAt { get; set; }   // ...when
     public string? D3DSCacheStampFolder { get; set; }       // ...in which D3DSCache folder (a made one before the game named it)
@@ -70,6 +73,8 @@ public sealed class GameRecord
     public string? ResumeAgs { get; set; }                   // ...registering this AGS app name ("" = none; another name's cache lacks them); null = an earlier build's
     public bool ResumeAftermath { get; set; }                // ...starting NVIDIA Aftermath as the game does (its shader debug info is another key)
     public bool ResumeLeftOut { get; set; }                  // ...leaving out what earlier warms compiled (CompiledItems): its item numbers count in that set
+    public long ResumeSkipEnd { get; set; }                  // where the window the last give-up skipped ends (ScsKiller.GiveUpSkip)...
+    public long ResumeSkipWidth { get; set; }                // ...and its items
     public string? WarmedDriverVersion { get; set; }         // shown; earlier builds also compared it
     public string? WarmedDriverId { get; set; }              // what staleness compares (ScsKiller.DriverId); null = an earlier build's warm
     public DateTimeOffset? WarmedAt { get; set; }
@@ -124,11 +129,13 @@ public sealed class GameRecord
     public HashSet<string> RecorderOrphans { get; set; } = [];   // ...left unused there: the mod's uninstall deleted the proxy in its place (ScsKiller.Orphaned)
     public bool RecorderRollback { get; set; }               // a failed install couldn't take the proxy out: the next reconcile does
     public bool RecorderClaimed { get; set; }                // taken over from another copy: its recorder is replaced by this build's, even a newer build's
+    public string? RecorderFailure { get; set; }             // the last install or update's failure as the game page shows it (ScsKiller.InstallFailed); null = none
     public bool OfflineRecord { get; set; }                  // opt-in: offline sessions without EasyAntiCheat may be started (Games.OfflineEac)
     public OfflineSession? OfflineSession { get; set; }      // one was started and its folder isn't back to how it was yet
     public bool KeysPending { get; set; }                    // the keys file wasn't rewritten while the game ran: the next refresh or reconcile does
     public HashSet<string> CacheKeys { get; set; } = [];     // driver-cache application keys seen open by this game's warms or the game (IAppCache)
     public HashSet<string> GameKeys { get; set; } = [];      // ...of them, the ones the game's own process held open
+    public string? HeldKeys { get; set; }                    // AMD: the D3D12 ones its process held at the last sighting that held any, comma-separated (a string: arrays merge as sets); null = none seen since this was kept
     public HashSet<string>? WarmedKeys { get; set; }         // ...the ones the last complete warm held open; null = not recorded
     public HashSet<string>? WarmedFiles { get; set; }        // names of those keys' cache files after that warm (AMD: D3D12 ones); null = not recorded
     public Dictionary<string, long>? WarmedFileBytes { get; set; }   // ...and the length of each then; null = not recorded
@@ -162,6 +169,8 @@ public sealed class GameRecord
     public bool WarmedCareful { get; set; }                 // the last complete warm was careful
     public LaunchCheck? FirstLaunch { get; set; }           // the game's first launch after the last complete warm (AMD, NVIDIA); null = not yet
     public DateTimeOffset? UnreachedWarm { get; set; }      // NVIDIA: the WarmedAt of a warm that launch showed the game's lookups miss (ScsKiller.IsUnreached)
+    public DateTimeOffset? UnreachedRecheckedAt { get; set; }   // the start of the last later launch judged against that verdict; null = none since
+    public DateTimeOffset? UnreachedLifted { get; set; }    // the UnreachedWarm whose verdict a later launch lifted: it used the compile
     public DateTimeOffset? CacheClearedAt { get; set; }     // the app last deleted the game's driver cache: launches before it left none of their compiles there
     public PlayWindow? LastPlay { get; set; }               // the last run of the game the app watched from start to exit
     public PipelineCacheUse? LastPlayCache { get; set; }    // ...and how D3D12 says the cache served its pipelines (Exo Shaders); null = not measured
@@ -214,7 +223,9 @@ public sealed record PlayWindow(DateTimeOffset From, DateTimeOffset To);
 
 /// <summary>A launch's driver creates from the recorder's csv (<see cref="SessionLog"/>): cache hits and compiles, started at
 /// <paramref name="At"/>.</summary>
-public sealed record LaunchCheck(DateTimeOffset At, long Hits, long Compiles)
+/// <param name="Warmed">NVIDIA: the warm's own pipelines the launch created (ScsKiller.WarmedCreates' Seen); null = not judged</param>
+/// <param name="WarmedCold">...and of them, the ones created cold (at least ScsKiller.UnreachedMedianMs)</param>
+public sealed record LaunchCheck(DateTimeOffset At, long Hits, long Compiles, long? Warmed = null, long? WarmedCold = null)
 {
     public double Compiled => Hits + Compiles > 0 ? (double)Compiles / (Hits + Compiles) : 0;
 }

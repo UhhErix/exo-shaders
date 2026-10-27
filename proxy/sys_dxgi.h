@@ -4,13 +4,15 @@
 #include <windows.h>
 #include <string>
 
-// null when the loader hands back another file for the full path (DLL redirection: a .local folder beside the exe)
+// null when the loader hands back another file for the full path (DLL redirection: a .local folder beside the exe).
+// The loaded one by full path first: OptiScaler as dxgi.dll makes LoadLibraryW return itself for any name ending in dxgi.dll.
 inline HMODULE system_dxgi() {
     wchar_t p[MAX_PATH], got[MAX_PATH];
     UINT n = GetSystemDirectoryW(p, MAX_PATH);
     if (!n || n >= MAX_PATH) return nullptr;
     const std::wstring path = std::wstring(p, n) + L"\\dxgi.dll";
-    HMODULE m = LoadLibraryW(path.c_str());
+    HMODULE m = nullptr;
+    if (!GetModuleHandleExW(0, path.c_str(), &m)) m = LoadLibraryW(path.c_str());
     return m && GetModuleFileNameW(m, got, MAX_PATH) && !_wcsicmp(got, path.c_str()) ? m : nullptr;
 }
 

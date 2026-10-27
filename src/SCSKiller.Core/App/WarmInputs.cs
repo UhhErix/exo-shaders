@@ -46,13 +46,15 @@ public static class WarmInputs
         {
             var blobs = new HashSet<string>();
             // NVIDIA keys on the NVAPI state a record is created with (selftest nvext). The replay's: the last 'N' per record
-            // in the recordings' union, which drops an 'N' an earlier recording has (Community.Union, proxy.cpp g_nvext), then
-            // the union's option fixes, as Planner.Materialize writes them
+            // in the recordings' union, which drops an 'N' an earlier recording has and one about a PSO the first has an 'N' for
+            // (Community.Union, proxy.cpp g_nvext), then the union's option fixes, as Planner.Materialize writes them
             var nv = new Dictionary<string, NvState>();
             var union = new HashSet<string>();
             if (nvidia)
             {
-                var recs = recordings.Where(File.Exists).SelectMany(PsoDb.Read).Where(r => r.Tag != 'B' && (r.Tag != 'N' || union.Add(r.Key))).ToList();
+                var own = recordings.Count > 0 && File.Exists(recordings[0]) ? Community.OwnNv(PsoDb.Read(recordings[0])) : [];
+                var recs = recordings.Where(File.Exists).SelectMany((f, i) => PsoDb.Read(f).Where(r => i == 0 || !(Community.NvTarget(r) is { } t && own.Contains(t))))
+                    .Where(r => r.Tag != 'B' && (r.Tag != 'N' || union.Add(r.Key))).ToList();
                 foreach (var r in recs.Concat(RtCollections.OptionFixes(recs)))
                     if (r.Tag == 'N' && r.Payload.Length == NvState.Size) { var n = NvState.Parse(r); nv[n.Target] = n; }
             }

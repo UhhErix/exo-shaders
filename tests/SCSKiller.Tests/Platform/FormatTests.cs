@@ -75,7 +75,8 @@ public class FormatTests
     [Fact]
     public void An_item_runs_from_indexing_until_it_finishes_paused_included()
     {
-        QueueStage[] running = [QueueStage.Indexing, QueueStage.Planning, QueueStage.Materializing, QueueStage.Warming, QueueStage.Paused];
+        QueueStage[] running = [QueueStage.Indexing, QueueStage.Planning, QueueStage.Materializing, QueueStage.Warming, QueueStage.Merging, QueueStage.Saving,
+            QueueStage.Finishing, QueueStage.Paused];
         Assert.All(Enum.GetValues<QueueStage>(), s => Assert.Equal(running.Contains(s), Format.Running(new QueueItem("g", s, null, null))));
     }
 
@@ -199,7 +200,9 @@ public class FormatTests
         Assert.False(ScsKiller.IsPartlyCompiled(Tekken(GameStatus.Warmed) with { CompileUnreached = true }));
         Assert.False(ScsKiller.IsPartlyCompiled(Tekken(GameStatus.Warmed) with { LastWarmFailed = 0, LastWarmCrashed = 0, LastWarmSkipped = 200_000 }));   // not in the install: the game never creates them
         Assert.Equal($"the driver skipped {180_000:N0} of {258_210:N0} pipelines", ScsKiller.PartlyCompiledNote(Tekken(GameStatus.Warmed)));
-        Assert.Equal($"the driver refused {180_000:N0} of {258_210:N0} pipelines, so those can still stutter the first time", ScsKiller.RefusedNote(Tekken(GameStatus.Warmed)));
+        // the ones it crashed on apart (SCSKiller 1.3.3)
+        Assert.Equal($"the driver refused {179_990:N0} of {258_210:N0} pipelines and crashed on 10, so those can still stutter the first time", ScsKiller.RefusedNote(Tekken(GameStatus.Warmed)));
+        Assert.Equal($"the GPU driver crashed on 10 of {258_210:N0} pipelines, so those can still stutter the first time", ScsKiller.RefusedNote(Tekken(GameStatus.Warmed) with { LastWarmFailed = 0 }));
         Assert.Equal(30, ScsKiller.ShownPercent(Tekken(GameStatus.Warmed)));   // 78,210 of 258,210 compiled, floored
         Assert.Equal(99, ScsKiller.ShownPercent(Tekken(GameStatus.Warmed) with { LastWarmFailed = 92 }));
     }

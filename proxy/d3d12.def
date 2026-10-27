@@ -84,3 +84,7 @@ EXPORTS
     SCSKiller_Workers                                @211
     SCSKiller_Skipped                                @212
     SCSKiller_Hung                                   @213
+    SCSKiller_WarmLoad                               @214
+    SCSKiller_D3D12Items                             @215
+    SCSKiller_StartWarm11                            @216
+    SCSKiller_Work                                   @217

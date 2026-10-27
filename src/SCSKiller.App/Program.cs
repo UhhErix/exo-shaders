@@ -27,7 +27,7 @@ public static class Program
         try
         {
             WinRT.ComWrappersSupport.InitializeComWrappers();
-            if (!IsDesignRun(args) && RedirectedToRunning()) return 0;
+            if (!IsDesignRun(args) && RedirectedToRunning(args)) return 0;
             Microsoft.UI.Xaml.Application.Start(p =>
             {
                 SynchronizationContext.SetSynchronizationContext(new DispatcherQueueSynchronizationContext(DispatcherQueue.GetForCurrentThread()));
@@ -53,10 +53,12 @@ public static class Program
 
     public static bool IsDesignRun(string[] args) => args.Any(a => a is "--fake" or "--screenshots");
 
-    static bool RedirectedToRunning()
+    static bool RedirectedToRunning(string[] args)
     {
         var key = AppInstance.FindOrRegisterForKey(InstanceKey);
         if (key.IsCurrent) return false;
+        // a toast click's COM relaunch exits and the click is lost: the running instance crashes reading a redirected toast's args
+        if (args.Any(a => a.StartsWith("----AppNotificationActivated:", StringComparison.Ordinal))) return true;
         AllowSetForegroundWindow(key.ProcessId);   // its window may come to the front: this launch has the user's click
         var activation = AppInstance.GetCurrent().GetActivatedEventArgs();
         using var done = new ManualResetEvent(false);

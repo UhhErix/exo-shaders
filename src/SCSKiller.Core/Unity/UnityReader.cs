@@ -47,6 +47,8 @@ public sealed class UnityReader : IEngineReader
         return null;
     }
 
+    public int ReaderVersion(EngineInfo engine) => 2;
+
     public EngineInfo? Detect(Game game)
     {
         if (Find(game) is not var (player, data)) return null;
@@ -183,7 +185,7 @@ public sealed class UnityReader : IEngineReader
         foreach (var path in locs.Values.Select(l => l.Path).Distinct().Order(GameFiles.PathOrder))
         {
             var f = new FileInfo(path);
-            content.AppendData(Encoding.UTF8.GetBytes($"{GameFiles.Rel(data, path)}|{f.Length}|{f.LastWriteTimeUtc.Ticks}\n"));
+            content.AppendData(Encoding.UTF8.GetBytes(ContentStamps.Of(GameFiles.Rel(data, path), f.FullName)));
         }
         log?.Report($"{files} serialized files ({bundles.Count} bundles, {bundles.Sum(b => b.BlocksDecompressed)} blocks decompressed): {shaderObjs} Shader objects"
             + $"{(noBlob > 0 ? $" ({noBlob} without d3d11 code)" : "")}{(unreadable > 0 ? $" ({unreadable} unreadable)" : "")}, {computeObjs} ComputeShaders -> {shaders.Count} shaders ("

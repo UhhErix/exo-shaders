@@ -220,6 +220,12 @@ public sealed record Recording(string DbPath)
     public string? VulkanDevice { get; init; }
     /// <summary>The game's last launch ran with its Vulkan cache in Steam's folder for this vendor (<see cref="Vulkan.VulkanPlan.SteamCache"/>).</summary>
     public bool VulkanSteamCache { get; init; }
+    /// <summary>The ray tracing state objects only the community recording has (<see cref="Planning.Planner.CommunityLeftOut"/>);
+    /// null: none, or a GPU whose driver caches whole state objects only.</summary>
+    public IReadOnlySet<string>? CommunityStateObjects { get; init; }
+    /// <summary>This PC's recorded texture filtering settings (sampler sets, hex), last recorded first
+    /// (<see cref="Planning.SamplerVariants.Ordered"/>), and how many of them a plan compiles; null: every one the recording has.</summary>
+    public (IReadOnlyList<string> Sets, int Keep)? Filtering { get; init; }
 }
 
 public enum Readiness { Ready, NeedsRecording, Unsupported }
@@ -323,6 +329,8 @@ public interface IWarmRun
     /// <summary>Graceful: in-flight compiles finish and the process exits normally so the driver writes its cache.
     /// Resume later with <see cref="WarmOptions.StartAt"/> = the stopped run's Done.</summary>
     void Stop();
+    /// <summary>The last process's done event: it now exits while the driver writes its cache. Null: not known for this run.</summary>
+    Task? LastDone => null;
 }
 
 public interface IWarmer
@@ -359,6 +367,7 @@ public sealed record GameState(
     bool RecorderForeign = false,     // another SCSKiller copy placed the recorder in its folder: off here until the user turns it on
     string? RecorderSkip = null,      // ScsKiller.Skip*; null = compatible
     string? RecorderNote = null,      // the last reconcile's pending or failed change; null = none
+    string? RecorderFailure = null,   // the last install or update's failure while the recorder is wanted (GameRecord.RecorderFailure); null = none
     string? RecorderRefused = null,   // why the game's last launch wasn't recorded (ScsKiller.Refused, ScsKiller.NeverSaw); null = it recorded, or no launch since
     string? RecorderMod = null,       // what a foreign d3d12.dll in the game folder (or the one chained to it) calls itself; null = none
     bool RecordAlongsideMod = false,  // the user chose to record alongside it (IScsKiller.SetRecordAlongsideMod)
@@ -593,7 +602,8 @@ public sealed record Settings(int Threads, WarmPriority Priority, DriverUpdateMo
     IReadOnlyList<string>? LeftOutFolders = null,   // a store's game installed in one of these folders or under it is never listed or read (ScsKiller.LeftOut)
     IReadOnlyList<string>? HddDrives = null);   // HddMode for the games on these drives only (GameFiles.DriveOf); HddMode on = every drive
 
-public enum QueueStage { Waiting, Indexing, Planning, Materializing, Warming, Paused, Done, Failed, Stopped }
+/// <summary>Merging: a finished warm's dbs go into the game's D3DSCache folder (NVIDIA from 621), its progress in the bytes its checks and inserts read.</summary>
+public enum QueueStage { Waiting, Indexing, Planning, Materializing, Warming, Merging, Paused, Done, Failed, Stopped, Saving, Finishing }
 public sealed record QueueItem(string GameId, QueueStage Stage, WarmProgress? Progress, string? Error,
     string? Note = null,   // why it waits or is paused ("paused while <game> is running"); Done/Stopped: ScsKiller.WarmCounts (failed, skipped)
     bool PlanCheck = false);   // a background plan rebuild the app queued itself (ScsKiller.CheckPlans), not a compile: lists leave it out

@@ -47,7 +47,7 @@
                         </StackPanel>
                     </Button>
                     <Button Content="{x:Bind Vm.PauseText, Mode=OneWay}" Click="OnPause" Visibility="{x:Bind Vm.HasCurrent, Mode=OneWay}" />
-                    <Button Content="Stop" Click="OnStop" Visibility="{x:Bind Vm.HasCurrent, Mode=OneWay}"
+                    <Button Content="Stop" Click="OnStop" Visibility="{x:Bind Vm.CanStop, Mode=OneWay}"
                             ToolTipService.ToolTip="Finishes the compiles in flight, then stops. Add the game again to continue where it stopped." />
                 </StackPanel>
             </Grid>

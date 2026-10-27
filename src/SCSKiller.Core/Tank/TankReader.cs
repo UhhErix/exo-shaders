@@ -4,6 +4,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using SCSKiller.Core.Games;
 using SCSKiller.Core.Carved;
 using SCSKiller.Core.Unreal;
 
@@ -34,6 +35,8 @@ public sealed class TankReader(string? documents = null) : IEngineReader
     /// <summary>Where each shader's blob is, per game id, from the last Index. In memory only, like the carver's;
     /// ReadShaders re-indexes when it runs without an Index in the same process.</summary>
     readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, Loc>> located = new();
+
+    public int ReaderVersion(EngineInfo engine) => 2;
 
     public EngineInfo? Detect(Game game)
     {
@@ -105,11 +108,11 @@ public sealed class TankReader(string? documents = null) : IEngineReader
         return new ShaderIndex(ContentHash(game, files), [Platform], new Dictionary<string, ShaderInfo>(shaders), maps);
     }
 
-    /// <summary>The build's identity (build config) and its data files' names, sizes and write times.</summary>
+    /// <summary>The build's identity (build config) and its data files' <see cref="ContentStamps"/>.</summary>
     static string ContentHash(Game game, IEnumerable<FileInfo> files)
     {
         var sb = new StringBuilder(StaticContainer.BuildConfigText(game.InstallDir));
-        foreach (var f in files) sb.Append($"\n{f.Name}|{f.Length}|{f.LastWriteTimeUtc.Ticks}");
+        foreach (var f in files) sb.Append('\n').Append(ContentStamps.Of(f.Name, f.FullName));
         return CarvedReader.Sha1Hex(sb.ToString());
     }
 

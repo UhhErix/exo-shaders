@@ -33,7 +33,7 @@ public sealed class DagorReader : IEngineReader
     // dxil::StoredShaderType; dxil::Shader up to its bytecode offset and size
     const int SingleShader = 0, CombinedVertexShader = 1, ShaderSize = DagorRootSig.HeaderSize + 8;
 
-    public int ReaderVersion(EngineInfo engine) => 3;
+    public int ReaderVersion(EngineInfo engine) => 4;
 
     public EngineInfo? Detect(Game game)
     {
@@ -117,7 +117,7 @@ public sealed class DagorReader : IEngineReader
         {
             var rel = GameFiles.Rel(game.InstallDir, path, path, $@"{DumpDir}\{name}");
             var file = new FileInfo(path);
-            stamp.Append($"{rel}|{file.Length}|{file.LastWriteTimeUtc.Ticks}\n");
+            stamp.Append(ContentStamps.Of(rel, file.FullName));
             var body = Body(Read(path));
             if (!dx12)
             {
@@ -138,7 +138,7 @@ public sealed class DagorReader : IEngineReader
                 if (nullRead) return nullPs;
                 nullRead = true;
                 if (NullPixelShader(game, ct) is not (FileInfo f, byte[] c)) return null;
-                stamp.Append($"{GameFiles.Rel(game.InstallDir, f.FullName)}|{f.Length}|{f.LastWriteTimeUtc.Ticks}\n");
+                stamp.Append(ContentStamps.Of(GameFiles.Rel(game.InstallDir, f.FullName), f.FullName));
                 return nullPs = Add(c, null);
             }
             var byEntry = Entries(body, ct).Select(e =>

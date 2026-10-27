@@ -102,7 +102,7 @@ public sealed class ReEngineReader(string dataDir, Func<string, string?>? downlo
     public static string? Fork(Game game) =>
         string.Concat(Path.GetFileNameWithoutExtension(game.ExePath).Where(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-').Take(64)) is { Length: > 0 } f ? f : null;
 
-    public int ReaderVersion(EngineInfo engine) => 3;
+    public int ReaderVersion(EngineInfo engine) => 4;
 
     public EngineInfo? Detect(Game game)
     {
@@ -215,7 +215,7 @@ public sealed class ReEngineReader(string dataDir, Func<string, string?>? downlo
         foreach (var p in paks.All)
         {
             var fi = new FileInfo(p.Path);
-            content.AppendData(Encoding.UTF8.GetBytes($"{GameFiles.Rel(dir, p.Path, dlc, Dlc)}|{fi.Length}|{fi.LastWriteTimeUtc.Ticks}\n"));
+            content.AppendData(Encoding.UTF8.GetBytes(ContentStamps.Of(GameFiles.Rel(dir, p.Path, dlc, Dlc), fi.FullName)));
         }
         log?.Report($"{paks.All.Count} packages, {final.Count} files (probed in {probed:F1}s{(encrypted > 0 ? $", {encrypted} resource-encrypted skipped" : "")}): "
             + $"{files.Count} shader files{(unreadable > 0 ? $" ({unreadable} unreadable)" : "")}, {bytes / 1e9:F2} GB decompressed, {containers} containers -> {shaders.Count} shaders ("
@@ -256,7 +256,8 @@ public sealed class ReEngineReader(string dataDir, Func<string, string?>? downlo
     }
 
     /// <summary>A listed entry the runtime creates as a pipeline: one shader per stage, each stage feeding the next
-    /// (<see cref="Planning.Planner.Links"/>, with each attribute's component type; DXBC in the same registers) and an
+    /// (<see cref="Planning.Planner.Links"/>, with each attribute's component type; DXBC in the same registers, a DXIL PS's
+    /// inputs in the rows the stage feeding it writes them in: <see cref="Planning.Planner.PsRowsLink"/>) and an
     /// amplification shader sending the payload its mesh shader takes. PRAGMATA's tables also list entries that aren't
     /// (E_INVALIDARG on creation): a VS writing only SV_Position with a PS reading attributes, its 128-byte AS with mesh
     /// shaders that take none. A mesh shader feeds its PS by semantic and component type alone: the PS packs per-primitive
@@ -274,7 +275,7 @@ public sealed class ReEngineReader(string dataDir, Func<string, string?>? downlo
             if (prev != null && (!Planning.Planner.Links(prev, s) || !Written(prev, s, s.ShaderModel.Split('_') is [_, "4" or "5", ..]))) return false;
             prev = s;
         }
-        return true;
+        return Planning.Planner.PsRowsLink(by);
 
         // each attribute the stage reads is written before it with its component type, and for DXBC (which links by
         // register) where it reads it

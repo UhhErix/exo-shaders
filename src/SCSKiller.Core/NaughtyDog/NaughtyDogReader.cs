@@ -46,7 +46,7 @@ public sealed class NaughtyDogReader : IEngineReader
     /// carver's; ReadShaders re-indexes when it runs without an Index in the same process.</summary>
     readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, Loc>> located = new();
 
-    public int ReaderVersion(EngineInfo engine) => 2;
+    public int ReaderVersion(EngineInfo engine) => 3;
 
     public EngineInfo? Detect(Game game)
     {
@@ -87,7 +87,7 @@ public sealed class NaughtyDogReader : IEngineReader
             using var a = Psarc.Open(f.FullName);
             if (a == null) continue;
             if (a.Oodle) App.Codecs.Load(zlib: false);   // a missing codec fails the index, not each entry
-            content.AppendData(Encoding.UTF8.GetBytes($"{rel}|{f.Length}|{f.LastWriteTimeUtc.Ticks}\n"));
+            content.AppendData(Encoding.UTF8.GetBytes(ContentStamps.Of(rel, f.FullName)));
             for (var i = 1; i < a.Count; i++)
             {
                 if (!Scanned(f.Name, a.Names[i])) continue;

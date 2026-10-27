@@ -9,6 +9,7 @@ Builds dist\SCSKiller\ and dist\SCSKiller.zip:
                            + scskiller_ags.dll (the same recorder as an AMD AGS wrapper, installed as a game's amd_ags_x64.dll)
                            + amd_ags_x64.dll (AMD AGS, downloaded by the proxy's CMake configure)
                            + segheap\scskiller_warm.exe (the same on the segment heap: NVIDIA's warm)
+                           + preload\winmm.dll, version.dll, dinput8.dll (the recorder's preloader in Streamline games)
   THIRD-PARTY-NOTICES.md   every third-party component and its licence; notices\ holds the Microsoft packages' own notices
 
 The CLI can't sit next to the app: scskiller.exe and SCSKiller.exe are the same file name on NTFS.
@@ -60,7 +61,8 @@ Run cmake @("-S", (Join-Path $repo "proxy"), "-B", $build, "-A", "x64", "-DSCSK_
 Run cmake @("--build", $build, "--config", "Release")
 New-Item -ItemType Directory -Force $native | Out-Null
 Copy-Item (Join-Path $build "Release\scskiller_warm.exe"), (Join-Path $build "Release\d3d12.dll"), (Join-Path $build "Release\amd_ags_x64.dll"), (Join-Path $build "Release\scskiller_ags.dll") $native
-New-Item -ItemType Directory -Force (Join-Path $native "segheap") | Out-Null
+New-Item -ItemType Directory -Force (Join-Path $native "segheap"), (Join-Path $native "preload") | Out-Null
+Copy-Item (Join-Path $build "Release\preload\*.dll") (Join-Path $native "preload")
 Copy-Item (Join-Path $build "Release\segheap\scskiller_warm.exe") (Join-Path $native "segheap")
 
 # 2. app + CLI
@@ -137,6 +139,7 @@ foreach ($n in @(
 #    runtimeconfig.json listing includedFrameworks rather than a shared framework
 $expected = "SCSKiller.exe", "oodle-data-shared.dll", "zlib-ng2.dll", "cli\scskiller.exe", "cli\scskillerw.exe",
     "cli\oodle-data-shared.dll", "cli\zlib-ng2.dll", "native\scskiller_warm.exe", "native\segheap\scskiller_warm.exe", "native\d3d12.dll", "native\amd_ags_x64.dll", "native\scskiller_ags.dll",
+    "native\preload\winmm.dll", "native\preload\version.dll", "native\preload\dinput8.dll",
     "hostfxr.dll", "coreclr.dll", "cli\hostfxr.dll", "cli\coreclr.dll", "Microsoft.WindowsAppRuntime.dll", "SCSKiller.pri",
     "THIRD-PARTY-NOTICES.md", "LICENSE", "LICENSE-EXCEPTION.txt", "notices\dotnet-THIRD-PARTY-NOTICES.txt"
 if ($NoOodle) { $expected = $expected | Where-Object { $_ -notlike "*oodle-data-shared.dll" } }

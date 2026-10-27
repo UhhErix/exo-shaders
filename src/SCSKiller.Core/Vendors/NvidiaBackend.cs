@@ -72,7 +72,11 @@ public sealed unsafe class NvidiaBackend : IGpuVendorBackend, IRefreshableGpu
         && $"{hi}{lo:0000}" is { Length: >= 5 } d ? $"{d[^5..^2]}.{d[^2..]}" : null;
 
     public GpuVendor Vendor => GpuVendor.Nvidia;
-    public GpuInfo Gpu { get; private set; }
+    public GpuInfo Gpu { get => TestDriver is { } d ? _gpu with { DriverVersion = d } : _gpu; private set => _gpu = value; }
+    GpuInfo _gpu;
+
+    /// <summary>SCSKILLER_TEST_DRIVER: a test run's stand-in driver version.</summary>
+    static readonly string? TestDriver = Environment.GetEnvironmentVariable("SCSKILLER_TEST_DRIVER") is { Length: > 0 } v ? v : null;
     public VendorCaps Caps { get; } = new("nvidia-1", CacheKeyedByExeName: true, StateIndependentCache: true, CacheSizeConfigurable: true,
         PerStageCache: true,    // measured: a pipeline of stages cached in other pairings costs 0.40 ms, as an exact hit
         RtCacheGranularity: RtCacheGranularity.Collection,   // selftest dxr: collections cached on their own; Jedi's recorded ones 42.7 -> 3.35 ms after synthesized ones
@@ -302,14 +306,17 @@ public sealed unsafe class NvidiaBackend : IGpuVendorBackend, IRefreshableGpu
     public static DateTime? InstalledAt() => DriverFolders().Select(Directory.GetCreationTimeUtc).Cast<DateTime?>().FirstOrDefault();
 
     /// <summary>The active NVIDIA driver's folders: the display class key's UserModeDriverName folder (the DriverStore holds
-    /// a folder per driver ever installed, so never search it). Only inside the DriverStore.</summary>
+    /// a folder per driver ever installed, so never search it). Only inside the DriverStore.
+    /// SCSKILLER_TEST_DISPLAY_CLASS: a test run's stand-in for the display class key, an HKCU subkey.</summary>
     static List<string> DriverFolders()
     {
         var store = Path.Combine(Environment.SystemDirectory, "DriverStore", "FileRepository") + Path.DirectorySeparatorChar;
         var found = new List<string>();
         try
         {
-            using var cls = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}");
+            using var cls = Environment.GetEnvironmentVariable("SCSKILLER_TEST_DISPLAY_CLASS") is { Length: > 0 } test
+                ? Registry.CurrentUser.OpenSubKey(test)
+                : Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}");
             foreach (var name in cls?.GetSubKeyNames() ?? [])
             {
                 if (name.Length != 4 || !name.All(char.IsAsciiDigit)) continue;   // 0000, 0001, ... ("Properties" is locked)

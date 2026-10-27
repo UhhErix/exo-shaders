@@ -111,6 +111,46 @@ repository's root `CHANGELOG.md`.
 - Unreal games whose store starts another exe beside the Shipping exe (STAR WARS Jedi: Fallen Order) compile for that
   exe after its next launch.
 
+**SCSKiller 1.3.3's fixes**
+
+- The engine (1.4.0-alpha.5) now carries SCSKiller 1.3.3 on top of 1.4.0-alpha.3's source, as it did 1.3.1 and 1.3.2.
+  The service's protocol is unchanged: a compile's new steps keep the stage `warming` and name themselves in `stageText`.
+- After a compile, copying it into the game's Windows shader cache, the driver saving its cache and the bookkeeping after
+  it show as their own steps, with their progress or time, instead of sitting at 100%. The copy takes seconds when the
+  game's cache already holds it, and a big cache isn't checked whole again while the game hasn't changed it (about an
+  hour for 100 GB).
+- A compile no longer shows Compiling forever: it ends about 30 seconds after its process exits when a leftover process
+  holds its output, and a DirectX compile that makes no progress for 10 minutes ends with an error.
+- A compile stopped by the game starting or by GPU driver crashes and hangs keeps its progress, and compiling again goes
+  on past the spot where the driver kept failing. A compile no longer stops after a few hundred pipelines that crash the
+  driver. After a compile that was stopped and continued, the next one on the same driver leaves out what it compiled.
+- On NVIDIA, a rebuild after a launch that still compiled a few new pipelines compiles only those, and "the compile
+  didn't help" clears once a later launch shows the compile in use.
+- 32-bit games say they aren't supported yet. A game whose files hold no shaders Exo Shaders can compile says so after its
+  first compile. A partly compiled game counts the pipelines the driver crashed on apart from the ones it refused. When
+  the recorder can't go into a game, for example because an antivirus removed its file, the game page says why.
+- Call of Duty HQ and Warzone count as anti-cheat games, also when added by hand. Anti-cheat games compile through their
+  ReShade and RenoDX too, and reinstalling the same ReShade or RenoDX files no longer asks for a new compile.
+- A game recorded at several texture filtering settings compiles the one it uses and the last other one, not each. On
+  NVIDIA part of Gears of War: E-Day's pipelines now match the game's; on AMD God of War Ragnarök compiles into its own
+  driver cache; Resident Evil Village leaves out the 18 pipelines whose shaders don't fit together. On NVIDIA from 621, a
+  game moved to another folder or drive keeps its compiled shaders. Clear cache deletes the game's Windows shader cache
+  on every driver, an anti-cheat game's too.
+- A game's file stamps no longer include write times, so the same build reads the same after a reinstall. Each game's
+  files are read once more and its plan is rebuilt; a compile is asked for only where the new plan adds pipelines.
+- Already in Exo Shaders before: the start on drivers that list their files without a folder (SCSKiller #229), older
+  Unreal Engine 4 games' memory limit, DLSS games recorded through the preloader, Ubisoft Connect games with the recorder.
+  The community database's fixes come with the code but do nothing here: Exo Shaders never uses it.
+- Waiting for newer native files: these fixes are in the recorder and compile programs, and Exo Shaders still ships
+  SCSKiller 1.4.0-alpha.3's (`engine/prebuilt/SOURCE.md`). Until those are updated: frame times stay off with OptiScaler
+  or another mod as dxgi.dll, with FSR mods that rename the game's FSR file (HelixSR), with DLSS and OptiScaler frame
+  generation, and after a swap chain is re-created; the recorder doesn't step aside from frame generation's swap chain,
+  and parts of it stay active where it doesn't run; Dragon's Dogma 2's Character Creator isn't recorded; on AMD the
+  recorder can't go into Cyberpunk 2077 2.5, which ships a file under the name alpha.3's AGS wrapper uses (the install
+  stops and leaves the game as it was); a very big plan such as Marvel Rivals with all its combinations can still fail
+  after about 3 minutes while it loads; on AMD a DirectX 11 compile still leaves an unused DirectX 12 cache file; and the
+  10-minute progress check sees whole pipelines only.
+
 **New engine: Glacier 2**
 
 - 007 First Light compiles without a recording: Exo Shaders reads IO Interactive's Glacier 2 archives (RPKG) and the

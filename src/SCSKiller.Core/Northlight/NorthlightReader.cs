@@ -39,7 +39,7 @@ public sealed class NorthlightReader : IEngineReader
     /// carver's; ReadShaders re-indexes when it runs without an Index in the same process.</summary>
     readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, Loc>> located = new();
 
-    public int ReaderVersion(EngineInfo engine) => 2;
+    public int ReaderVersion(EngineInfo engine) => 3;
 
     public EngineInfo? Detect(Game game)
     {
@@ -69,7 +69,7 @@ public sealed class NorthlightReader : IEngineReader
             var rel = GameFiles.Rel(game.InstallDir, f.FullName, f.DirectoryName!, dir);
             var b = Read(f.FullName);
             if (Records(b, ct) is not { } recs) continue;
-            content.AppendData(Encoding.UTF8.GetBytes($"{rel}|{f.Length}|{f.LastWriteTimeUtc.Ticks}\n"));
+            content.AppendData(Encoding.UTF8.GetBytes(ContentStamps.Of(rel, f.FullName)));
             var pool = new List<string>();
             foreach (var r in recs)
             {

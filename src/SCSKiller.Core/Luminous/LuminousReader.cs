@@ -34,6 +34,8 @@ public sealed class LuminousReader : IEngineReader
     /// carver's; ReadShaders re-indexes when it runs without an Index in the same process.</summary>
     readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, Loc>> located = new();
 
+    public int ReaderVersion(EngineInfo engine) => 2;
+
     public EngineInfo? Detect(Game game)
     {
         var shadergen = GameFiles.Find(game.InstallDir, Shadergen);
@@ -65,7 +67,7 @@ public sealed class LuminousReader : IEngineReader
         {
             if (map.Count > 0) maps.Add(new ShaderMap(CarvedReader.Sha1Hex(rel), rel, Platform, map.Distinct().ToList()));
         }
-        void Stamp(FileInfo f, string rel) => stamp.Append($"{rel}|{f.Length}|{f.LastWriteTimeUtc.Ticks}\n");
+        void Stamp(FileInfo f, string rel) => stamp.Append(ContentStamps.Of(rel, f.FullName));
         void Unreadable(string what, Exception x)
         {
             if (unreadable++ == 0) log?.Report($"warning: {what}: {x.Message}");

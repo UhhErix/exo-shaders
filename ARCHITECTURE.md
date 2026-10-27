@@ -103,14 +103,18 @@ limits and quotas. The client side of every exchange is in Core's *Community* an
 ### Recorder
 
 1. **Install** (`ReconcileRecorders`) into compatible games only: supported, no anti-cheat, not VAC, writable without
-   elevation, not running, and on NVIDIA not a game whose first `d3d12.dll` comes with Streamline
-   (`GameFiles.StreamlineFirst`). A foreign `d3d12.dll` blocks it unless the user chains it (renamed to
+   elevation, not running. On NVIDIA, where the first `d3d12.dll` comes with Streamline (`GameFiles.StreamlineFirst`),
+   the preloader (`proxy/preload.cpp`) goes in beside it under the first of `ScsKiller.PreloadNames` the exe imports
+   statically and no other file holds: its DllMain loads the recorder at process start, and its exports jump to System32's
+   DLL of its name. With no such name the game isn't recorded. A foreign `d3d12.dll` blocks it unless the user chains it (renamed to
    `d3d12.scskiller-next.dll`, loaded via `next=` in `scskiller.ini`). A proxy deleted while chained (the mod's own
    uninstall) leaves the renamed file unused and turns recording off for the game: never reinstalled around, never put back.
    On AMD, where the exe has AGS make its device (`GameFiles.AgsMakesTheDevice`: it imports
    `agsDriverExtensionsDX12_CreateDevice` and its `amd_ags_x64.dll` is a build in `GameFiles.WrappableAgs`), the recorder
    goes in as `amd_ags_x64.dll` instead (`scskiller_ags.dll`, `SCSK_AGS_WRAP`), in front of the game's own AGS renamed
-   `amd_ags_real.dll`, which every removal renames back.
+   to the name the wrapper links it by (`ScsKiller.AgsChain`, read from its imports: `amd_ags_x64_scskiller.dll` from
+   1.3.3's wrapper on, `amd_ags_real.dll` before it, a name games ship too), which every removal renames back. A chain
+   under another name than this build's wrapper links goes out and back in under that one.
 2. **Stamp** after a clean full anti-cheat check (`ScsKiller.Attest`). A build without an index is indexed
    first in the background (`ScsKiller.IndexForRecorder`), and a launch before that ends records every shader's bytes.
    The index runs below normal priority, never while a compile runs: a compile starting stops it, and it reads again

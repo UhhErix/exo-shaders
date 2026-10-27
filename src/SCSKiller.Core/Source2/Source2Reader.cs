@@ -29,6 +29,8 @@ public sealed class Source2Reader : IEngineReader
 
     static string Bin(Game game) => GameFiles.Find(game.InstallDir, @"game\bin\win64");
 
+    public int ReaderVersion(EngineInfo engine) => 2;
+
     public EngineInfo? Detect(Game game)
     {
         if (!File.Exists(GameFiles.Find(Bin(game), "engine2.dll"))) return null;
@@ -56,7 +58,7 @@ public sealed class Source2Reader : IEngineReader
         {
             var f = new FileInfo(vpk);
             var rel = GameFiles.Rel(game.InstallDir, vpk, vpk, $@"game\{GameFiles.FolderName(Path.GetDirectoryName(vpk)!)}\{Vpk}");
-            stamp.Append($"{rel}|{f.Length}|{f.LastWriteTimeUtc.Ticks}\n");
+            stamp.Append(ContentStamps.Of(rel, f.FullName));
             using var pak = Open(vpk);
             foreach (var e in Programs(pak))
             {

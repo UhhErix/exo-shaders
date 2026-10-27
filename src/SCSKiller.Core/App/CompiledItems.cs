@@ -25,16 +25,25 @@ public static class CompiledItems
         return nv;
     }
 
-    /// <summary>The items of a warm's work dbs it created: all but those a <see cref="Recordings.FailedFile"/> names.</summary>
-    public static HashSet<string> Created(IReadOnlyList<string> dbs, IEnumerable<string> failed)
+    /// <summary>The items of a warm's work dbs it created: all but those a <see cref="Recordings.FailedFile"/> names, and
+    /// those before scskiller_warm's item <paramref name="from"/> (its --start: a resumed warm's last part).</summary>
+    public static HashSet<string> Created(IReadOnlyList<string> dbs, IEnumerable<string> failed, long from = 0)
     {
         var notCreated = new HashSet<string>(StringComparer.Ordinal);
         foreach (var f in failed.Where(System.IO.File.Exists))
             foreach (var k in System.IO.File.ReadAllBytes(f).Chunk(20).Where(c => c.Length == 20)) notCreated.Add(Convert.ToHexStringLower(k));
         var existing = dbs.Where(System.IO.File.Exists).ToList();
         var nv = LastNv(existing.SelectMany(db => Read(db).Where(r => r.Tag == 'N')));
-        return existing.SelectMany(db => Read(db).Where(r => r.Tag != 'B'))
-            .Where(r => IsItem(r.Tag) && !notCreated.Contains(r.Key)).Select(r => nv.GetValueOrDefault(r.Key, r.Key)).ToHashSet();
+        // the proxy's item numbers: each record key once in file order, then the plan items ('P'), then D3D11's; a db ends at
+        // a zero tag for it (a zero-filled tail)
+        var (recs, plans) = (new HashSet<string>(StringComparer.Ordinal), 0L);
+        var items = new List<(string Key, long At, bool Plan)>();
+        foreach (var r in existing.SelectMany(db => Read(db).TakeWhile(r => r.Tag != '\0').Where(r => r.Tag != 'B')))
+            if (r.Tag is 'N' or 'W' or 'D' or '1' or '2' or '3') continue;
+            else if (r.Tag == 'P') items.Add((r.Key, plans++, true));
+            else if (recs.Add(r.Key) && IsItem(r.Tag)) items.Add((r.Key, recs.Count - 1, false));
+        return items.Where(x => (x.Plan ? recs.Count + x.At : x.At) >= from && !notCreated.Contains(x.Key))
+            .Select(x => nv.GetValueOrDefault(x.Key, x.Key)).ToHashSet();
     }
 
     public static HashSet<string>? Load(string path)

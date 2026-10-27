@@ -94,7 +94,7 @@ public sealed class ManualSource(AppStore store) : IGameSource
         try
         {
             if (GameFiles.FindExe(root) is not { } exe) return null;
-            var e = Resolve(exe);
+            var e = Resolve(exe, found: true);
             // no name in the exe: the game folder's, the one above Content for an Xbox app game
             var folder = GameFiles.FolderName(Path.GetFileName(root).Equals("Content", StringComparison.OrdinalIgnoreCase) ? Path.GetDirectoryName(root)! : root);
             e = e with { InstallDir = root, Name = e.Name == GameFiles.FolderName(e.InstallDir) ? folder : e.Name };
@@ -219,7 +219,7 @@ public sealed class ManualSource(AppStore store) : IGameSource
     /// stores (<see cref="GameFiles.GameExe"/>, <see cref="GameFiles.FindExe"/>: a launcher stub becomes its Shipping exe), and a name. ArgumentException
     /// with the message to show for a pick that is no 64-bit program, sits at a drive's root, or launches one of several
     /// exes SCSKiller can't tell apart.</summary>
-    public static ManualEntry Resolve(string picked)
+    public static ManualEntry Resolve(string picked, bool found = false)
     {
         var pick = Path.GetFullPath(picked);
         var file = Path.GetFileName(pick);
@@ -242,10 +242,43 @@ public sealed class ManualSource(AppStore store) : IGameSource
                         + ". Pick the one that opens the game's window.");
             }
         if (!Same(exe, pick)) CheckX64(exe, Path.GetFileName(exe));   // what is added is the game's exe, not the pick
+        if (found && clean && GameSign(exe) == null) throw new ArgumentException($"nothing in the folder of {Path.GetFileName(exe)} looks like a game");
         return new ManualEntry(exe, root, NameOf(exe, pick, root));
     }
 
     static bool Same(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>What makes a folder's program a game: Unreal's Shipping exe, a graphics API imported by the exe or a DLL in
+    /// its folder two levels down, an engine's runtime or data. Null = none: a program that isn't a game. One that can't be read counts as one.</summary>
+    internal static string? GameSign(string exe)
+    {
+        if (GameFiles.IsShipping(exe)) return "Unreal Shipping exe";
+        if (ImportsAny(exe) is not false) return Path.GetFileName(exe);
+        try
+        {
+            foreach (var e in new DirectoryInfo(Path.GetDirectoryName(exe)!).EnumerateFileSystemInfos("*", SignWalk))
+                if (e is DirectoryInfo ? e.Name.EndsWith("_Data", StringComparison.OrdinalIgnoreCase)
+                    : EngineFiles.Contains(e.Name) || DataExts.Contains(e.Extension) || e.Extension.Equals(".dll", StringComparison.OrdinalIgnoreCase) && ImportsAny(e.FullName) == true)
+                    return e.Name;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException) { return "unreadable"; }
+        return null;
+    }
+
+    static readonly EnumerationOptions SignWalk = new() { RecurseSubdirectories = true, MaxRecursionDepth = 2, AttributesToSkip = 0, IgnoreInaccessible = false };
+    // engines that load the graphics API at run time (Unity, MonoGame, FNA, SDL)
+    static readonly HashSet<string> EngineFiles = new(["UnityPlayer.dll", "GameAssembly.dll", "MonoGame.Framework.dll", "FNA.dll", "SDL2.dll", "SDL3.dll"], StringComparer.OrdinalIgnoreCase);
+    static readonly HashSet<string> DataExts = new([".pak", ".utoc", ".ucas", ".assets", ".bundle", ".xnb", ".pck", ".rpf", ".wad", ".arc", ".psarc", ".forge", ".big"], StringComparer.OrdinalIgnoreCase);
+    static readonly string[] AnyGraphics = ["d3d12.dll", "d3d11.dll", "dxgi.dll", "d3d9.dll", "opengl32.dll", "vulkan-1.dll", "sl.interposer.dll"];
+
+    static bool? ImportsAny(string path)
+    {
+        try
+        {
+            return CarvedReader.PeImports(path, out _).Any(d => AnyGraphics.Contains(d, StringComparer.OrdinalIgnoreCase) || d.Contains("-RHI", StringComparison.OrdinalIgnoreCase));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or BadImageFormatException or InvalidOperationException) { return null; }
+    }
 
     static bool X64(string path)
     {

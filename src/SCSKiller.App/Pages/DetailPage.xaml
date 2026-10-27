@@ -425,6 +425,8 @@
                                           IsOn="{x:Bind Vm.RecordOn, Mode=OneWay}" IsEnabled="{x:Bind Vm.CanToggleRecord, Mode=OneWay}" Toggled="OnRecordToggled"
                                           AutomationProperties.Name="Record while I play" AutomationProperties.HelpText="{x:Bind Vm.RecordNote, Mode=OneWay}" />
                         </Grid>
+                        <InfoBar Severity="Warning" IsClosable="False" IsOpen="{x:Bind Vm.HasRecorderFailure, Mode=OneWay}" Visibility="{x:Bind Vm.HasRecorderFailure, Mode=OneWay}"
+                                 Message="{x:Bind Vm.RecorderFailure, Mode=OneWay}" />
                         <StackPanel Spacing="14" Visibility="{x:Bind Vm.ShowOfflineOn, Mode=OneWay}">
                             <InfoBar IsOpen="True" IsClosable="False" Severity="Error" Title="Ban risk" Message="{x:Bind Vm.OfflineRiskText, Mode=OneWay}" />
                             <InfoBar Severity="Informational" IsClosable="False" IsOpen="{x:Bind Vm.HasSessionNote, Mode=OneWay}" Visibility="{x:Bind Vm.HasSessionNote, Mode=OneWay}"

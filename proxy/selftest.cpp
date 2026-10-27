@@ -1678,6 +1678,11 @@ static int ledger_dir_rules() {
 
 // `selftest admission` (no GPU, no proxy): the stamp sig= covers, risk='s form, and the verdict from what the checks found.
 static int admission_rules() {
+    {
+        const FILE_ID_INFO exe{0x10d37092f67092e0, {{0x59, 0, 0x21, 0, 0, 0, 2}}}, fake{0, {{6, 0, 0, 0, 0, 0, 0, 0, 6}}}, real{exe.VolumeSerialNumber, {{0x4c, 0, 0x21, 0, 0, 0, 4}}};
+        CHECK(made_up_id(fake, exe) && !made_up_id(real, exe) && !made_up_id(fake, FILE_ID_INFO{0, exe.FileId}));   // a serial-0 volume: the exe's too
+        CHECK(!made_up_id(FILE_ID_INFO{0, {{0x10}}}, exe) && !made_up_id(FILE_ID_INFO{0, {{0, 0, 0, 0, 0, 0, 0, 0, 0x10}}}, exe));
+    }
     CHECK(signed_stamp(L"1", L"2", L"", L"", L"") == L"exe_size=1\r\nexe_time=2\r\n");
     {
         const std::wstring deep = L"C:\\" + std::wstring(300, L'a') + L"\\b";
@@ -4942,7 +4947,7 @@ static void* g_dd_orig;         // what the hooker calls: the slot it read
 static uint8_t g_dd_saved[12];
 static thread_local int t_dd_depth;
 static bool g_dd_recursed;
-static void dd_patch(bool on);
+static void dd_patch(bool on, void* to = nullptr);
 static HRESULT STDMETHODCALLTYPE dd_present(IDXGISwapChain* sc, UINT sync, UINT flags) {
     if (t_dd_depth >= 64) return g_dd_recursed = true, E_FAIL;
     ++t_dd_depth;
@@ -4952,12 +4957,12 @@ static HRESULT STDMETHODCALLTYPE dd_present(IDXGISwapChain* sc, UINT sync, UINT 
     --t_dd_depth;
     return hr;
 }
-static void dd_patch(bool on) {
+static void dd_patch(bool on, void* to) {
     auto t = (uint8_t*)g_dd_target;
     DWORD old;
     VirtualProtect(t, 12, PAGE_EXECUTE_READWRITE, &old);
     if (on) {
-        void* to = (void*)dd_present;
+        if (!to) to = (void*)dd_present;
         t[0] = 0x48, t[1] = 0xB8, memcpy(t + 2, &to, 8), t[10] = 0xFF, t[11] = 0xE0;  // mov rax, dd_present / jmp rax
     } else memcpy(t, g_dd_saved, 12);
     VirtualProtect(t, 12, old, &old);
@@ -5267,6 +5272,350 @@ static int frames_ffx_rows(const std::wstring& dir, bool play, bool late) {
     printf("chains");
     for (long n : chains) if (n) printf(" %ld", n);
     printf("\ngame %ld\n", game);
+    // SCSKILLER_SELFTEST_FG_UNNAMED: its present queue unnamed, recognised by its ffxCreateContext all the same
+    printf("unhooked %d\n", read_all(dir + L"scskiller.log").find("dxgi's Present unhooked") != std::string::npos);
+    return 0;
+}
+
+// `selftest framesfg slg`: Streamline with DLSS frame generation. fakenext.dll as sl.interposer.dll upgrades the game's
+// swap chain to its proxy (slUpgradeInterface), and with nvngx_dlssg.dll loaded remakes the window's swap chain from a
+// copy named sl.dlss_g.dll (through its ffxCreateContext, on an unnamed queue). The game presents 3 times on its swap
+// chain, 3 times on the proxy before the remake and 3 after, the proxy then presenting through frame generation's (once on
+// this thread, twice from another). Prints "chains <frames of each>", "game <index>", "timed <0|1>" (the log's "the
+// game's frames") and "stopped <0|1>" (its "no frame times from here on").
+static int frames_slg_rows(const std::wstring& dir) {
+    SetEnvironmentVariableW(L"SCSKILLER_MODE", L"record");
+    SetEnvironmentVariableW(L"SCSKILLER_SELFTEST_FG_UNNAMED", L"1");
+    SetEnvironmentVariableW(L"SCSKILLER_SELFTEST_FG_SHIM", L"sl.dlss_g.dll");
+    HMODULE m = LoadLibraryW((dir + L"d3d12.dll").c_str());
+    auto proxy_create = m ? (decltype(&D3D12CreateDevice))GetProcAddress(m, "D3D12CreateDevice") : nullptr;
+    IDXGIFactory4* f = nullptr;
+    IDXGIAdapter* warp = nullptr;
+    ID3D12Device* dev = nullptr;
+    CHECK(proxy_create && SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&f))) && SUCCEEDED(f->EnumWarpAdapter(IID_PPV_ARGS(&warp))) &&
+          SUCCEEDED(proxy_create(warp, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev))));
+    CHECK(LoadLibraryW((dir + L"nvngx_dlssg.dll").c_str()));
+    HMODULE sl = LoadLibraryW((dir + L"sl.interposer.dll").c_str());
+    auto sl_create = sl ? (uint32_t(*)(void**, void*, const void*))GetProcAddress(sl, "ffxCreateContext") : nullptr;
+    auto sl_upgrade = sl ? (int (*)(void**))GetProcAddress(sl, "slUpgradeInterface") : nullptr;
+    auto sl_set = sl ? (void (*)(void*, IUnknown*))GetProcAddress(sl, "FakeNext_SlSet") : nullptr;
+    CHECK(sl_create && sl_upgrade && sl_set);
+    D3D12_COMMAND_QUEUE_DESC qd = {};
+    ID3D12CommandQueue* q = nullptr;
+    DXGI_SWAP_CHAIN_DESC1 d = {64, 64, DXGI_FORMAT_R8G8B8A8_UNORM, FALSE, {1, 0}, DXGI_USAGE_RENDER_TARGET_OUTPUT, 2};
+    d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    HWND w = CreateWindowExW(0, L"STATIC", L"scskiller framesfg", WS_OVERLAPPEDWINDOW, 0, 0, 64, 64, nullptr, nullptr, nullptr, nullptr);
+    IDXGISwapChain1* sc = nullptr;
+    CHECK(SUCCEEDED(dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&q))) && SUCCEEDED(f->CreateSwapChainForHwnd(q, w, &d, nullptr, nullptr, &sc)));
+    for (int i = 0; i < 3; ++i) sc->Present(0, 0);
+    void* game = sc;
+    CHECK(sl_upgrade(&game) == 0 && game != sc);  // the proxy holds the game's reference now
+    for (int i = 0; i < 3; ++i) ((IDXGISwapChain*)game)->Present(0, 0);
+    sl_set(game, nullptr);  // the window takes one swap chain at a time: the remake replaces it
+    IDXGISwapChain* fg = nullptr;
+    struct { uint64_t type; void* next; IDXGISwapChain** swapchain; HWND hwnd; DXGI_SWAP_CHAIN_DESC1* desc; void* fullscreen; IDXGIFactory* factory; ID3D12CommandQueue* queue; }
+        fd = {0x30006, nullptr, &fg, w, &d, nullptr, f, q};
+    void* ctx = nullptr;
+    CHECK(sl_create(&ctx, &fd, nullptr) == 0 && fg);
+    sl_set(game, fg);
+    for (int i = 0; i < 3; ++i) ((IDXGISwapChain*)game)->Present(0, 0);
+    std::vector<long> chains;
+    long g = -1;
+    frames_after(dir, 9, &chains, &g);
+    printf("chains");
+    for (long n : chains) if (n) printf(" %ld", n);
+    const std::string log = read_all(dir + L"scskiller.log");
+    printf("\ngame %ld\ntimed %d\nstopped %d\n", g, log.find("the game's frames") != std::string::npos, log.find("no frame times from here on") != std::string::npos);
+    return 0;
+}
+
+// `selftest framesfg slm [nofg|late|silent]`: RE Requiem's Streamline: no slUpgradeInterface, the game presents System32's
+// swap chain with PCL markers around each frame (slPCLSetMarker from slGetFeatureFunction), then frame generation's
+// create from sl.dlss_g.dll (after the game's swap chain is released), whose frames the game never presents itself.
+// Three frames each: before; with frame generation; with it off (its swap chain released, the game's made again); on
+// again (a second create, the game's swap chain then on a new window: the fake keeps the first). nofg: six frames, no frame generation. late: the game holds the marker function from before
+// the recorder (never fetched through it). silent: no marker after the create, 11 s. nodlssg: as nofg, with no DLSS frame
+// generation dll loaded (Streamline is left alone: nothing of it hooked). dlssglate: as the default, the DLSS frame generation
+// dll loaded after sl.interposer.dll (the hooks go in as it loads). fwd: the game also fetches Reflex's marker function,
+// and PCL's forwards each marker to it. Each frame starts with slSetConstants,
+// as DLSS needs. Prints "chains" (frames per swap chain or marker source), "game <n>" (the markers' frames), "timed",
+// "first" (a PresentEnd arrived), "stopped", "unhooked <n>" (step-aside lines) and "markers <n>" (calls that reached it).
+static int frames_slm_rows(const std::wstring& dir, const wchar_t* mode) {
+    SetEnvironmentVariableW(L"SCSKILLER_MODE", L"record");
+    SetEnvironmentVariableW(L"SCSKILLER_SELFTEST_FG_UNNAMED", L"1");
+    SetEnvironmentVariableW(L"SCSKILLER_SELFTEST_FG_SHIM", L"sl.dlss_g.dll");
+    HMODULE m = LoadLibraryW((dir + L"d3d12.dll").c_str());
+    auto proxy_create = m ? (decltype(&D3D12CreateDevice))GetProcAddress(m, "D3D12CreateDevice") : nullptr;
+    IDXGIFactory4* f = nullptr;
+    IDXGIAdapter* warp = nullptr;
+    ID3D12Device* dev = nullptr;
+    CHECK(proxy_create && SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&f))) && SUCCEEDED(f->EnumWarpAdapter(IID_PPV_ARGS(&warp))) &&
+          SUCCEEDED(proxy_create(warp, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev))));
+    const bool nodlssg = !wcscmp(mode, L"nodlssg"), dlssglate = !wcscmp(mode, L"dlssglate");
+    CHECK(nodlssg || dlssglate || LoadLibraryW((dir + L"nvngx_dlssg.dll").c_str()));
+    HMODULE sl = LoadLibraryW((dir + L"sl.interposer.dll").c_str());
+    CHECK(!dlssglate || LoadLibraryW((dir + L"nvngx_dlssg.dll").c_str()));
+    auto sl_create = sl ? (uint32_t(*)(void**, void*, const void*))GetProcAddress(sl, "ffxCreateContext") : nullptr;
+    auto sl_getfn = sl ? (int (*)(uint32_t, const char*, void**))GetProcAddress(sl, "slGetFeatureFunction") : nullptr;
+    auto held = sl ? (void* (WINAPI*)())GetProcAddress(sl, "FakeNext_SlMarkerFn") : nullptr;
+    auto consts = sl ? (int (*)(const void*, const void*, const void*))GetProcAddress(sl, "slSetConstants") : nullptr;
+    auto reached = sl ? (LONG(WINAPI*)())GetProcAddress(sl, "FakeNext_SlMarkers") : nullptr;
+    CHECK(sl_create && sl_getfn && held && reached && consts);
+    const bool nofg = nodlssg || !wcscmp(mode, L"nofg"), late = !wcscmp(mode, L"late"), silent = !wcscmp(mode, L"silent");
+    int (*marker)(uint32_t, const void*) = nullptr;
+    if (late) marker = (int (*)(uint32_t, const void*))held();
+    else CHECK(sl_getfn(4, "slPCLSetMarker", (void**)&marker) == 0 && marker);
+    if (!wcscmp(mode, L"fwd")) {
+        void* reflex = nullptr;
+        SetEnvironmentVariableW(L"SCSKILLER_SELFTEST_SL_FWD", L"1");
+        CHECK(sl_getfn(3, "slReflexSetMarker", &reflex) == 0 && reflex);
+    }
+    D3D12_COMMAND_QUEUE_DESC qd = {};
+    ID3D12CommandQueue* q = nullptr;
+    DXGI_SWAP_CHAIN_DESC1 d = {64, 64, DXGI_FORMAT_R8G8B8A8_UNORM, FALSE, {1, 0}, DXGI_USAGE_RENDER_TARGET_OUTPUT, 2};
+    d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    HWND w = CreateWindowExW(0, L"STATIC", L"scskiller framesfg", WS_OVERLAPPEDWINDOW, 0, 0, 64, 64, nullptr, nullptr, nullptr, nullptr);
+    IDXGISwapChain1* sc = nullptr;
+    CHECK(SUCCEEDED(dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&q))) && SUCCEEDED(f->CreateSwapChainForHwnd(q, w, &d, nullptr, nullptr, &sc)));
+    auto frames = [&](IDXGISwapChain* to, int n, int presents) {
+        for (int i = 0; i < n; ++i) {
+            int token = i;
+            consts(nullptr, &token, nullptr);
+            marker(4, &token);
+            for (int k = 0; k < presents; ++k) to->Present(0, 0);
+            marker(5, &token);
+        }
+    };
+    frames(sc, nofg ? 6 : 3, 1);
+    long want = nofg ? 6 : 3;
+    if (!nofg) {
+        sc->Release();
+        HWND at = w;
+        auto fg_on = [&] {
+            IDXGISwapChain* fg = nullptr;
+            struct { uint64_t type; void* next; IDXGISwapChain** swapchain; HWND hwnd; DXGI_SWAP_CHAIN_DESC1* desc; void* fullscreen; IDXGIFactory* factory; ID3D12CommandQueue* queue; }
+                fd = {0x30006, nullptr, &fg, at, &d, nullptr, f, q};
+            void* ctx = nullptr;
+            return sl_create(&ctx, &fd, nullptr) == 0 ? fg : nullptr;
+        };
+        IDXGISwapChain* fg = fg_on();
+        CHECK(fg);
+        if (silent) Sleep(11000);
+        else {
+            frames(fg, 3, 2);
+            fg->Release();
+            at = CreateWindowExW(0, L"STATIC", L"scskiller framesfg", WS_OVERLAPPEDWINDOW, 0, 0, 64, 64, nullptr, nullptr, nullptr, nullptr);
+            CHECK(SUCCEEDED(f->CreateSwapChainForHwnd(q, at, &d, nullptr, nullptr, &sc)));
+            frames(sc, 3, 1);
+            sc->Release();
+            CHECK((fg = fg_on()) != nullptr);
+            frames(fg, 3, 2);
+            want += 9;
+        }
+    }
+    std::vector<long> chains;
+    long g = -1;
+    frames_after(dir, want, &chains, &g);
+    printf("chains");
+    for (long n : chains) if (n) printf(" %ld", n);
+    const std::string log = read_all(dir + L"scskiller.log");
+    size_t steps = 0;
+    for (size_t at = 0; (at = log.find("Present unhooked for this launch", at)) != std::string::npos; ++at) ++steps;
+    printf("\nstreamline hooked %d", log.find("slUpgradeInterface hooked") != std::string::npos);
+    printf("\ngame %ld\ntimed %d\nfirst %d\nstopped %d\nunhooked %zu\nmarkers %ld\n", g, log.find("timed from Streamline's frame markers") != std::string::npos,
+           log.find("first PresentEnd marker") != std::string::npos, log.find("no frame times from here on") != std::string::npos, steps, reached());
+    return 0;
+}
+
+// `selftest framesfg sl same|new`: fakenext.dll as sl.interposer.dll makes a swap chain through its ffxCreateContext on an
+// unnamed queue, with fakenext.dll also loaded as nvngx_dlssg.dll, for the window a swap chain was made for before
+// (same) or for a new one. `shim`: as same, the create made through fakenext.dll as fgshim.dll, as ReShade's factory forwards
+// Streamline's. `many`: as same, after swap chains for 20 other windows. Prints "unhooked <0|1>": frame generation's swap
+// chain unhooked dxgi's Present.
+static int frames_sl_rows(const std::wstring& dir, bool same, bool shim = false, int others = 0) {
+    SetEnvironmentVariableW(L"SCSKILLER_MODE", L"record");
+    SetEnvironmentVariableW(L"SCSKILLER_SELFTEST_FG_UNNAMED", L"1");  // only the caller and the window tell
+    if (shim) SetEnvironmentVariableW(L"SCSKILLER_SELFTEST_FG_SHIM", L"1");
+    HMODULE m = LoadLibraryW((dir + L"d3d12.dll").c_str());
+    auto proxy_create = m ? (decltype(&D3D12CreateDevice))GetProcAddress(m, "D3D12CreateDevice") : nullptr;
+    IDXGIFactory4* f = nullptr;
+    IDXGIAdapter* warp = nullptr;
+    ID3D12Device* dev = nullptr;
+    CHECK(proxy_create && SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&f))) && SUCCEEDED(f->EnumWarpAdapter(IID_PPV_ARGS(&warp))) &&
+          SUCCEEDED(proxy_create(warp, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev))));
+    CHECK(LoadLibraryW((dir + L"nvngx_dlssg.dll").c_str()));
+    HMODULE sl = LoadLibraryW((dir + L"sl.interposer.dll").c_str());
+    auto sl_create = sl ? (uint32_t(*)(void**, void*, const void*))GetProcAddress(sl, "ffxCreateContext") : nullptr;
+    CHECK(sl_create);
+    D3D12_COMMAND_QUEUE_DESC qd = {};
+    ID3D12CommandQueue* q = nullptr;
+    DXGI_SWAP_CHAIN_DESC1 d = {64, 64, DXGI_FORMAT_R8G8B8A8_UNORM, FALSE, {1, 0}, DXGI_USAGE_RENDER_TARGET_OUTPUT, 2};
+    d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    auto wnd = [] { return CreateWindowExW(0, L"STATIC", L"scskiller framesfg", WS_OVERLAPPEDWINDOW, 0, 0, 64, 64, nullptr, nullptr, nullptr, nullptr); };
+    CHECK(SUCCEEDED(dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&q))));
+    for (int i = 0; i < others; ++i) {
+        IDXGISwapChain1* o = nullptr;
+        CHECK(SUCCEEDED(f->CreateSwapChainForHwnd(q, wnd(), &d, nullptr, nullptr, &o)));
+        o->Release();
+    }
+    HWND w = wnd();
+    IDXGISwapChain1* sc = nullptr;
+    CHECK(SUCCEEDED(f->CreateSwapChainForHwnd(q, w, &d, nullptr, nullptr, &sc)));
+    for (int i = 0; i < 3; ++i) sc->Present(0, 0);
+    sc->Release();  // the window takes one swap chain at a time: the remake replaces it
+    IDXGISwapChain* fg = nullptr;
+    struct { uint64_t type; void* next; IDXGISwapChain** swapchain; HWND hwnd; DXGI_SWAP_CHAIN_DESC1* desc; void* fullscreen; IDXGIFactory* factory; ID3D12CommandQueue* queue; }
+        fd = {0x30006, nullptr, &fg, same ? w : wnd(), &d, nullptr, f, q};
+    void* ctx = nullptr;
+    CHECK(sl_create(&ctx, &fd, nullptr) == 0 && fg);
+    printf("unhooked %d\n", read_all(dir + L"scskiller.log").find("dxgi's Present unhooked") != std::string::npos);
+    return 0;
+}
+
+// `selftest framesloop`: hook A takes the game's Present slot over the proxy's (its original: the proxy's hook), frame
+// generation's swap chain unhooks dxgi's slots (A's stays), then hook B reads A from a dummy swap chain's slot as its
+// original and inline-detours dxgi's Present: A -> proxy -> dxgi's entry -> B -> A. On a 64 MB stack, B stops at 20000
+// deep. Prints "cut <0|1>" (the proxy refused 64 deep), "capped <0|1>" (B's own stop was reached), "late <0|1>" (the
+// proxy logged its Present entered after the unhook), "hr 0x<present's result>" and "level <bytes of stack per loop>".
+static void* g_la_orig;  // A's original: the proxy's Present hook
+static void* g_lb_orig;  // B's original: A
+static thread_local int t_la, t_lb;
+static uintptr_t g_la_sp[3];
+static bool g_lb_capped;
+static HRESULT STDMETHODCALLTYPE la_present(IDXGISwapChain* sc, UINT sync, UINT flags) {
+    volatile char here = 0;
+    if (t_la < 3) g_la_sp[t_la] = (uintptr_t)&here;
+    ++t_la;
+    HRESULT hr = ((PFN_DdPresent)g_la_orig)(sc, sync, flags);
+    --t_la;
+    return hr;
+}
+static HRESULT STDMETHODCALLTYPE lb_present(IDXGISwapChain* sc, UINT sync, UINT flags) {
+    if (t_lb >= 20000) return g_lb_capped = true, E_FAIL;
+    ++t_lb;
+    HRESULT hr = ((PFN_DdPresent)g_lb_orig)(sc, sync, flags);
+    --t_lb;
+    return hr;
+}
+static int frames_loop_rows(const std::wstring& dir) {
+    SetEnvironmentVariableW(L"SCSKILLER_MODE", L"record");
+    wchar_t sys[MAX_PATH];
+    GetSystemDirectoryW(sys, MAX_PATH);
+    HMODULE d3d11 = LoadLibraryW((std::wstring(sys) + L"\\d3d11.dll").c_str());
+    auto create11 = d3d11 ? (decltype(&D3D11CreateDeviceAndSwapChain))GetProcAddress(d3d11, "D3D11CreateDeviceAndSwapChain") : nullptr;
+    auto dummy = [&](IDXGISwapChain** sc) {
+        DXGI_SWAP_CHAIN_DESC d = {{2, 2, {0, 0}, DXGI_FORMAT_R8G8B8A8_UNORM}, {1, 0}, DXGI_USAGE_RENDER_TARGET_OUTPUT, 2, cap_wnd(), TRUE, DXGI_SWAP_EFFECT_FLIP_DISCARD};
+        ID3D11Device* dev = nullptr;
+        return create11 && SUCCEEDED(create11(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &d, sc, &dev, nullptr, nullptr));
+    };
+    IDXGISwapChain* before = nullptr;
+    CHECK(dummy(&before));
+    g_dd_target = (*(void***)before)[8];
+    memcpy(g_dd_saved, g_dd_target, 12);
+    IDXGIFactory4* f = nullptr;
+    IDXGIAdapter* warp = nullptr;
+    CHECK(SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&f))) && SUCCEEDED(f->EnumWarpAdapter(IID_PPV_ARGS(&warp))));
+    HMODULE m = LoadLibraryW((dir + L"d3d12.dll").c_str());
+    auto proxy_create = m ? (decltype(&D3D12CreateDevice))GetProcAddress(m, "D3D12CreateDevice") : nullptr;
+    ID3D12Device* dev = nullptr;
+    CHECK(proxy_create && SUCCEEDED(proxy_create(warp, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev))));
+    auto chain = [&](IDXGISwapChain1** sc, const wchar_t* name) {
+        D3D12_COMMAND_QUEUE_DESC qd = {};
+        ID3D12CommandQueue* q = nullptr;
+        DXGI_SWAP_CHAIN_DESC1 d = {64, 64, DXGI_FORMAT_R8G8B8A8_UNORM, FALSE, {1, 0}, DXGI_USAGE_RENDER_TARGET_OUTPUT, 2};
+        d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        return SUCCEEDED(dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&q))) && (!name || SUCCEEDED(q->SetName(name))) &&
+               SUCCEEDED(f->CreateSwapChainForHwnd(q, cap_wnd(), &d, nullptr, nullptr, sc));
+    };
+    IDXGISwapChain1 *game = nullptr, *fg = nullptr;
+    CHECK(chain(&game, nullptr));
+    game->Present(0, 0);
+    void** vt = *(void***)game;
+    HMODULE owner = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)vt[8], &owner);
+    CHECK(owner == m);  // the proxy's hook is in the slot A takes
+    g_la_orig = vt[8];
+    DWORD old;
+    VirtualProtect(&vt[8], sizeof(void*), PAGE_READWRITE, &old);
+    vt[8] = (void*)la_present;
+    VirtualProtect(&vt[8], sizeof(void*), old, &old);
+    CHECK(chain(&fg, L"AMD FSR PresentQueue"));
+    IDXGISwapChain* sc11 = nullptr;
+    CHECK(dummy(&sc11));
+    g_lb_orig = (*(void***)sc11)[8];
+    CHECK(g_lb_orig == (void*)la_present);
+    dd_patch(true, (void*)lb_present);
+    HRESULT hr = E_FAIL;
+    struct Run { IDXGISwapChain1* sc; HRESULT* hr; } run{game, &hr};
+    HANDLE t = CreateThread(nullptr, 64 << 20, [](void* p) -> DWORD {
+        auto* r = (Run*)p;
+        *r->hr = r->sc->Present(0, 0);
+        return 0;
+    }, &run, STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+    CHECK(t);
+    WaitForSingleObject(t, INFINITE);
+    CloseHandle(t);
+    dd_patch(false);
+    VirtualProtect(&vt[8], sizeof(void*), PAGE_READWRITE, &old);
+    vt[8] = g_la_orig;
+    VirtualProtect(&vt[8], sizeof(void*), old, &old);
+    const std::string log = read_all(dir + L"scskiller.log");
+    printf("cut %d\n", log.find("Present 64 deep on thread") != std::string::npos);
+    printf("capped %d\n", g_lb_capped);
+    printf("late %d\n", log.find("entered after frame generation unhooked") != std::string::npos);
+    printf("hr 0x%08x\n", (unsigned)hr);
+    printf("level %llu\n", (unsigned long long)(g_la_sp[1] - g_la_sp[2]));
+    return 0;
+}
+
+// `selftest framesseh`: dxgi's Present inline-detoured to one that raises a structured exception, which the caller catches
+// above the proxy's hook, 70 times on one thread; then the detour goes and the swap chain presents once more. Prints
+// "caught <n>" and "after 0x<hr>": the proxy's depth came back each time, so the last present isn't refused.
+static HRESULT STDMETHODCALLTYPE seh_present(IDXGISwapChain*, UINT, UINT) {
+    RaiseException(0xE0005345, 0, 0, nullptr);
+    return E_FAIL;
+}
+static bool seh_call(IDXGISwapChain1* sc) {
+    __try {
+        sc->Present(0, 0);
+    } __except (GetExceptionCode() == 0xE0005345 ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return true;
+    }
+    return false;
+}
+static int frames_seh_rows(const std::wstring& dir) {
+    SetEnvironmentVariableW(L"SCSKILLER_MODE", L"record");
+    wchar_t sys[MAX_PATH];
+    GetSystemDirectoryW(sys, MAX_PATH);
+    HMODULE d3d11 = LoadLibraryW((std::wstring(sys) + L"\\d3d11.dll").c_str());
+    auto create11 = d3d11 ? (decltype(&D3D11CreateDeviceAndSwapChain))GetProcAddress(d3d11, "D3D11CreateDeviceAndSwapChain") : nullptr;
+    DXGI_SWAP_CHAIN_DESC dd = {{2, 2, {0, 0}, DXGI_FORMAT_R8G8B8A8_UNORM}, {1, 0}, DXGI_USAGE_RENDER_TARGET_OUTPUT, 2, cap_wnd(), TRUE, DXGI_SWAP_EFFECT_FLIP_DISCARD};
+    IDXGISwapChain* before = nullptr;
+    ID3D11Device* dev11 = nullptr;
+    CHECK(create11 && SUCCEEDED(create11(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &dd, &before, &dev11, nullptr, nullptr)));
+    g_dd_target = (*(void***)before)[8];
+    memcpy(g_dd_saved, g_dd_target, 12);
+    IDXGIFactory4* f = nullptr;
+    IDXGIAdapter* warp = nullptr;
+    CHECK(SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&f))) && SUCCEEDED(f->EnumWarpAdapter(IID_PPV_ARGS(&warp))));
+    HMODULE m = LoadLibraryW((dir + L"d3d12.dll").c_str());
+    auto proxy_create = m ? (decltype(&D3D12CreateDevice))GetProcAddress(m, "D3D12CreateDevice") : nullptr;
+    ID3D12Device* dev = nullptr;
+    CHECK(proxy_create && SUCCEEDED(proxy_create(warp, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev))));
+    D3D12_COMMAND_QUEUE_DESC qd = {};
+    ID3D12CommandQueue* q = nullptr;
+    DXGI_SWAP_CHAIN_DESC1 d = {64, 64, DXGI_FORMAT_R8G8B8A8_UNORM, FALSE, {1, 0}, DXGI_USAGE_RENDER_TARGET_OUTPUT, 2};
+    d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    IDXGISwapChain1* sc = nullptr;
+    CHECK(SUCCEEDED(dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&q))) && SUCCEEDED(f->CreateSwapChainForHwnd(q, cap_wnd(), &d, nullptr, nullptr, &sc)));
+    sc->Present(0, 0);
+    dd_patch(true, (void*)seh_present);
+    int caught = 0;
+    for (int i = 0; i < 70; ++i) caught += seh_call(sc);
+    dd_patch(false);
+    const HRESULT hr = sc->Present(0, 0);
+    printf("caught %d\n", caught);
+    printf("after 0x%08x\n", (unsigned)hr);
     return 0;
 }
 
@@ -5616,6 +5965,71 @@ static int frames_mod_rows(const std::wstring& dir, int n) {
     return 0;
 }
 
+// `selftest framesopti <n>`: fakenext as dxgi.dll with SCSKILLER_SELFTEST_OPTI set before the start, as OptiScaler 0.9.4
+// as dxgi.dll: LoadLibraryW of System32's dxgi.dll hands back the fake, the factory is System32's, and with "wrap" a
+// swap chain made through it is a wrapper that leads to no System32 swap chain. n Presents and n Present1s on it. Prints
+// "redirected <0|1>" (kernel32's LoadLibraryW of System32's path gives the fake), "wrapped <0|1>" (the swap chain's vtable
+// isn't System32's) and "frames <n>". first (with "wrap"): a composition swap chain (System32's, hooked) is made before,
+// then "probe <k> captured ours <0|1>": the creates a hook under the factory's ForComposition saw after that one, and
+// the Present slot it saw at the last. "fg" (Opti's own frame generation, fakenext also beside it as
+// amd_fidelityfx_framegeneration_dx12.dll): "fg chain <0|1>" (the game got frame generation's swap chain), "probe <k>" (the
+// composition creates under the factory), and after the presents "opti presents <k>" (how many ran Opti's code first).
+// Before those, "created <0|1>", "timed <0|1>" and "stopped <0|1>" (the step-aside's line). "fgsys": the game gets
+// System32's swap chain instead, "fgfail": its create fails.
+static int frames_opti_rows(const std::wstring& dir, int n, bool first) {
+    SetEnvironmentVariableW(L"SCSKILLER_MODE", L"record");
+    wchar_t sys[MAX_PATH];
+    GetSystemDirectoryW(sys, MAX_PATH);
+    auto loadlib = (decltype(&LoadLibraryW))GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW");
+    printf("redirected %d\n", loadlib && loadlib((std::wstring(sys) + L"\\dxgi.dll").c_str()) == GetModuleHandleW((dir + L"dxgi.dll").c_str()));
+    HMODULE m = LoadLibraryW((dir + L"d3d12.dll").c_str());
+    auto proxy_create = m ? (decltype(&D3D12CreateDevice))GetProcAddress(m, "D3D12CreateDevice") : nullptr;
+    IDXGIFactory2* f = nullptr;
+    IDXGIFactory4* f4 = nullptr;
+    IDXGIAdapter* warp = nullptr;
+    CHECK(proxy_create && SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&f))) && SUCCEEDED(f->QueryInterface(IID_PPV_ARGS(&f4))) &&
+          SUCCEEDED(f4->EnumWarpAdapter(IID_PPV_ARGS(&warp))));
+    ID3D12Device* dev = nullptr;
+    ID3D12CommandQueue* q = nullptr;
+    D3D12_COMMAND_QUEUE_DESC qd = {};
+    CHECK(SUCCEEDED(proxy_create(warp, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev))) && SUCCEEDED(dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&q))));
+    HWND wnd = CreateWindowExW(0, L"STATIC", L"scskiller framesopti", WS_OVERLAPPEDWINDOW, 0, 0, 64, 64, nullptr, nullptr, nullptr, nullptr);
+    DXGI_SWAP_CHAIN_DESC1 d = {64, 64, DXGI_FORMAT_R8G8B8A8_UNORM, FALSE, {1, 0}, DXGI_USAGE_RENDER_TARGET_OUTPUT, 2};
+    d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    IDXGISwapChain1* sc = nullptr;
+    auto comp = first ? (LONG(WINAPI*)(void**, BOOL))GetProcAddress(GetModuleHandleW((dir + L"dxgi.dll").c_str()), "FakeNext_Comp") : nullptr;
+    if (first) {
+        DXGI_SWAP_CHAIN_DESC1 c = {8, 8, DXGI_FORMAT_B8G8R8A8_UNORM, FALSE, {1, 0}, DXGI_USAGE_RENDER_TARGET_OUTPUT, 2, DXGI_SCALING_STRETCH, DXGI_SWAP_EFFECT_FLIP_DISCARD};
+        CHECK(comp && SUCCEEDED(f->CreateSwapChainForComposition(q, &c, nullptr, &sc)) && comp(nullptr, TRUE) == 1);
+    }
+    HRESULT made = wnd ? f->CreateSwapChainForHwnd(q, wnd, &d, nullptr, nullptr, &sc) : E_FAIL;
+    HMODULE fgm = GetModuleHandleW((dir + L"amd_fidelityfx_framegeneration_dx12.dll").c_str());
+    if (fgm) {
+        const std::string log = read_all(dir + L"scskiller.log");
+        printf("created %d\ntimed %d\nstopped %d\n", SUCCEEDED(made), log.find("the game's frames timed") != std::string::npos,
+               log.find("no frame times from here on") != std::string::npos);
+        if (FAILED(made)) return 0;
+    }
+    CHECK(SUCCEEDED(made));
+    printf("wrapped %d\n", module_of(*(void**)sc) != system_dxgi());
+    HMODULE fake = GetModuleHandleW((dir + L"dxgi.dll").c_str());
+    auto opti_presents = fgm ? (LONG(WINAPI*)())GetProcAddress(fake, "FakeNext_OptiFgPresents") : nullptr;
+    if (fgm) {
+        auto probes = (LONG(WINAPI*)(void**, BOOL))GetProcAddress(fake, "FakeNext_Comp");
+        printf("fg chain %d\nprobe %ld\n", module_of(*(void**)sc) == fgm, probes ? probes(nullptr, FALSE) : -1L);
+    }
+    if (comp) {
+        void* seen = nullptr;
+        LONG k = comp(&seen, FALSE);
+        printf("probe %ld captured ours %d\n", k, seen && module_of(seen) == m);
+    }
+    DXGI_PRESENT_PARAMETERS p = {};
+    for (int i = 0; i < n; ++i) sc->Present(0, 0), sc->Present1(0, 0, &p);
+    if (opti_presents) printf("opti presents %ld\n", opti_presents());
+    printf("frames %ld\n", frames_after(dir, 2 * n));
+    return 0;
+}
+
 // `selftest framesheld`: presents on WARP through the proxy while scskiller_frames.bin is held open by another handle, so
 // the proxy's first writes of it fail, then one present after it is let go. Prints "drift_us <n>": how far that frame's
 // time in the file is from its QueryPerformanceCounter, from the file's launch record (frames lost, never time).
@@ -5734,7 +6148,8 @@ static int anticheat_rows(const std::wstring& dir, const wchar_t* client, const 
 
 // `selftest factoryrejected` (run unstamped): a device factory both through an SDK configuration the proxy got before its first
 // device (its CreateDeviceFactory hook) and straight from D3D12GetInterface, each after that first device was rejected.
-// Prints "config factory hooked <0|1>" (or "no config factory") and "factory hooked <0|1>": a rejected run hooks neither.
+// Prints "config hooked <0|1>" (its CreateDeviceFactory slot), "config factory hooked <0|1>" (or "no config factory") and
+// "factory hooked <0|1>": a rejected run hooks none of them.
 static int factory_rejected_rows(const std::wstring& dir) {
     HMODULE m = LoadLibraryW((dir + L"d3d12.dll").c_str());
     CHECK(m);
@@ -5753,12 +6168,55 @@ static int factory_rejected_rows(const std::wstring& dir) {
         GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)(*(void***)fac)[9], &owner);
         return owner == m;
     };
+    if (has_cfg) {
+        HMODULE owner = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)(*(void***)cfg)[4], &owner);
+        printf("config hooked %d\n", owner == m);
+    }
     ID3D12DeviceFactory* fac = nullptr;
     HRESULT chr = has_cfg ? cfg->CreateDeviceFactory(0, "", IID_PPV_ARGS(&fac)) : E_NOINTERFACE;  // 0, "": the system runtime's own
     if (SUCCEEDED(chr) && fac) printf("config factory hooked %d\n", hooked(fac)), fac->Release(), fac = nullptr;
     else printf("no config factory (0x%08x)\n", (unsigned)chr);
     if (SUCCEEDED(get_interface(CLSID_D3D12DeviceFactory, IID_PPV_ARGS(&fac)))) printf("factory hooked %d\n", hooked(fac)), fac->Release();
     else printf("no factory\n");
+    return 0;
+}
+
+// `selftest factorylate <client dll>` (run stamped): admission decided at D3D12GetInterface (an SDK configuration before any
+// device), then the client dll (an anti-cheat client's module name) loaded, then the first device. Prints "config hooked
+// <0|1>" before and after the device, "config factory hooked <0|1>", "factory hooked <0|1>" and "refused <the reason>" from
+// the recorder folder: the late refusal puts the slot back and hooks nothing more.
+static int factory_late_rows(const std::wstring& dir, const wchar_t* client) {
+    SetEnvironmentVariableW(L"SCSKILLER_MODE", L"record");
+    HMODULE m = LoadLibraryW((dir + L"d3d12.dll").c_str());
+    CHECK(m);
+    auto create = (decltype(&D3D12CreateDevice))GetProcAddress(m, "D3D12CreateDevice");
+    auto get_interface = (decltype(&D3D12GetInterface))GetProcAddress(m, "D3D12GetInterface");
+    IDXGIFactory4* f = nullptr;
+    IDXGIAdapter* warp = nullptr;
+    CHECK(create && get_interface && SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&f))) && SUCCEEDED(f->EnumWarpAdapter(IID_PPV_ARGS(&warp))));
+    auto owned = [&](void* fn) {
+        HMODULE owner = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)fn, &owner);
+        return owner == m;
+    };
+    ID3D12SDKConfiguration1* cfg = nullptr;
+    if (FAILED(get_interface(CLSID_D3D12SDKConfiguration, IID_PPV_ARGS(&cfg)))) return printf("no config\n"), 0;
+    printf("config hooked %d\n", owned((*(void***)cfg)[4]));
+    ID3D12SDKConfiguration1* again = nullptr;  // the same table again: still the one put back
+    if (SUCCEEDED(get_interface(CLSID_D3D12SDKConfiguration, IID_PPV_ARGS(&again)))) again->Release();
+    CHECK(LoadLibraryW(client));
+    ID3D12Device* dev = nullptr;
+    CHECK(SUCCEEDED(create(warp, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev))));
+    dev->Release();
+    printf("config hooked %d\n", owned((*(void***)cfg)[4]));
+    ID3D12DeviceFactory* fac = nullptr;
+    if (SUCCEEDED(cfg->CreateDeviceFactory(0, "", IID_PPV_ARGS(&fac))) && fac) printf("config factory hooked %d\n", owned((*(void***)fac)[9])), fac->Release(), fac = nullptr;
+    if (SUCCEEDED(get_interface(CLSID_D3D12DeviceFactory, IID_PPV_ARGS(&fac))) && fac) printf("factory hooked %d\n", owned((*(void***)fac)[9])), fac->Release();
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::string line = read_all(recorder_dir(dir) + L"\\refused\\" + file_key(exe));
+    printf("refused %s\n", line.empty() ? "(none)" : line.substr(line.find(' ') + 1).c_str());
     return 0;
 }
 
@@ -5936,6 +6394,15 @@ static void arm_self(const std::wstring& dir, const std::wstring& exe) {
     const std::wstring stamp = signed_stamp(size, time, L"", L"", L"", line(L"vendor"), line(L"overlay"), line(L"ab_play_s"), line(L"ab_tag"));
     const std::wstring sig = recorder_sig(std::string(key, n), file_key(exe), file_key(dir.substr(0, dir.size() - 1)), stamp, root, file_key(root_dir));
     if (!sig.empty()) WritePrivateProfileStringW(L"scskiller", L"sig", sig.c_str(), ini.c_str());
+    // the path form in stamps\, as ScsKiller.Signed keeps it
+    const std::wstring here_key = path_folder_key(dir.substr(0, dir.size() - 1));
+    const std::wstring by_path = here_key.empty() || wcscmp(root, L".") ? L"" : recorder_sig(std::string(key, n), file_key(exe), here_key, stamp, L".", here_key);
+    if (by_path.empty()) return;
+    CreateDirectoryW((rdir + L"\\stamps").c_str(), nullptr);
+    h = CreateFileW((rdir + L"\\stamps\\" + here_key).c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+    std::string text;
+    for (wchar_t c : by_path) text += (char)c;
+    if (h != INVALID_HANDLE_VALUE) WriteFile(h, (text + "\r\n").data(), (DWORD)text.size() + 2, &n, nullptr), CloseHandle(h);
 }
 
 // `selftest rec11 <client dll | ->`: on a WARP device made through the proxy d3d11.dll next to the exe, two input layouts
@@ -6770,17 +7237,25 @@ int wmain(int argc, wchar_t** argv) {
     if (argc > 2 && !wcscmp(argv[1], L"preload")) return preload_rows(dir, argv[2]);
     if (argc > 1 && !wcscmp(argv[1], L"framesheld")) return frames_held(dir);
     if (argc > 2 && !wcscmp(argv[1], L"framesmod")) return frames_mod_rows(dir, _wtoi(argv[2]));
+    if (argc > 2 && !wcscmp(argv[1], L"framesopti")) return frames_opti_rows(dir, _wtoi(argv[2]), argc > 3 && !wcscmp(argv[3], L"first"));
+    if (argc > 2 && !wcscmp(argv[1], L"framesfg") && !wcscmp(argv[2], L"slg")) return frames_slg_rows(dir);
+    if (argc > 2 && !wcscmp(argv[1], L"framesfg") && !wcscmp(argv[2], L"slm")) return frames_slm_rows(dir, argc > 3 ? argv[3] : L"");
+    if (argc > 3 && !wcscmp(argv[1], L"framesfg") && !wcscmp(argv[2], L"sl"))
+        return frames_sl_rows(dir, wcscmp(argv[3], L"new") != 0, !wcscmp(argv[3], L"shim"), !wcscmp(argv[3], L"many") ? 20 : 0);
     if (argc > 2 && !wcscmp(argv[1], L"framesfg") && !wcscmp(argv[2], L"ffx"))
         return frames_ffx_rows(dir, argc > 3 && !wcscmp(argv[3], L"play"), argc > 3 && !wcscmp(argv[3], L"late"));
     if (argc > 1 && !wcscmp(argv[1], L"framescapture")) return frames_capture_rows(dir);
     if (argc > 1 && !wcscmp(argv[1], L"framesstorm")) return frames_storm_rows(dir);
     if (argc > 1 && !wcscmp(argv[1], L"framesdummy")) return frames_dummy_rows(dir);
+    if (argc > 1 && !wcscmp(argv[1], L"framesloop")) return frames_loop_rows(dir);
+    if (argc > 1 && !wcscmp(argv[1], L"framesseh")) return frames_seh_rows(dir);
     if (argc > 1 && !wcscmp(argv[1], L"framespreloaded")) return frames_preloaded_rows(dir, argc > 2 ? argv[2] : L"");
     if (argc > 1 && !wcscmp(argv[1], L"nvqi")) return nvqi_rows(dir, argc > 2 && !wcscmp(argv[2], L"exit"));
     if (argc > 2 && !wcscmp(argv[1], L"framesfg")) return frames_fg_rows(dir, wcscmp(argv[2], L"plain") ? argv[2] : nullptr, argc > 3 && !wcscmp(argv[3], L"overlay"));
     if (argc > 1 && !wcscmp(argv[1], L"factory")) return factory_rows(dir, argc > 2 ? argv[2] : nullptr);
     if (argc > 2 && !wcscmp(argv[1], L"anticheat")) return anticheat_rows(dir, argv[2], argc > 3 ? argv[3] + std::wstring(L"\\") : L"");
     if (argc > 1 && !wcscmp(argv[1], L"factoryrejected")) return factory_rejected_rows(dir);
+    if (argc > 2 && !wcscmp(argv[1], L"factorylate")) return factory_late_rows(dir, argv[2]);
     if (argc > 2 && !wcscmp(argv[1], L"rec11frames")) return rec11_frames(dir, _wtoi(argv[2]));
     if (argc > 2 && !wcscmp(argv[1], L"rec11")) return rec11_rows(dir, argv[2], argc > 3 && !wcscmp(argv[3], L"ctx"));
     if (argc > 2 && !wcscmp(argv[1], L"chain")) return chain_rows(dir, (unsigned)_wtoi(argv[2]), argc > 3 && !wcscmp(argv[3], L"swap"));

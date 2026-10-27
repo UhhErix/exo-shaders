@@ -36,6 +36,8 @@ public sealed class RedEngineReader : IEngineReader
 
     /// <summary>The whole material cache's layout, then the shaders of its first techniques whose keys it has, until one
     /// is a pipeline <see cref="Graphics"/> takes of a stage set the embedded rule lists.</summary>
+    public int ReaderVersion(EngineInfo engine) => 2;
+
     public EngineInfo? Detect(Game game)
     {
         var path = GameFiles.Find(game.InstallDir, Materials);
@@ -211,6 +213,6 @@ public sealed class RedEngineReader : IEngineReader
     static byte[] Stamp(Game game, string path, string rel)
     {
         var fi = new FileInfo(path);
-        return Encoding.UTF8.GetBytes($"{GameFiles.Rel(game.InstallDir, path, path, rel)}|{fi.Length}|{fi.LastWriteTimeUtc.Ticks}\n");
+        return Encoding.UTF8.GetBytes(ContentStamps.Of(GameFiles.Rel(game.InstallDir, path, path, rel), fi.FullName));
     }
 }

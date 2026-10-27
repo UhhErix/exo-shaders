@@ -143,15 +143,29 @@ internal static class Fmt
             case QueueStage.Planning: return "Building plan";
             case QueueStage.Materializing: return "Preparing files";
             case QueueStage.Paused: return q.Note is { } n ? "Paused: " + n : "Paused";
+            // a finished warm's steps (SCSKiller 1.3.3): the cache copied into the game's folder, the driver saving its cache
+            // as the compile process exits, and the bookkeeping after it
+            case QueueStage.Merging: return Format.MergingStage;
+            case QueueStage.Saving: return Format.SavingStage;
+            case QueueStage.Finishing: return Format.FinishingStage;
             case QueueStage.Warming when q.Note is { } note: return "Compiling: " + note;
         }
         return "Compiling";
     }
 
+    /// <summary>The protocol's stage (CONTRACT.md QueueItem.stage): a finished warm's own steps (Merging, Saving, Finishing)
+    /// stay "warming", with their own stageText.</summary>
+    public static string ProtocolStage(QueueStage s) => s is QueueStage.Merging or QueueStage.Saving or QueueStage.Finishing ? "warming" : Camel(s.ToString());
+
+    /// <summary>A finished warm's own steps (<see cref="ProtocolStage"/>): their progress, if any, isn't pipelines.</summary>
+    public static bool AfterWarm(QueueItem q) => q.Stage is QueueStage.Merging or QueueStage.Saving or QueueStage.Finishing;
+
     public static string? ProgressText(QueueItem q)
     {
+        if (q.Stage is QueueStage.Saving or QueueStage.Finishing) return q.Note;   // elapsed time, no share
         WarmProgress? p = q.Progress;
         if (p is null || p.Total <= 0) return null;
+        if (q.Stage == QueueStage.Merging) return $"{Percent(q):0.0}% · {Format.Bytes(p.Done)} of {Format.Bytes(p.Total)}";
         string mem = ScsKiller.MemoryLimitNote(p) is { } m ? " · " + m : "";
         return $"{Percent(q):0.0}% · {p.Done:N0} of {p.Total:N0} {(q.Stage == QueueStage.Indexing ? "packages" : "pipelines")}"
             + (p.PerSecond > 0.0 && !ScsKiller.Stalled(q) ? $" · {p.PerSecond:N0}/s" : "")
@@ -173,7 +187,8 @@ internal static class Fmt
     {
         if (ScsKiller.Stalled(q)) return null;
         WarmProgress? p = q.Progress;
-        if (p is null || !(p.PerSecond > 0.0)) return g is null ? null : CompileTime(g);
+        if (p is { Total: > 0 } d && d.Done >= d.Total) return null;   // through: nothing to count down
+        if (p is null || !(p.PerSecond > 0.0)) return AfterWarm(q) || g is null ? null : CompileTime(g);   // a step after the warm: no rate yet, or nothing to count down
         return TimeSpan.FromSeconds((p.Total - p.Done) / (p.SteadyPerSecond > 0.0 ? p.SteadyPerSecond : p.PerSecond));   // the last minutes' rate: the 30 s one swings 3x
     }
 

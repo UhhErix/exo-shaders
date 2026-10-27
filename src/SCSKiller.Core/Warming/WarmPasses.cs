@@ -160,6 +160,26 @@ public sealed class WarmPasses
         return found;
     }
 
+    /// <summary>The record keys of <paramref name="items"/> (scskiller_warm's item numbers) that are D3D12 items of the work
+    /// folder, as the warm writes them to <see cref="App.Recordings.FailedFile"/>.</summary>
+    public static List<string> KeysOf(string workDir, IEnumerable<long> items)
+    {
+        var want = items.ToHashSet();
+        var recs = new HashSet<string>(StringComparer.Ordinal);
+        var plans = new List<string>();
+        var keys = new List<string>();
+        foreach (var db in new[] { "scskiller.db", "scskiller_gen.db" })
+            foreach (var (tag, payload) in Records(Path.Combine(workDir, db)))
+            {
+                if (tag is 'B' or 'N' or 'W' or 'D' or '1' or '2' or '3') continue;
+                var key = Key(tag, payload!);
+                if (tag == 'P') plans.Add(key);
+                else if (recs.Add(key) && want.Contains(recs.Count - 1)) keys.Add(key);
+            }
+        keys.AddRange(plans.Where((_, i) => want.Contains(recs.Count + i)));
+        return keys;
+    }
+
     static SortedDictionary<int, string>? Stages(char tag, byte[] payload)
     {
         try { return new SortedDictionary<int, string>(PsoDb.Parse(new PsoDb.Rec(tag, payload)).Stages); }

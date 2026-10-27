@@ -2224,7 +2224,7 @@ public partial class AppTests : IDisposable
         Assert.True(ScsKiller.IsOurProxy(Path.Combine(_exeDir, "d3d12.dll")));   // the recorder records under ReShade
 
         var work = Path.Combine(_root, "layer-work");
-        var (dir, fingerprint) = k.LayerFor(_game, work)!.Value;
+        var (dir, fingerprint, _) = k.LayerFor(_game, work)!.Value;
         Assert.Equal(Path.Combine(work, "layer"), dir);
         Assert.Equal(["ReShade.ini", "dxgi.dll", "renodx-ff7rebirth.addon64"], Directory.GetFiles(dir).Select(Path.GetFileName).Order(StringComparer.Ordinal));
         Assert.Equal(ReShadeDll, File.ReadAllBytes(Path.Combine(dir, "dxgi.dll")));
@@ -2351,7 +2351,7 @@ public partial class AppTests : IDisposable
         k.ReconcileRecorders();
         Assert.True(ScsKiller.IsOurProxy(Path.Combine(exeDir, "d3d12.dll")));
 
-        var (dir, fingerprint) = k.LayerFor(game, Path.Combine(_root, "layer-work"))!.Value;
+        var (dir, fingerprint, _) = k.LayerFor(game, Path.Combine(_root, "layer-work"))!.Value;
         Assert.Equal(["ReShade.ini", "dxgi.dll", "renodx-ue-extended.addon64"], Directory.GetFiles(dir).Select(Path.GetFileName).Order(StringComparer.Ordinal));
         Assert.Equal(ReShadeDll, File.ReadAllBytes(Path.Combine(dir, "dxgi.dll")));
         k.Enqueue(game.Id);
@@ -2406,8 +2406,8 @@ public partial class AppTests : IDisposable
         Assert.Equal((GameStatus.Stale, ScsKiller.NotThroughLayerReason), (k.Games.Single().Status, k.Games.Single().StatusReason));
     }
 
-    /// <summary>A game with an HDR mod that contains anti-cheat compiles without the layer, and stays Warmed after a restart,
-    /// whose first evaluation runs before the game is listed.</summary>
+    /// <summary>A game with an HDR mod that contains anti-cheat compiles through the layer too (SCSKiller 1.3.3: its files are
+    /// only read), and stays Warmed after a restart, whose first evaluation runs before the game is listed.</summary>
     [Fact]
     public async Task An_anti_cheat_game_with_an_HDR_mod_stays_warmed_after_a_restart()
     {
@@ -2420,7 +2420,7 @@ public partial class AppTests : IDisposable
         k.Enqueue(_game.Id);
         k.StartQueue();
         await k.WhenQueueIdle().WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Null(k.Store.LoadGame(_game.Id).WarmedLayer);
+        Assert.NotNull(k.Store.LoadGame(_game.Id).WarmedLayer);
         Assert.Equal(GameStatus.Warmed, k.Games.Single().Status);
 
         File.Delete(Path.Combine(k.Store.DataDir, "games.json"));   // no last list to show first: a new build, or the driver not read yet
@@ -2709,25 +2709,31 @@ public partial class AppTests : IDisposable
     }
 
     /// <summary>AMD, an exe whose AGS makes the device (Cyberpunk 2077's): the recorder goes in front of AGS as amd_ags_x64.dll,
-    /// the game's own renamed amd_ags_real.dll. Every way out puts the game's AGS back byte for byte (the exe links it).</summary>
+    /// the game's own renamed to the name the wrapper links: amd_ags_real.dll for SCSKiller 1.4.0-alpha.3's, which Exo Shaders
+    /// ships, amd_ags_x64_scskiller.dll for 1.3.3's (<paramref name="chain133"/>). Every way out puts the game's AGS back byte
+    /// for byte (the exe links it).</summary>
     [Theory]
-    [InlineData("uninstall")]
-    [InlineData("off")]
-    [InlineData("app uninstall")]
-    [InlineData("gpu changed")]     // on NVIDIA: out of AGS, in as d3d12.dll
-    [InlineData("record lost")]     // a record that doesn't name the rename: the wrapper in the folder tells
-    [InlineData("removal cut off")] // ...and a removal stopped with the wrapper parked, before AGS was back
-    [InlineData("failed install")]
-    public async Task An_amd_ags_game_records_through_the_wrapper_and_every_removal_puts_its_ags_back(string path)
+    [InlineData("uninstall", false)]
+    [InlineData("off", false)]
+    [InlineData("app uninstall", false)]
+    [InlineData("gpu changed", false)]     // on NVIDIA: out of AGS, in as d3d12.dll
+    [InlineData("record lost", false)]     // a record that doesn't name the rename: the wrapper in the folder tells
+    [InlineData("removal cut off", false)] // ...and a removal stopped with the wrapper parked, before AGS was back
+    [InlineData("failed install", false)]
+    [InlineData("uninstall", true)]
+    [InlineData("record lost", true)]
+    [InlineData("removal cut off", true)]
+    public async Task An_amd_ags_game_records_through_the_wrapper_and_every_removal_puts_its_ags_back(string path, bool chain133)
     {
         // alpha.3 checks the wrapper fits: the game's AGS and the wrapper both export what the exe links
         var real = ExportingCreateDevice(Planning.MiddlewarePackTests.Pe(ScsKiller.AgsName, Guid.NewGuid().ToByteArray()));
         var ags = Path.Combine(_exeDir, ScsKiller.AgsName);
-        var renamed = Path.Combine(_exeDir, ScsKiller.AgsRealName);
+        var chain = chain133 ? ScsKiller.AgsChainName : ScsKiller.AgsRealName;
+        var renamed = Path.Combine(_exeDir, chain);
         File.WriteAllBytes(_game.ExePath, DiscoveryAndVendorTests.ExeWithAgs());
         File.WriteAllBytes(ags, real);
         var wrapper = Path.Combine(Path.GetDirectoryName(_proxy)!, "scskiller_ags.dll");
-        File.WriteAllBytes(wrapper, ExportingCreateDevice(Planning.MiddlewarePackTests.Pe("scskiller_ags.dll", "SCSKiller_StartWarm"u8.ToArray(), Guid.NewGuid().ToByteArray())));
+        File.WriteAllBytes(wrapper, AgsWrapper(chain));
         var was = GameFiles.WrappableAgs;
         GameFiles.WrappableAgs = new([Sha256Of(ags)], StringComparer.OrdinalIgnoreCase);
         try
@@ -2750,7 +2756,7 @@ public partial class AppTests : IDisposable
                 Assert.Equal(real, File.ReadAllBytes(renamed));
                 Assert.False(File.Exists(Path.Combine(_exeDir, "d3d12.dll")));
                 Assert.DoesNotContain("next=", File.ReadAllText(Path.Combine(_exeDir, "scskiller.ini")));
-                Assert.Equal(new ChainedDll(ScsKiller.AgsRealName, Sha256Of(renamed)), k.Store.LoadGame(_game.Id).RecorderChained);
+                Assert.Equal(new ChainedDll(chain, Sha256Of(renamed)), k.Store.LoadGame(_game.Id).RecorderChained);
                 switch (path)
                 {
                     case "uninstall": k.UninstallRecorder(_game.Id); break;
@@ -2782,6 +2788,66 @@ public partial class AppTests : IDisposable
             Assert.False(File.Exists(ags + ".scskiller-new"));
         }
         finally { GameFiles.WrappableAgs = was; }
+    }
+
+    /// <summary>A wrapper that took the game's AGS under SCSKiller 1.4.0-alpha.3's name (amd_ags_real.dll) goes out and back in
+    /// under the name the app's wrapper links now (SCSKiller 1.3.3's amd_ags_x64_scskiller.dll): the two files can't be swapped
+    /// one by one. Nothing of the game's AGS is lost on the way.</summary>
+    [Fact]
+    public async Task An_amd_ags_chain_under_another_name_than_the_wrapper_links_goes_in_again_under_its_name()
+    {
+        var real = ExportingCreateDevice(Planning.MiddlewarePackTests.Pe(ScsKiller.AgsName, Guid.NewGuid().ToByteArray()));
+        var ags = Path.Combine(_exeDir, ScsKiller.AgsName);
+        File.WriteAllBytes(_game.ExePath, DiscoveryAndVendorTests.ExeWithAgs());
+        File.WriteAllBytes(ags, real);
+        var wrapper = Path.Combine(Path.GetDirectoryName(_proxy)!, "scskiller_ags.dll");
+        File.WriteAllBytes(wrapper, AgsWrapper(ScsKiller.AgsRealName));
+        var was = GameFiles.WrappableAgs;
+        GameFiles.WrappableAgs = new([Sha256Of(ags)], StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var k = Killer(new FakeReader(Unreal), vendor: new FakeVendor(Gpu with { Vendor = GpuVendor.Amd }));
+            k.AgsDll = wrapper;
+            await k.ScanAsync(default);
+            k.InstallRecorder(_game.Id);
+            Assert.Equal(real, File.ReadAllBytes(Path.Combine(_exeDir, ScsKiller.AgsRealName)));
+            k.ReconcileRecorders(_game.Id);   // the same wrapper: nothing moves
+            Assert.Equal(ScsKiller.AgsRealName, k.Store.LoadGame(_game.Id).RecorderChained?.Name);
+            Assert.True(File.Exists(Path.Combine(_exeDir, ScsKiller.AgsRealName)));
+
+            File.WriteAllBytes(wrapper, AgsWrapper(ScsKiller.AgsChainName));
+            await k.ScanAsync(default);
+            k.ReconcileRecorders(_game.Id);
+            Assert.Equal(File.ReadAllBytes(wrapper), File.ReadAllBytes(ags));
+            Assert.False(File.Exists(Path.Combine(_exeDir, ScsKiller.AgsRealName)));
+            Assert.Equal(real, File.ReadAllBytes(Path.Combine(_exeDir, ScsKiller.AgsChainName)));
+            Assert.Equal(ScsKiller.AgsChainName, k.Store.LoadGame(_game.Id).RecorderChained?.Name);
+
+            k.UninstallRecorder(_game.Id);
+            Assert.Equal(real, File.ReadAllBytes(ags));
+            Assert.False(File.Exists(Path.Combine(_exeDir, ScsKiller.AgsChainName)));
+        }
+        finally { GameFiles.WrappableAgs = was; }
+    }
+
+    /// <summary>A recorder AGS wrapper (scskiller_ags.dll) that links the game's AGS as <paramref name="chain"/>.</summary>
+    static byte[] AgsWrapper(string chain) => ImportingAgs(ExportingCreateDevice(Planning.MiddlewarePackTests.Pe("scskiller_ags.dll",
+        "SCSKiller_StartWarm"u8.ToArray(), Guid.NewGuid().ToByteArray())), chain);
+
+    /// <summary><paramref name="dll"/> (<see cref="Planning.MiddlewarePackTests.Pe"/>) importing CreateDevice from <paramref name="from"/>:
+    /// one import descriptor and its thunk, past the export directory.</summary>
+    static byte[] ImportingAgs(byte[] dll, string from)
+    {
+        void U32(int at, uint v) => System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(dll.AsSpan(at), v);
+        U32(0x58 + 120, 0x1100);   // import directory: one descriptor and the terminator
+        U32(0x58 + 124, 40);
+        U32(0x300, 0x1180);        // its thunks
+        U32(0x300 + 12, 0x1160);   // its name
+        U32(0x300 + 16, 0x1180);
+        U32(0x380, 0x1190);        // one thunk: the hint/name entry's RVA
+        Encoding.ASCII.GetBytes(from).CopyTo(dll, 0x360);
+        "agsDriverExtensionsDX12_CreateDevice"u8.CopyTo(dll.AsSpan(0x392));   // past the 2-byte hint: one the game's AGS exports
+        return dll;
     }
 
     static string Sha256Of(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
@@ -7474,7 +7540,7 @@ public partial class AppTests : IDisposable
         Assert.Equal("2 failed (the driver rejected them)", ScsKiller.WarmCounts(2, 0));
         Assert.Equal("7 skipped (a shader not in this install)", ScsKiller.WarmCounts(0, 7));
         Assert.Equal("2 failed (the driver rejected them), 3 skipped (they crash the GPU driver)", ScsKiller.WarmCounts(2, 0, 3));
-        Assert.Equal("1 skipped for this compile (the GPU driver crashed or hung on it or on what it builds on)", ScsKiller.WarmCounts(0, 0, 0, 1));
+        Assert.Equal("1 skipped for this compile (the GPU driver crashed or hung on it or on what it builds on, or it wasn't tried past a spot where it kept failing)", ScsKiller.WarmCounts(0, 0, 0, 1));
     }
 
     [Fact]
@@ -9672,7 +9738,9 @@ public partial class AppTests : IDisposable
     }
 
     /// <summary>A compile that gave up on device removals (Resumable) keeps its resume point, its counts and the keys that
-    /// crash the driver, so the next compile goes on from there and still skips them. Another failure keeps none.</summary>
+    /// crash the driver, so the next compile goes on from there and still skips them; past the spot where the driver kept
+    /// failing (SCSKiller 1.3.3, ScsKiller.GiveUpSkip): what it skips there counts as skipped for that compile. Another
+    /// failure keeps none.</summary>
     [Fact]
     public async Task A_compile_stopped_by_device_removals_continues_where_it_stopped()
     {
@@ -9696,16 +9764,16 @@ public partial class AppTests : IDisposable
         Assert.Equal(QueueStage.Failed, q.Stage);
         Assert.StartsWith(Warmer.CrashedError(1), q.Error);
         var rec = k.Store.LoadGame(_game.Id);
-        Assert.Equal((4000L, 3L, 2L), (rec.ResumeAt, rec.ResumeFailed, rec.ResumeDriverSkipped));
+        Assert.Equal((5000L, 3L, 1002L, 5000L, ScsKiller.GiveUpSkip), (rec.ResumeAt, rec.ResumeFailed, rec.ResumeDriverSkipped, rec.ResumeSkipEnd, rec.ResumeSkipWidth));
         Assert.Equal([key], rec.CrashKeys);
         await WarmOnce(k, _game.Id);
-        Assert.Equal([0L, 0L, 4000L], warmer.StartAts);
+        Assert.Equal([0L, 0L, 5000L], warmer.StartAts);
         Assert.Equal([key], warmer.SkipKeys[2]!);
-        Assert.Equal("4 failed (the driver rejected them), 3 skipped for this compile (the GPU driver crashed or hung on them or on what they build on)",
+        Assert.Equal("4 failed (the driver rejected them), 1003 skipped for this compile (the GPU driver crashed or hung on them or on what they build on, or they weren't tried past a spot where it kept failing)",
             k.Queue.Single().Note);
         rec = k.Store.LoadGame(_game.Id);
-        Assert.Equal((0L, 4L, 3L), (rec.ResumeAt, rec.LastWarmFailed, rec.LastWarmDriverSkipped));
-        Assert.Equal(3L, k.Games.Single().LastWarmDriverSkipped);
+        Assert.Equal((0L, 4L, 1003L, 0L), (rec.ResumeAt, rec.LastWarmFailed, rec.LastWarmDriverSkipped, rec.ResumeSkipEnd));
+        Assert.Equal(1003L, k.Games.Single().LastWarmDriverSkipped);
     }
 
     [Fact]
@@ -11265,8 +11333,10 @@ public partial class AppTests : IDisposable
             "1.0,S,0,0,80.0,a", "2.0,S,0,0,30.0,b", "3.0,S,0,0,1.0,b", "4.0,s,1,1,0.5,c", "5.0,R,0,0,40.0,d", "6.0,S,0,0,70.0,q",
             "7.0,S,0,0,10.0,e", "8.0,S,0,0,50.0,x", "#end,9000"]);
         var warmed = new HashSet<string> { "a", "b", "c", "d", "q", "e" };
-        Assert.Equal((2, 30.0), ScsKiller.WarmedCreates(SessionLog.Launches(csv), 5000, warmed, new HashSet<string> { "q" }));
-        Assert.Equal((0, 0.0), ScsKiller.WarmedCreates(SessionLog.Launches(csv), 7000, warmed, null));
+        // Seen and Cold: every warmed pipeline of the launch but library loads, earlier launches' and RayQuery's included (a 80,
+        // b 30, d 40, q 70, e 10), and those at UnreachedMedianMs or slower
+        Assert.Equal((2, 30.0, 5, 4), ScsKiller.WarmedCreates(SessionLog.Launches(csv), 5000, warmed, new HashSet<string> { "q" }));
+        Assert.Equal((0, 0.0, 0, 0), ScsKiller.WarmedCreates(SessionLog.Launches(csv), 7000, warmed, null));
         Assert.True(ScsKiller.Unreached(((int)ScsKiller.MinJudgedCreates, ScsKiller.UnreachedMedianMs)));
         Assert.False(ScsKiller.Unreached(((int)ScsKiller.MinJudgedCreates - 1, 500)));
         Assert.False(ScsKiller.Unreached((5000, ScsKiller.UnreachedMedianMs - 0.1)));
@@ -14017,7 +14087,7 @@ public partial class AppTests : IDisposable
 
     /// <summary>What a stopped part of a warm didn't create stays out of compiled.keys when the warm completes after a resume
     /// (work\, with its failed keys, goes with the stopped item); so does what it created: a later part's device may have
-    /// evicted it (AMD's cap).</summary>
+    /// evicted it (AMD's cap). What the last part created, from its start, goes on record (SCSKiller 1.3.3).</summary>
     [Fact]
     public async Task What_a_stopped_warm_didnt_create_is_replayed_by_the_next_recompile()
     {
@@ -14034,9 +14104,9 @@ public partial class AppTests : IDisposable
         k.StartQueue();
         await k.WhenQueueIdle().WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(QueueStage.Stopped, k.Queue.Single().Stage);
-        await WarmOnce(k, game.Id);   // the resume
+        await WarmOnce(k, game.Id);   // the resume, from item 2
         await WarmOnce(k, game.Id);
-        Assert.Equal(items.Select(r => r.Key), replayed[^1]);
+        Assert.Equal(items.Take(2).Select(r => r.Key), replayed[^1]);   // the last part's item 2 isn't replayed again
     }
 
     /// <summary>Each reason a recompile replays everything (ScsKiller.FullReplayReason): nothing on record, another driver,
@@ -16256,7 +16326,7 @@ public partial class AppTests : IDisposable
         k.Enqueue(_game.Id);
         k.StartQueue();
         await k.WhenQueueIdle().WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Equal(GameStatus.Warmed, k.Games.Single().Status);
+        Assert.Equal(GameStatus.NeedsRecording, k.Games.Single().Status);   // its plan holds nothing: 1.3.3's no-shaders status
 
         publish(a);
         release.Reset();
@@ -16332,7 +16402,7 @@ public partial class AppTests : IDisposable
         k.Log = null;
         Assert.Equal(1, k.Games.Single().RecordedSinceWarm);   // the warm compiled the recording as prepared, without B
         await Compile(k);   // the same plan, with the recording as it is now
-        Assert.Equal((GameStatus.Warmed, 0L), (k.Games.Single().Status, k.Games.Single().RecordedSinceWarm));
+        Assert.Equal((GameStatus.NeedsRecording, 0L), (k.Games.Single().Status, k.Games.Single().RecordedSinceWarm));   // its plan holds nothing: 1.3.3's no-shaders status
     }
 
     [Fact]
@@ -16453,7 +16523,7 @@ public partial class AppTests : IDisposable
         k.RefreshGame(_game.Id);
         Assert.Equal((GameStatus.Warmed, 0L), (k.Games.Single().Status, k.Games.Single().RecordedSinceWarm));   // the warm would skip it
         await Compile(k);
-        Assert.Equal((GameStatus.Warmed, 0L), (k.Games.Single().Status, k.Games.Single().RecordedSinceWarm));
+        Assert.Equal((GameStatus.NeedsRecording, 0L), (k.Games.Single().Status, k.Games.Single().RecordedSinceWarm));   // its plan holds nothing: 1.3.3's no-shaders status
 
         using (var f = new FileStream(Path.Combine(_exeDir, "scskiller.db"), FileMode.Append))   // played here: recorded with its bytes
         {
@@ -16698,9 +16768,9 @@ public partial class AppTests : IDisposable
             PsoDb.Write(f, 'C', PsoDb.Compute(CommunityTests.Sha1(rs), CommunityTests.Sha1(a)));
         await k.ScanAsync(default);
         await Compile(k);
-        Assert.Equal((GameStatus.Warmed, 0L), (k.Games.Single().Status, NewShaders.Count(k.Games.Single())));
+        Assert.Equal((GameStatus.NeedsRecording, 0L), (k.Games.Single().Status, NewShaders.Count(k.Games.Single())));   // its plan holds nothing: 1.3.3's no-shaders status
         k.RefreshGame(_game.Id);
-        Assert.Equal((GameStatus.Warmed, 0L), (k.Games.Single().Status, NewShaders.Count(k.Games.Single())));
+        Assert.Equal((GameStatus.NeedsRecording, 0L), (k.Games.Single().Status, NewShaders.Count(k.Games.Single())));   // its plan holds nothing: 1.3.3's no-shaders status
     }
 
     [Fact]
@@ -16921,7 +16991,7 @@ public partial class AppTests : IDisposable
         Assert.True(File.Exists(Path.Combine(dir, "community.db")));
         Assert.Equal(new string('c', 40), Core.App.Community.Downloaded(dir)!.MatchesNothingIn);
         k.RefreshGame(_game.Id);
-        Assert.Equal(GameStatus.Warmed, k.Games.Single().Status);   // not planned again for it
+        Assert.Equal(GameStatus.NeedsRecording, k.Games.Single().Status);   // not planned again for it: its plan holds nothing, 1.3.3's no-shaders status
 
         OtherBuild(Pso(elsewhere), Pso(a));
         await Compile(k);
@@ -16961,7 +17031,7 @@ public partial class AppTests : IDisposable
         k.RefreshGame(_game.Id);
         Assert.Equal((GameStatus.Warmed, 0L), (k.Games.Single().Status, k.Games.Single().RecordedSinceWarm));   // the warm would skip both
         await Compile(k);
-        Assert.Equal((GameStatus.Warmed, 0L), (k.Games.Single().Status, k.Games.Single().RecordedSinceWarm));
+        Assert.Equal((GameStatus.NeedsRecording, 0L), (k.Games.Single().Status, k.Games.Single().RecordedSinceWarm));   // its plan holds nothing: 1.3.3's no-shaders status
 
         var bytes = "a DXIL library this install doesn't have"u8.ToArray();   // then a recording has the library
         Community(k, new PsoDb.Rec('B', [.. SHA1.HashData(rs), .. rs]), new PsoDb.Rec('B', [.. SHA1.HashData(bytes), .. bytes]), collection, pipeline);
@@ -17075,7 +17145,7 @@ public partial class AppTests : IDisposable
         await k.ScanAsync(default);
         await Compile(k);
         var s = k.Games.Single();
-        Assert.Equal((GameStatus.Warmed, 0L, 0), (s.Status, s.RecordedSinceWarm, s.Middleware!.Single().Pipelines));
+        Assert.Equal((GameStatus.Unsupported, 0L, 0), (s.Status, s.RecordedSinceWarm, s.Middleware!.Single().Pipelines));   // its plan holds nothing: 1.3.3's no-shaders status
         Assert.Equal(0, s.Plan!.MiddlewareItems);
     }
 
@@ -17153,7 +17223,7 @@ public partial class AppTests : IDisposable
         k.Enqueue(_game.Id);
         k.StartQueue();
         await k.WhenQueueIdle().WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Equal(GameStatus.Warmed, k.Games.Single().Status);   // without A: the community recording is off
+        Assert.Equal(GameStatus.NeedsRecording, k.Games.Single().Status);   // without A: the community recording is off
 
         publish(a);
         k.StartCommunitySync();

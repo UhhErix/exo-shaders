@@ -225,7 +225,7 @@ async Task<int> Status(string? query)
           warmed     {(g.WarmedAt is { } w ? $"{w:yyyy-MM-dd HH:mm} for driver {g.WarmedDriverVersion} in {Hms(g.LastWarmTime)}" + (ScsKiller.WarmCounts(g.LastWarmFailed ?? 0, g.LastWarmSkipped ?? 0, g.LastWarmCrashed ?? 0, g.LastWarmDriverSkipped ?? 0, g.LastWarmUnbuilt ?? 0) is { } counts ? $"; {counts}" : "") : "never")}
           cache      {(g.CacheOnDisk is { } c ? $"{Format.Bytes(c)} on disk (driver-cache files its warms or the game had open)" : "-")}{(g.WindowsCache is { } wc ? $", {Format.Bytes(wc)} in its D3DSCache folder" : "")}
           keys       {(rec.CacheKeys.Count > 0 ? string.Join(", ", rec.CacheKeys.Order()) : "-")}{(k.WarmAgs(g.Game.Id) is { } ags ? $" (compiles register its AGS app name {ags.App}, key {k.AgsKey(g.Game.Id)}: the exe name's case doesn't matter)" : AmdAppCache.IsNameHashed(rec.CacheKeys, ScsKiller.WarmExeName(g.Game, rec)) == false ? " (an app profile's key, not the exe name's hash: the name's case doesn't matter)" : "")}
-          recorder   {(g.RecorderInstalled ? "installed" : "not installed")}{(g.RecorderRefused is { } why ? $"; {(ScsKiller.NeverRecorded(g) ? ScsKiller.NothingRecordedTitle + ". " : "")}{why}" : "")}
+          recorder   {(g.RecorderInstalled ? "installed" : "not installed")}{(g.RecorderFailure is { } failed ? $" ({failed})" : "")}{(g.RecorderRefused is { } why ? $"; {(ScsKiller.NeverRecorded(g) ? ScsKiller.NothingRecordedTitle + ". " : "")}{why}" : "")}
           recording  {(g.RecordingBytes > 0 ? $"{(g.RecordingBytes < 1 << 20 ? $"{Math.Max(1, g.RecordingBytes >> 10)} KB" : Format.Bytes(g.RecordingBytes))} (the game folder's files and SCSKiller's copy)" : "-")}, limit {ScsKiller.LimitText(k.Settings.RecordingLimitMB)} per game{(g.RecordingPaused ? $"; {ScsKiller.PausedNote(k.Settings)}" : "")}
           last play  {(g.LastSession is { } l ? $"{Hms(l.Duration)}, {l.Requests} pipelines: {l.FromGameLibrary} from the game's library, {l.CacheHits} cache hits, {l.Compiles} compiles (worst {l.WorstCompileMs:0.0} ms){(l.StartupCompiles > 0 ? $", {l.StartupCompiles} compiles while the game started or loaded" : "")}{(l.RayQueryRecompiles > 0 ? $", {l.RayQueryRecompiles} ray-traced pipelines the driver partly recompiles every launch" : "")}{(l.StateObjectsReady + l.StateObjectsCompiled + l.StateObjectsStartupCompiled > 0 ? $"; ray tracing state objects: {l.StateObjectsReady} ready, {l.StateObjectsCompiled} compiled{(l.StateObjectsStartupCompiled > 0 ? $", {l.StateObjectsStartupCompiled} compiled while the game started or loaded" : "")}" : "")}" : "-")}
           1st launch {(rec.FirstLaunch is { } fl ? $"{fl.At.LocalDateTime:yyyy-MM-dd HH:mm}, after the last compile: {fl.Hits} cache hits, {fl.Compiles} compiles ({fl.Compiled * 100:0.0}% compiled)" : "-")}
@@ -358,7 +358,7 @@ async Task<int> Compile()
     var targets = args[1] == "--all-ready"
         ? k.Games.Where(s => s.Status is GameStatus.Ready or GameStatus.Stale && s.NoStutter == null && !s.CompileUnreached).ToList()
         : [Match(k.Games, args[1])];
-    if (targets is [{ StatusReason: ScsKiller.CantReachReason } refused]) return Fail($"{refused.Game.Name}: {refused.StatusReason}");
+    if (targets is [{ StatusReason: ScsKiller.CantReachReason or ScsKiller.ThirtyTwoBitReason } refused]) return Fail($"{refused.Game.Name}: {refused.StatusReason}");
     if (args.Contains("--careful") || args.Contains("--fast"))
         foreach (var g in targets)
         {
@@ -504,7 +504,7 @@ static async Task<(ScsKiller K, GameState G, IEngineReader Reader, EngineInfo En
     var g = Match(k.Games, query);
     var reader = ScsKiller.DefaultReaders();
     var engine = g.Engine ?? reader.Detect(g.Game) ?? throw new InvalidOperationException($"{g.Game.Name}: engine not supported");
-    return (k, g, reader, engine, reader.Index(g.Game, engine, log, CancellationToken.None));
+    using (SCSKiller.Core.Games.ContentStamps.Cached(k.Store.GameDir(g.Game.Id))) return (k, g, reader, engine, reader.Index(g.Game, engine, log, CancellationToken.None));
 }
 
 async Task<int> Index()

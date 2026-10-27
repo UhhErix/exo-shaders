@@ -17,7 +17,7 @@ public sealed partial class LibraryPage : Page
         var refresh = new Coalesced(DispatcherQueue, Vm.Refresh);
         var step = new Coalesced(DispatcherQueue, Vm.ScanStep);
         void OnChanged(GameState _) => refresh.Request();
-        void OnQueue(QueueItem q) { if (q.Stage != QueueStage.Warming) refresh.Request(); }   // progress ticks change nothing here
+        void OnQueue(QueueItem q) { if (q.Stage is not (QueueStage.Warming or QueueStage.Merging or QueueStage.Saving or QueueStage.Finishing)) refresh.Request(); }   // progress ticks change nothing here
         Loaded += (_, _) =>
         {
             App.Core.GameChanged += OnChanged; App.Core.QueueChanged += OnQueue; Icons.Failed += refresh.Request;
@@ -192,7 +192,7 @@ public sealed partial class LibraryPage : Page
     {
         var row = RowOf(sender);
         if (!await App.ConfirmAsync(this, $"Record {row.Name}?",
-                $"SCSKiller adds a small {Fmt.RecorderDll(row.State)} next to the game that writes down every pipeline it creates. " +
+                $"SCSKiller adds a small {Fmt.RecorderFiles(row.State)} next to the game that writes down every pipeline it creates. " +
                 "Play for about 5 minutes, close the game, then add it to the compile queue. You can remove it any time from the game's page.",
                 "Add recorder", ContentDialogButton.Primary)) return;
         try { await Task.Run(() => App.Core.InstallRecorder(row.Id)); }   // file IO and the game's re-evaluation

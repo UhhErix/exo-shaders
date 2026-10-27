@@ -35,6 +35,8 @@ public sealed class RageReader : IEngineReader
     /// carver's; ReadShaders re-indexes when it runs without an Index in the same process.</summary>
     readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, Loc>> located = new();
 
+    public int ReaderVersion(EngineInfo engine) => 2;
+
     public EngineInfo? Detect(Game game)
     {
         long read = 0;
@@ -118,7 +120,7 @@ public sealed class RageReader : IEngineReader
                 }
                 return true;
             }, ct);
-            if (found) content.AppendData(Encoding.UTF8.GetBytes($"{rel}|{f.Length}|{f.LastWriteTimeUtc.Ticks}\n"));
+            if (found) content.AppendData(Encoding.UTF8.GetBytes(ContentStamps.Of(rel, f.FullName)));
         }
         if (libraries == 0) throw new InvalidDataException($"{UpdateDir}: no SGD2 shader library in its archives: scan the game again");
         rootSigs.Apply(shaders);

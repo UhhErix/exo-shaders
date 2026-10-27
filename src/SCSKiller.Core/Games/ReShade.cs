@@ -81,11 +81,20 @@ public sealed record ReShadeInstall(string Dll, bool LoadsAddons, string? Ini, s
 
     /// <summary>What a warm through this layer depends on: ReShade's DLL, the add-ons that change pipelines and the
     /// <see cref="Loader"/> with its OptiScaler.ini (its sampler overrides change root signatures), each by name, size and
-    /// write time (not ReShade.ini: ReShade rewrites it as it runs); null = nothing to copy (not <see cref="Layered"/>).</summary>
-    public string? Fingerprint => !Layered ? null : string.Join('|', new[] { Dll }.Concat(Addons.Where(a => a is { Disabled: false, Kind: not AddonKind.NotPipeline }).Select(a => a.Path))
+    /// content (not write time: reinstalling the same files rewrites it, nor ReShade.ini: ReShade rewrites it as it runs);
+    /// null = nothing to copy (not <see cref="Layered"/>).</summary>
+    public string? Fingerprint => Stamp(f => ReShade.ContentHash(f) ?? f.LastWriteTimeUtc.Ticks.ToString());
+
+    /// <summary><see cref="Fingerprint"/> by write time, as compiles before the content hash kept it.</summary>
+    public string? WriteTimeFingerprint => Stamp(f => f.LastWriteTimeUtc.Ticks.ToString());
+
+    /// <summary>A warm through <paramref name="kept"/> (a <see cref="Fingerprint"/>, either form) ran through this layer as it is now.</summary>
+    public bool Matches(string? kept) => kept != null && (kept == Fingerprint || kept == WriteTimeFingerprint);
+
+    string? Stamp(Func<FileInfo, string> of) => !Layered ? null : string.Join('|', new[] { Dll }.Concat(Addons.Where(a => a is { Disabled: false, Kind: not AddonKind.NotPipeline }).Select(a => a.Path))
         .Concat(Loader is { } o ? [o] : []).Select(p => new FileInfo(p)).Select(f => (f.Name, File: f))
         .Concat(Loader is { } l ? [("OptiScaler.ini", new FileInfo(GameFiles.Find(Path.GetDirectoryName(l)!, "OptiScaler.ini")))] : [])
-        .Select(x => $"{x.Name}:{x.File.Length}:{x.File.LastWriteTimeUtc.Ticks}"));
+        .Select(x => $"{x.Name}:{x.File.Length}:{of(x.File)}"));
 }
 
 public static class ReShade
@@ -527,6 +536,13 @@ public static class ReShade
         s.ReadExactly(bytes);
         return Array.FindIndex(markers, m => bytes.AsSpan().IndexOf(m) >= 0);
     }) as int? ?? NotRead;
+
+    /// <summary>The file's SHA-1, read once while its size and write time stay the same; null = unreadable or over <see cref="MaxBytes"/>.</summary>
+    internal static string? ContentHash(FileInfo f) => Cached(f, "sha1", () =>
+    {
+        using var s = new FileStream(f.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        return Convert.ToHexStringLower(System.Security.Cryptography.SHA1.HashData(s));
+    }) as string;
 
     /// <summary><paramref name="read"/>'s result (<paramref name="what"/>) for the file while its size, write time, change time and
     /// file id stay the same; null = it

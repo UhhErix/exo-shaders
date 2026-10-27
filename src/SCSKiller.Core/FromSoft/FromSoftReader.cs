@@ -58,7 +58,7 @@ public sealed class FromSoftReader(string dataDir, Func<string, byte[]?>? downlo
     public static Title? TitleOf(Game game) =>
         Titles.FirstOrDefault(t => t.Exe.Equals(Path.GetFileName(game.ExePath), StringComparison.OrdinalIgnoreCase));
 
-    public int ReaderVersion(EngineInfo engine) => 2;
+    public int ReaderVersion(EngineInfo engine) => 3;
 
     public EngineInfo? Detect(Game game)
     {
@@ -178,7 +178,7 @@ public sealed class FromSoftReader(string dataDir, Func<string, byte[]?>? downlo
         using var content = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
         content.AppendData(Encoding.UTF8.GetBytes($"{Family} {IndexVersion}\n"));
         foreach (var (rel, f) in title.Archives.Length == 0 ? SourceFiles(dir, title) : archives.Select(a => (a.Rel, a.Bhd))) // a key found later changes it
-            content.AppendData(Encoding.UTF8.GetBytes($"{GameFiles.Rel(dir, f.FullName, f.FullName, rel)}|{f.Length}|{f.LastWriteTimeUtc.Ticks}\n"));
+            content.AppendData(Encoding.UTF8.GetBytes(ContentStamps.Of(GameFiles.Rel(dir, f.FullName, f.FullName, rel), f.FullName)));
         var platforms = shaders.Keys.Select(s => platformOf[s]).Distinct()
             .OrderBy(p => p is CarvedReader.Platform or D3D11 ? 0 : 1).ThenBy(p => p, StringComparer.Ordinal).ToList();
         log?.Report($"{title.Name}: {files} shader files, {shaders.Count} shaders ("

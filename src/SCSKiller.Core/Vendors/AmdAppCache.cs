@@ -79,6 +79,10 @@ public sealed class AmdAppCache(string dxcDir, string dxDir, string? vkDir = nul
         AgsRules().Select(r => r.Profiles?.GetValueOrDefault(appName)).OfType<string>().Select(k => $"{D3D12Prefix}{k.ToLowerInvariant()}").FirstOrDefault()
         ?? ProfileKey(exeFileName) ?? AppNameKey(appName);
 
+    /// <summary>The app names whose app-name profile in the rules gives this key: a profiled game holds no hash of its name.</summary>
+    public static IEnumerable<string> ProfiledApps(string key) =>
+        AgsRules().SelectMany(r => r.Profiles ?? []).Where(p => key.Equals($"{D3D12Prefix}{p.Value}", StringComparison.OrdinalIgnoreCase)).Select(p => p.Key);
+
     public static bool ProvenAgsApp(string appName) => AgsRules().Any(r => r.Proven?.Contains(appName, StringComparer.Ordinal) == true);
 
     /// <summary>Driver app profiles measured on 32.0.31041.1004: a name part (case-insensitive) and the fixed DxcCache key it

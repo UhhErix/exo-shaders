@@ -32,6 +32,8 @@ BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID) {
     // by full path: a load by name would find this dll again
     HMODULE real = LoadLibraryW(sys);
     if (!real) return FALSE;
+    // DLL redirection (<exe>.local) applies to full paths too: this file again would forward every export to itself
+    if (real == (HMODULE)self) return FALSE;
     auto names = (DWORD*)(base + ex->AddressOfNames);
     auto ords = (WORD*)(base + ex->AddressOfNameOrdinals);
     auto fns = (DWORD*)(base + ex->AddressOfFunctions);

@@ -215,13 +215,17 @@ public static partial class D3DSCache
 
     /// <summary>Puts every db of a staged exe's folder into the game's: NVIDIA from 621 keeps compiled pipelines there, keyed by
     /// content, so they hit under any exe path. A missing db is copied in naming <paramref name="exe"/>; an existing one gains
-    /// the missing rows in one transaction, only with the same schema and compiler. False on doubt, that db unchanged then: a
-    /// db held open by any process, another compiler, a db that fails SQLite's check, a link. <paramref name="stop"/> true (the
+    /// the missing rows in one transaction, only with the same schema and compiler, both dbs checked by SQLite first unless
+    /// none is missing. False on doubt, that db unchanged then: a db held open by any process, another compiler, a db that
+    /// fails SQLite's check, a link. <paramref name="stop"/> true (the
     /// game started) ends it early: the game's db is rolled back and released, the rest left as it is. <paramref name="refused"/>
     /// gets why the first db stayed out. The adapter dbs take the identity <see cref="Decide"/> gives (an Xbox game's
-    /// <paramref name="package"/> family), which <paramref name="stamped"/> gets when an adapter db went in or all stayed out for it.</summary>
+    /// <paramref name="package"/> family), which <paramref name="stamped"/> gets when an adapter db went in or all stayed out for it.
+    /// <paramref name="added"/> gets the keys each db added. <paramref name="progress"/> gets the units of <see cref="MergeWork"/> done
+    /// as they go. <paramref name="checkedDbs"/>: the game's dbs by path as <see cref="CheckStamp"/> read them after the last check
+    /// or write of ours; one still the same skips its check.</summary>
     public static bool MergeInto(string from, string to, string exe, Action<long>? added = null, Func<bool>? stop = null, Action<string>? refused = null,
-        string? package = null, Action<IdentityStamp>? stamped = null)
+        string? package = null, Action<IdentityStamp>? stamped = null, Action<long>? progress = null, IDictionary<string, string>? checkedDbs = null)
     {
         var ok = true;
         Lookup(exe, out var read);
@@ -237,7 +241,7 @@ public static partial class D3DSCache
         {
             string? why;
             try { why = stop?.Invoke() == true ? GameStarted : MergeDb(f, Path.Combine(to, Path.GetFileName(f)), exe, added, stop, decided.Stamped,
-                decided.Source == IdentityStamp.ByRule); }
+                decided.Source == IdentityStamp.ByRule, progress, checkedDbs); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { why = e.Message; }
             into |= why == null && Path.GetFileName(f).Contains("_VEN_", StringComparison.OrdinalIgnoreCase);
             if (why == null) continue;
@@ -248,14 +252,19 @@ public static partial class D3DSCache
         return ok;
     }
 
-    /// <summary>A db of the folder fails SQLite's check: what the compile wrote there is lost. False on doubt (held, unopenable).</summary>
+    /// <summary>A db of the folder fails SQLite's check, or its keys and values can't be read as the merge counts them: what the
+    /// compile wrote there is lost. False on doubt (held, unopenable).</summary>
     public static bool Damaged(string dir)
     {
         foreach (var f in Directory.GetFiles(dir, "*.dxcache"))
         {
             if (Held(f)) continue;
             if (sqlite3_open_v2(f, out var db, 0x01 /* READONLY */, 0) != 0) { sqlite3_close_v2(db); continue; }
-            try { if (Text(db, "pragma quick_check") != "ok") return true; }
+            try
+            {
+                if (Text(db, "pragma quick_check") != "ok" || Text(db, "select count(*) from sqlite_master where name in ('keys', 'vals')") == "2"
+                    && !Exec(db, "select count(*) from keys k join vals v on v.keyid = k.keyid")) return true;
+            }
             finally { sqlite3_close_v2(db); }
         }
         return false;
@@ -283,7 +292,8 @@ public static partial class D3DSCache
     const string GameStarted = "the game started";
 
     /// <summary>Null when merged, else why not.</summary>
-    static string? MergeDb(string from, string to, string exe, Action<long>? added, Func<bool>? stop, AppIdentity? asd = null, bool byRule = false)
+    static string? MergeDb(string from, string to, string exe, Action<long>? added, Func<bool>? stop, AppIdentity? asd = null, bool byRule = false,
+        Action<long>? progress = null, IDictionary<string, string>? checkedDbs = null)
     {
         // the runtime stamps a registered exe's identity into its adapter db only, and empties an adapter db without it
         var adapter = Path.GetFileName(from).Contains("_VEN_", StringComparison.OrdinalIgnoreCase);
@@ -292,22 +302,49 @@ public static partial class D3DSCache
         if (LinkedDb(from) || LinkedDb(to)) return "a db is a link";
         if (Held(from) || Held(from + "-wal")) return "the compile's db is open in another process";
         var copy = !File.Exists(to);
-        if (!Open(from, out var src)) return "the compile's db can't be opened";
+        var (size, g) = (new FileInfo(from).Length, copy ? 0 : new FileInfo(to).Length);
+        var work = Work(size, copy ? null : g, SameVolume(from, to));
+        long reported = 0;
+        var gate = new Lock();
+        void Advance(long to)
+        {
+            lock (gate)
+                if (to > reported)
+                {
+                    progress?.Invoke(to - reported);
+                    reported = to;
+                }
+        }
+        // SQLite reports nothing inside a check or an insert: this process's reads since the step began stand for its progress
+        T Step<T>(long bytes, Func<T> run)
+        {
+            var (at, start) = (reported, ReadBytes());
+            T result;
+            using (progress == null ? null : new Timer(_ => Advance(at + Math.Clamp(ReadBytes() - start, 0, bytes)), null, 1000, 1000))
+                result = run();
+            Advance(at + bytes);
+            return result;
+        }
+        if (!Open(from, out var src, uri: true)) return "the compile's db can't be opened";
+        (long Keys, long Vals)? lacking = null;
         long rows = 0;
         try
         {
             long busy = -1;
             // the copy takes the main file only: every WAL frame must be in it
             if (copy && (!Rows(src, "pragma wal_checkpoint(TRUNCATE)", st => busy = sqlite3_column_int64(st, 0)) || busy != 0)) return "the compile's db WAL can't be checkpointed";
-            if (Text(src, "pragma quick_check") != "ok" || Text(src, string.Format(SchemaSql, "main")) is not { } schema
+            if (Text(src, string.Format(SchemaSql, "main")) is not { } schema
                 || !schema.Contains("keys:") || !schema.Contains("vals:") || !schema.Contains("app_id:")) return "the compile's db fails SQLite's check";
-            Rows(src, "select count(*) from keys", st => rows = sqlite3_column_int64(st, 0));
+            // read without the game's db lock, which a check of a big db would hold for minutes
+            if (!copy) lacking = Exec(src, $"attach database {Quote(Immutable(to))} as g") ? Lacking(src, "main", "g") : null;
+            if (lacking is not (0, 0) && Step(size, () => Text(src, "pragma main.quick_check")) != "ok") return "the compile's db fails SQLite's check";
+            if (copy) Rows(src, "select count(*) from keys", st => rows = sqlite3_column_int64(st, 0));
         }
         finally { sqlite3_close_v2(src); }
         if (copy)
         {
             if (File.Exists(to + "-wal") || File.Exists(from + "-wal") && new FileInfo(from + "-wal").Length > 0) return "a WAL is left beside a db";   // a WAL would replay into the copy
-            if (string.Equals(Path.GetPathRoot(Path.GetFullPath(from)), Path.GetPathRoot(Path.GetFullPath(to)), StringComparison.OrdinalIgnoreCase))
+            if (SameVolume(from, to))
             {
                 // one volume: the staged db (ours) is named for the game where it is, then renamed into the game's folder
                 if (stop?.Invoke() == true) return GameStarted;
@@ -325,6 +362,7 @@ public static partial class D3DSCache
                 File.Move(from, to);   // fails when the runtime made one meanwhile: merged next time
                 File.Delete(from + "-shm");
                 added?.Invoke(rows);
+                Advance(work);
                 return null;
             }
             var tmp = to + "." + Guid.NewGuid().ToString("N") + ".scskiller-tmp";
@@ -335,7 +373,13 @@ public static partial class D3DSCache
                 using (var d = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 {
                     if (File.Exists(from + "-wal") && new FileInfo(from + "-wal").Length > 0) return "a WAL is left beside a db";
-                    s.CopyTo(d);
+                    var buffer = new byte[1 << 20];
+                    long copied = 0;
+                    for (int n; (n = s.Read(buffer)) > 0;)
+                    {
+                        d.Write(buffer, 0, n);
+                        Advance(size + (long)(size * Math.Min(1.0, (copied += n) / (double)Math.Max(1, s.Length))));   // the checkpoint may have grown it past size
+                    }
                 }
                 if (!Open(tmp, out var db)) return "the copied db can't be opened";
                 try
@@ -348,6 +392,7 @@ public static partial class D3DSCache
                 if (stop?.Invoke() == true) return GameStarted;
                 File.Move(tmp, to);   // fails when the runtime made one meanwhile: merged next time
                 added?.Invoke(rows);
+                Advance(work);
                 return null;
             }
             finally
@@ -374,14 +419,27 @@ public static partial class D3DSCache
             // No busy timeout: the dbs wait for the next try.
             TestPause();
             if (!Exec(t, "pragma main.locking_mode=exclusive") || !Exec(t, "select count(*) from main.sqlite_master")) return "the game's db is in use by another process";
+            // read under the exclusive lock: nothing writes the db until it closes
+            var known = checkedDbs != null && checkedDbs.TryGetValue(to, out var was) && checkedDbs.Remove(to) && was == CheckStamp(to);
             if (!Exec(t, $"attach database {Quote(from)} as s")) return "the compile's db can't be attached";
             var schema = Text(t, string.Format(SchemaSql, "main"));
             if (schema == null || schema != Text(t, string.Format(SchemaSql, "s"))) return "the game's db has another schema";
             if (schema.Contains("compiler_id:") && (Text(t, string.Format(CompilerSql, "main")) is not { Length: > 0 } mine || mine != Text(t, string.Format(CompilerSql, "s")))) return "the game's db names another compiler";
             if (stop?.Invoke() == true) return GameStarted;
             if (!Exec(t, "begin immediate")) return "the game's db is locked";
-            var refused = Text(t, "pragma main.quick_check") != "ok" ? "the game's db fails SQLite's check"
-                : Text(t, $"select count(*) from main.app_id where exe_path is not {Quote(exe)}") != "0" ? "the game's db names another exe"
+            // under the lock again: the game may have changed its db since; nothing to add skips the checks and the inserts
+            var now = Lacking(t, "s", "main");
+            if (stop?.Invoke() == true)
+            {
+                Rollback(t);
+                return GameStarted;
+            }
+            var write = now is not (0, 0);
+            string? refused = null;
+            if (write && lacking is (0, 0) && Step(size, () => Text(t, "pragma s.quick_check")) != "ok") refused = "the compile's db fails SQLite's check";   // unchecked before: nothing was missing then
+            // a check reads every page: a big db's takes minutes to an hour, cold
+            if (write && refused == null && !known && Step(g, () => Text(t, "pragma main.quick_check")) != "ok") refused = "the game's db fails SQLite's check";
+            refused ??= Text(t, $"select count(*) from main.app_id where exe_path is not {Quote(exe)}") != "0" ? "the game's db names another exe"
                 // made under an earlier registration: the game's next start empties it, the rows go in after that
                 // a rule never changes a db the game's runtime wrote: its rows go in only where it holds the rule's identity
                 : stamp != null && byRule && Text(t, $"select count(*) from main.app_id where not ({stamp.Is})") != "0" ? "the game's db holds another identity than its rule's"
@@ -392,16 +450,18 @@ public static partial class D3DSCache
                 Rollback(t);
                 return refused;
             }
-            const string fresh = "s.keys where key not in (select key from main.keys)";
-            rows = 0;
-            Rows(t, $"select count(*) from {fresh}", st => rows = sqlite3_column_int64(st, 0));
+            var fresh = Fresh("s", "main");
             // groups stay out: no driver writes them yet
-            if (Exec(t, $"insert into main.keys(key, last_accessed) select key, last_accessed from {fresh}")
-                && Exec(t, "insert into main.vals(keyid, type, value) select m.keyid, v.type, v.value from s.keys k join s.vals v on v.keyid = k.keyid "
-                    + "join main.keys m on m.key = k.key where not exists (select 1 from main.vals x where x.keyid = m.keyid and x.type = v.type)")
+            if ((!write || Step(size, () => Exec(t, $"insert into main.keys(key, last_accessed) select k.key, k.last_accessed from {fresh}")
+                    && Exec(t, "insert into main.vals(keyid, type, value) select m.keyid, v.type, v.value from s.keys k join s.vals v on v.keyid = k.keyid "
+                        + "join main.keys m on m.key = k.key where not exists (select 1 from main.vals x where x.keyid = m.keyid and x.type = v.type)")))
                 && stop?.Invoke() != true && Exec(t, "commit"))
             {
-                added?.Invoke(rows);
+                // checked (or skipped as unchanged) and written by us alone: the stamp after the checkpoint stands for that state
+                if (checkedDbs != null && (write || known) && Rows(t, "pragma main.wal_checkpoint(TRUNCATE)", st => { }) && CheckStamp(to) is { } after)
+                    checkedDbs[to] = after;
+                added?.Invoke(now?.Keys ?? 0);
+                Advance(work);
                 return null;
             }
             Rollback(t);
@@ -413,6 +473,41 @@ public static partial class D3DSCache
             GC.KeepAlive(check);
         }
     }
+
+    /// <summary>A merge's progress units for a staged db of <paramref name="size"/> bytes: its check, then the game's db's
+    /// (<paramref name="game"/> bytes, null when there is none and the db is copied in) and the inserts, or the copy's bytes to another volume.</summary>
+    static long Work(long size, long? game, bool sameVolume) => game is { } g ? 2 * size + g : sameVolume ? size : 2 * size;
+
+    static bool SameVolume(string a, string b) =>
+        string.Equals(Path.GetPathRoot(Path.GetFullPath(a)), Path.GetPathRoot(Path.GetFullPath(b)), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The progress units <see cref="MergeInto"/> reports for the staged folder <paramref name="from"/> going into
+    /// <paramref name="to"/> (null: no folder of the game's yet).</summary>
+    public static long MergeWork(string from, string? to)
+    {
+        try
+        {
+            return new DirectoryInfo(from).EnumerateFiles("*.dxcache").Sum(f => Work(f.Length,
+                to != null && new FileInfo(Path.Combine(to, f.Name)) is { Exists: true } g ? g.Length : null, to == null || SameVolume(from, to)));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return 0; }
+    }
+
+    static long ReadBytes() => OperatingSystem.IsWindows() && GetProcessIoCounters(GetCurrentProcess(), out var c) ? (long)c.ReadTransferCount : 0;
+
+    /// <summary>How many keys of <paramref name="from"/> <paramref name="into"/> lacks, and values of keys both hold; null
+    /// when they can't be read.</summary>
+    static (long Keys, long Vals)? Lacking(nint db, string from, string into)
+    {
+        long keys = -1, vals = -1;
+        return Rows(db, $"select count(*) from {Fresh(from, into)}", st => keys = sqlite3_column_int64(st, 0))
+            && Rows(db, $"select count(*) from {from}.keys k join {from}.vals v on v.keyid = k.keyid join {into}.keys m on m.key = k.key "
+                + $"where not exists (select 1 from {into}.vals x where x.keyid = m.keyid and x.type = v.type)", st => vals = sqlite3_column_int64(st, 0))
+            && keys >= 0 && vals >= 0 ? (keys, vals) : null;
+    }
+
+    /// <summary>The keys of <paramref name="from"/> <paramref name="into"/> lacks; a NULL key is none.</summary>
+    static string Fresh(string from, string into) => $"{from}.keys k where k.key is not null and not exists (select 1 from {into}.keys x where x.key = k.key)";
 
     static void Rollback(nint db)
     {
@@ -537,11 +632,19 @@ public static partial class D3DSCache
         catch (IOException) { return true; }
     }
 
-    static bool Open(string file, out nint db)
+    static bool Open(string file, out nint db, bool uri = false)
     {
-        if (sqlite3_open_v2(file, out db, 0x02 /* READWRITE */, 0) == 0) return true;
+        if (sqlite3_open_v2(file, out db, 0x02 /* READWRITE */ | (uri ? 0x40 /* URI */ : 0), 0) == 0) return true;
         sqlite3_close_v2(db);
         return false;
+    }
+
+    /// <summary>The db as a merge's check of it may stand for: its <see cref="KeyFiles.Stamp"/> (length, write and change
+    /// times, file id, first and last pages). Null with a WAL beside it, whose frames the stamp can't see.</summary>
+    internal static string? CheckStamp(string db)
+    {
+        try { return File.Exists(db + "-wal") && new FileInfo(db + "-wal").Length > 0 ? null : KeyFiles.Stamp(db, strict: true); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }   // a page under SQLite's lock bytes
     }
 
     static string Immutable(string file) =>
@@ -579,6 +682,10 @@ public static partial class D3DSCache
         finally { sqlite3_finalize(st); }
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    struct IoCounters { public ulong ReadOperationCount, WriteOperationCount, OtherOperationCount, ReadTransferCount, WriteTransferCount, OtherTransferCount; }
+    [DllImport("kernel32.dll")] static extern bool GetProcessIoCounters(nint process, out IoCounters counters);
+    [DllImport("kernel32.dll")] static extern nint GetCurrentProcess();
     [DllImport(Sqlite)] static extern int sqlite3_open_v2([MarshalAs(UnmanagedType.LPUTF8Str)] string file, out nint db, int flags, nint vfs);
     [DllImport(Sqlite)] static extern int sqlite3_close_v2(nint db);
     [DllImport(Sqlite)] static extern int sqlite3_prepare_v2(nint db, [MarshalAs(UnmanagedType.LPUTF8Str)] string sql, int bytes, out nint stmt, nint tail);

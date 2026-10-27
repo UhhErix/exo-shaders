@@ -66,7 +66,8 @@ public static unsafe partial class RootSig
     /// <param name="meshTier">the RHI runs at feature level SM6 (the game's PCD3D_SM6 shaders), where UE 5 sets
     /// GRHISupportsMeshShadersTier0 on mesh-shader GPUs and so denies the mesh/amplification stages it doesn't use</param>
     /// <param name="maxSrvs">the game's MAX_SRVS when it isn't the rule's (<see cref="MaxSrvsFor"/>); 0 = the rule's</param>
-    public static Desc Build(PlanRule r, IReadOnlyDictionary<Stage, ShaderInfo> stages, bool meshTier, uint maxSrvs = 0)
+    /// <param name="nvExtension">the game puts the NVIDIA extension table in every root signature (<see cref="NvExtensionEverywhere"/>)</param>
+    public static Desc Build(PlanRule r, IReadOnlyDictionary<Stage, ShaderInfo> stages, bool meshTier, uint maxSrvs = 0, bool nvExtension = false)
     {
         var rs = r.RootSignature!;
         if (rs.ByStages is { } by) return ByStages(r, by, stages);
@@ -74,7 +75,7 @@ public static unsafe partial class RootSig
         if (Selects(r, "dagor")) return Dagor.DagorRootSig.Build(stages);
         if (Selects(r, "dagorCbvRanges")) return Dagor.DagorRootSig.Build(stages, cbvRanges: true);
         if (Selects(r, "snowdrop")) return Snowdrop.SnowdropRootSig.Build(stages);
-        return Selects(r, "ff7") ? BuildUe(stages) : BuildStock(r, rs.Stock!, stages, meshTier, maxSrvs);
+        return Selects(r, "ff7") ? BuildUe(stages) : BuildStock(r, rs.Stock!, stages, meshTier, maxSrvs, nvExtension);
     }
 
     static bool Selects(PlanRule r, string shape) => r.RootSignature?.Select?.Contains(shape) == true;
@@ -167,7 +168,7 @@ public static unsafe partial class RootSig
     /// <see cref="Quantize"/>); then each stage's root CBVs b0..; then (5.x) the AGS intrinsics UAV, root constants and the
     /// diagnostic-buffer UAV (5.8: the NVIDIA extension UAV before it), all visible to every stage. Flags: bindless heaps (5.x), input layout, and a deny for every stage
     /// with nothing bound (compute signatures deny all graphics stages).</summary>
-    static Desc BuildStock(PlanRule r, StockRule p, IReadOnlyDictionary<Stage, ShaderInfo> stages, bool meshTier, uint maxSrvs)
+    static Desc BuildStock(PlanRule r, StockRule p, IReadOnlyDictionary<Stage, ShaderInfo> stages, bool meshTier, uint maxSrvs, bool nvExtension)
     {
         var all = p.Stages.Select(RulesFile.StageOf).ToArray();
         var order = stages.ContainsKey(Stage.Compute) ? [Stage.Compute] : all.Where(stages.ContainsKey).ToArray();
@@ -193,7 +194,7 @@ public static unsafe partial class RootSig
             : p.LayoutNeedsVertexInput && !vs.Inputs.Any(i => i.SysValue == 0) ? 0u : 1u;
         if (p.Ags && (used & UeFlags.AmdIntrinsics) != 0) rows.Add([4, 0, 0, 0x7FFF0ADE, 2]);        // u0, AGS_DX12_SHADER_INSTRINSICS_SPACE_ID
         if (p.RootConstants && (used & UeFlags.RootConstants) != 0) rows.Add([1, 0, 0, 3, 4]);       // b0 space 3 (UE_HLSL_SPACE_SHADER_ROOT_CONSTANTS), 4 values
-        if (p.NvExtension && (used & UeFlags.NvIntrinsics) != 0) rows.Add([0, 0, 1, 1, 0, 1001, 0, 0]); // u0 space 1001 (UE_HLSL_SPACE_NV_SHADER_EXTN), offset 0
+        if (p.NvExtension && (used & UeFlags.NvIntrinsics) != 0 || nvExtension) rows.Add([0, 0, 1, 1, 0, 1001, 0, 0]); // u0 space 1001 (UE_HLSL_SPACE_NV_SHADER_EXTN), offset 0
         if (p.Diagnostic && (used & UeFlags.DiagnosticBuffer) != 0) rows.Add([4, 0, 0, 999, 2]);     // u0 space 999 (UE_HLSL_SPACE_DIAGNOSTIC)
         if (p.HeapFlags && (used & UeFlags.BindlessResources) != 0) flags |= 0x400;                  // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
         if (p.HeapFlags && (used & UeFlags.BindlessSamplers) != 0) flags |= 0x800;                   // SAMPLER_HEAP_DIRECTLY_INDEXED
@@ -224,6 +225,14 @@ public static unsafe partial class RootSig
     }
 
     static bool IsSpaceBindless(Binding b) => b is { Class: "srv", Count: -1, Space: >= 4 and < 10 };
+
+    /// <summary>A stock Unreal game whose shaders bind the NVIDIA extension UAV (u0, space 1001) while none carries Unreal's
+    /// NVIDIA vendor-extension flag builds the extension table into every root signature, whatever the stages bind. Gears of
+    /// War: E-Day (5.6): the driver's cache entries of the game's own pipelines carry one root argument more than the stock
+    /// rule's, and its 1068 compute shaders binding space 1001 have no root signature without the table.</summary>
+    public static bool NvExtensionEverywhere(PlanRule r, IEnumerable<ShaderInfo> shaders) =>
+        r.RootSignature?.Stock is { NvExtension: false } && !Selects(r, "ff7")
+        && shaders.Any(s => s.Bindings.Any(b => b is { Class: "uav", Space: 1001, Lower: 0 })) && shaders.All(s => (s.Counts.Flags & UeFlags.NvIntrinsics) == 0);
 
     /// <summary>The MAX_SRVS a game was built with, from its own shaders: a project may raise the define (D3D12RHI.h: "Titles using
     /// many terrain layers may want to set MAX_SRVS to 64"), and a stock table can't hold a shader binding past it (the runtime

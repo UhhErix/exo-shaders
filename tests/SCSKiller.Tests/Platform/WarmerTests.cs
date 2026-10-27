@@ -926,7 +926,8 @@ public class WarmerTests : IDisposable
         var work = Work(mode);
         var r = await new Warmer(Vendor, _exe) { MaxRecoveries = 2 }.Start(Game, work, new WarmOptions(4, WarmPriority.BelowNormal), null).Completion.WaitAsync(Patience);
         Assert.Equal(WarmOutcome.Failed, r.Outcome);
-        Assert.Equal("the GPU driver kept crashing with no single pipeline to blame, so the compile stopped", r.Error);
+        Assert.Equal("the GPU driver kept crashing with no single pipeline to blame, so the compile stopped. Compiling again continues where it stopped", r.Error);
+        Assert.True(Warmer.GaveUp(r.Error));   // the next compile goes on past this spot (ScsKiller.GiveUpSkip)
         Assert.Equal((10L, 3L), (r.Done, r.Failed));   // one failure per process, the last one's counted once
         Assert.True(r.Resumable);   // the next compile goes on from item 10
     }

@@ -15,6 +15,8 @@ namespace SCSKiller.App;
 public partial class App : Application
 {
     public static IScsKiller Core { get; private set; } = null!;
+    /// <summary>app.log: the data folder's, or the design data's temporary folder's.</summary>
+    public static IProgress<string>? Log { get; private set; }
     public static MainWindow Main { get; private set; } = null!;
     /// <summary>Sign in with Patreon: <see cref="Account.SignInAsync"/> is the entry point for Settings and the welcome dialog.</summary>
     public static Account Account { get; private set; } = null!;
@@ -102,6 +104,7 @@ public partial class App : Application
             Channels();
             watcher = real.WatchGames(stopWatching.Token);
         }
+        Log = Core is ScsKiller withLog ? withLog.Log : new AppLog(fakeDir);
         Main = new MainWindow();
         Main.ApplyTheme(Core.Settings.Theme);
         if (shots < 0) Main.RestorePlacement(Core is ScsKiller own ? own.Store : new AppStore(fakeDir));   // screenshots: always the default size

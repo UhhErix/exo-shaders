@@ -20,7 +20,7 @@ public sealed partial class DetailPage : Page
         // a warm raises a tick every progress report: only this game's move the page, and only its progress
         void OnQueue(QueueItem q)
         {
-            if (q.Stage != QueueStage.Warming) refresh.Request();
+            if (q.Stage is not (QueueStage.Warming or QueueStage.Merging or QueueStage.Saving or QueueStage.Finishing)) refresh.Request();
             else if (q.GameId == Vm?.Row.Id) progress.Request();
         }
         // Refresh too: a change raised while the page wasn't loaded (e.g. the game exited) would show only at the next one

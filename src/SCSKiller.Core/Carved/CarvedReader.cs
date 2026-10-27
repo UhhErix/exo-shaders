@@ -67,7 +67,7 @@ public sealed class CarvedReader : IEngineReader
     /// (it re-indexes then).</summary>
     readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, Loc>> located = new();
 
-    public int ReaderVersion(EngineInfo engine) => engine.Family == Family && engine.Version.EndsWith(EmbeddedRootSignatures) ? 2 : 1;
+    public int ReaderVersion(EngineInfo engine) => engine.Family == Family && engine.Version.EndsWith(EmbeddedRootSignatures) ? 3 : 2;
 
     public EngineInfo? Detect(Game game) => Detect(game, out _);
 
@@ -175,7 +175,7 @@ public sealed class CarvedReader : IEngineReader
         void Stamp(string path, string rel)
         {
             var f = new FileInfo(path);
-            content.AppendData(Encoding.UTF8.GetBytes($"{rel}|{f.Length}|{f.LastWriteTimeUtc.Ticks}\n"));
+            content.AppendData(Encoding.UTF8.GetBytes(ContentStamps.Of(rel, f.FullName)));
         }
         foreach (var (path, seq) in perFile)
         {

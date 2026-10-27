@@ -54,18 +54,27 @@ sealed class WindowsWarmHost : IWarmHost
         var p = Process.Start(psi) ?? throw new InvalidOperationException("could not start " + exe);
         try { WarmJob.Current.Add(p.Id); }   // dies with this SCSKiller process, whatever ends it (WarmJob)
         catch (Exception) { p.Kill(entireProcessTree: true); throw; }
-        p.ErrorDataReceived += (_, e) => { if (e.Data is { Length: > 0 } l) errorLine(l); };
+        var errorEnd = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        p.ErrorDataReceived += (_, e) =>
+        {
+            if (e.Data == null) errorEnd.TrySetResult();
+            else if (e.Data.Length > 0) errorLine(e.Data);
+        };
         p.BeginErrorReadLine();
-        return new Child(p);
+        return new Child(p, errorEnd.Task);
     }
 
-    sealed class Child(Process p) : IWarmProcess
+    // how long after the process exits its stderr may stay open: a process that inherited it (or one the driver keeps from
+    // tearing down) holds it for as long as it lives
+    static readonly TimeSpan ErrorGrace = TimeSpan.FromSeconds(5);
+
+    sealed class Child(Process p, Task errorEnd) : IWarmProcess
     {
         public int Id => p.Id;
 
         public TextReader Output => p.StandardOutput;
 
-        public Task<int?> Exited { get; } = Exit(p);
+        public Task<int?> Exited { get; } = Exit(p, errorEnd);
 
         public bool HasExited => p.HasExited;
 
@@ -77,9 +86,15 @@ sealed class WindowsWarmHost : IWarmHost
             catch (InvalidOperationException) { }   // exited meanwhile
         }
 
-        static async Task<int?> Exit(Process p)
+        // not WaitForExitAsync: it also waits for the redirected streams' end, which a held handle never brings
+        static async Task<int?> Exit(Process p, Task errorEnd)
         {
-            await p.WaitForExitAsync();
+            var exited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            p.Exited += (_, _) => exited.TrySetResult();
+            p.EnableRaisingEvents = true;
+            if (p.HasExited) exited.TrySetResult();
+            await exited.Task;
+            await Task.WhenAny(errorEnd, Task.Delay(ErrorGrace));
             return p.ExitCode;
         }
     }

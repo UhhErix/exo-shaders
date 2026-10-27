@@ -5,7 +5,9 @@ efd603f60f06bf02e06f3f19013b38124268020f48464dd22b14fec660d30b75, `lib\app\`). T
 branch stays local: it is never pushed or released until upstream publishes 1.4's source. `proxy\` holds the 1.3.x source
 of the DX12 files only; the Vulkan layer, fossilize-replay and the preload proxies are new in 1.4. alpha.3 ships the same
 files as alpha.2; the preload proxies are still alpha.2's, because alpha.3's differ from them only in their build
-timestamps. publish-service.ps1 copies them into engine\out\service in the app's layout.
+timestamps. publish-service.ps1 copies them into engine\out\service in the app's layout. Since the SCSKiller 1.3.3 merge
+`proxy\` also holds 1.3.3's recorder and compile changes, as source only: these binaries predate them (engine/CHANGELOG.md
+lists the fixes that wait for newer ones).
 
 | File | SHA-256 | From |
 | --- | --- | --- |

@@ -179,8 +179,12 @@ public sealed partial class ScsKiller
 
     bool RiskOfferedButLaunch(Game g, EngineInfo? engine, bool anyAntiCheat) =>
         RecordsAntiCheat && anyAntiCheat && !Unconfirmed(g) && !RecorderCrashes(g)
-        && engine is { } e && (OperatingSystem.IsWindows() && (e.GraphicsApi.Contains("D3D12") || Records11Api(e, Vendor.Caps)) || ProtonDx12(g, e) || VulkanRoute(g, e))   // a Vulkan game's recorder is a Steam launch's layer
-        && GameVerdicts.Current.Unsupported(g, engine) == null;
+        && engine is { } e && RecordsApi(g, e) && GameVerdicts.Current.Unsupported(g, engine) == null;
+
+    /// <summary>A recorder can record the game's API on this GPU: DirectX 12, or DirectX 11 where its recording records
+    /// (<see cref="Records11Api"/>); off Windows a DirectX 12 game Proton runs (<see cref="ProtonDx12"/>); and a Vulkan game,
+    /// whose recorder is a Steam launch's layer (<see cref="VulkanRoute"/>).</summary>
+    bool RecordsApi(Game g, EngineInfo e) => OperatingSystem.IsWindows() && (e.GraphicsApi.Contains("D3D12") || Records11Api(e, Vendor.Caps)) || ProtonDx12(g, e) || VulkanRoute(g, e);
 
     /// <summary>Off Windows, a DirectX 12 game Steam runs under Proton: the session binds what Steam's reaper started
     /// (<see cref="SteamLaunched"/>), and its d3d12.dll checks that against its Linux process (admit.h's wine_bound). A sandboxed
@@ -667,6 +671,9 @@ public sealed partial class ScsKiller
     /// until the rename.</summary>
     internal static void Place(string path, Action<Stream> write, bool replace = false, string suffix = TempSuffix)
     {
+        // E2E: an antivirus refusing the recorder's copy (800700E1, 800700E2)
+        if (Environment.GetEnvironmentVariable("SCSKILLER_TEST_PLACE_FAIL") is { Length: > 0 } hr && path.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+            throw new IOException(hr, Convert.ToInt32(hr, 16));
         var (file, temp) = CreateTemp(path, suffix);
         try
         {

@@ -4,6 +4,11 @@ EXTERN fake_nv_qi:PROC
 EXTERN fake_nv_qi_inside:PROC
 EXTERN FakeNv_OnOpts:PROC
 EXTERN fake_ffx_create:PROC
+EXTERN fake_sl_upgrade:PROC
+EXTERN fake_sl_getfn:PROC
+EXTERN fake_sl_marker:PROC
+EXTERN fake_sl_consts:PROC
+EXTERN fake_sl_rmarker:PROC
 .code
 ALIGN 16
     db 16 dup (0CCh)
@@ -99,4 +104,38 @@ ffxCreateContext PROC
     db 48h, 8Bh, 0C0h
     jmp fake_ffx_create
 ffxCreateContext ENDP
+
+; Streamline's slUpgradeInterface for `selftest framesfg slg`, hookable the same way, then fake_sl_upgrade.
+ALIGN 16
+    db 16 dup (0CCh)
+slUpgradeInterface PROC
+    db 48h, 8Bh, 0C0h
+    jmp fake_sl_upgrade
+slUpgradeInterface ENDP
+
+; slGetFeatureFunction, and the slPCLSetMarker it hands out, for `selftest framesfg slm`: hookable the same way.
+ALIGN 16
+    db 16 dup (0CCh)
+slGetFeatureFunction PROC
+    db 48h, 8Bh, 0C0h
+    jmp fake_sl_getfn
+slGetFeatureFunction ENDP
+ALIGN 16
+    db 16 dup (0CCh)
+slPCLSetMarker PROC
+    db 48h, 8Bh, 0C0h
+    jmp fake_sl_marker
+slPCLSetMarker ENDP
+ALIGN 16
+    db 16 dup (0CCh)
+slSetConstants PROC
+    db 48h, 8Bh, 0C0h
+    jmp fake_sl_consts
+slSetConstants ENDP
+ALIGN 16
+    db 16 dup (0CCh)
+slReflexSetMarker PROC
+    db 48h, 8Bh, 0C0h
+    jmp fake_sl_rmarker
+slReflexSetMarker ENDP
 END

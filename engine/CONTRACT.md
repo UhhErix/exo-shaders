@@ -371,7 +371,9 @@ type Queue = {
 type QueueItem = {
   id: string, name: string, number: number,
   stage: "waiting" | "indexing" | "planning" | "materializing" | "warming" | "paused" | "done" | "failed" | "stopped"
-  stageText: string             // "Reading shaders", "Building plan", "Preparing files", "Compiling", "Paused: ..."
+  stageText: string             // "Reading shaders", "Building plan", "Preparing files", "Compiling", "Paused: ...", and after
+                                //   the compile (stage "warming", done/total/perSecond absent): "Copying the cache to the
+                                //   game's folder" (percent), "Saving the driver's cache", "Finishing up"
   detail?: string               // "Compiling · 42.0% · 12,000 of 28,000 pipelines · 450/s"
   progressText?: string         // "42.0% · 12,000 of 28,000 pipelines · 450/s · 3 failed"
   percent?: number              // absent = indeterminate

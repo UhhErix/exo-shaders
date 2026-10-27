@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <shlobj.h>
 #include <bcrypt.h>
+#include <cstring>
 #include <string>
 
 // The data folder of the SCSKiller copy that placed the recorder in <dir> (trailing backslash): the parent of the
@@ -148,6 +149,61 @@ inline std::wstring final_dir(const std::wstring& dir) {
     final.resize(m);
     final = final.rfind(L"\\\\?\\UNC\\", 0) == 0 ? L"\\\\" + final.substr(8) : final.rfind(L"\\\\?\\", 0) == 0 ? final.substr(4) : final;
     return final.back() == L'\\' ? final : final + L'\\';
+}
+
+// A folder identity no file system gives: volume serial 0 and a file id under 16 in both halves, beside an exe whose volume
+// has a serial. In DD2 Character Creator's process (Streamline loaded) every directory open answers serial 0, id 6.
+inline bool made_up_id(const FILE_ID_INFO& dir, const FILE_ID_INFO& exe) {
+    unsigned long long half[2];
+    memcpy(half, dir.FileId.Identifier, sizeof half);
+    return !dir.VolumeSerialNumber && exe.VolumeSerialNumber && half[0] < 16 && half[1] < 16;
+}
+
+inline bool open_id(const std::wstring& path, FILE_ID_INFO& out) {
+    HANDLE f = CreateFileW(long_path(path).c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    const bool ok = GetFileInformationByHandleEx(f, FileIdInfo, &out, sizeof out);
+    CloseHandle(f);
+    return ok;
+}
+
+// tests: a process exporting SCSKiller_WarmHost (selftest) with SCSKILLER_TEST_MADE_UP_ID set sees every folder's identity as
+// that game's process does, never a game
+inline bool test_made_up(FILE_ID_INFO& id) {
+    if (!GetProcAddress(GetModuleHandleW(nullptr), "SCSKiller_WarmHost") || !GetEnvironmentVariableW(L"SCSKILLER_TEST_MADE_UP_ID", nullptr, 0)) return false;
+    id = {0, {{6, 0, 0, 0, 0, 0, 0, 0, 6}}};
+    return true;
+}
+
+// The folder's file_key as this process reads it (test_made_up's in tests).
+inline std::wstring folder_file_key(const std::wstring& dir) {
+    FILE_ID_INFO id;
+    return test_made_up(id) ? key_hex(&id, sizeof id) : file_key(dir);
+}
+
+// The file's hard links; 0 when it can't be read.
+inline DWORD hard_links(const std::wstring& path) {
+    HANDLE f = CreateFileW(long_path(path).c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return 0;
+    BY_HANDLE_FILE_INFORMATION info;
+    const DWORD n = GetFileInformationByHandle(f, &info) ? info.nNumberOfLinks : 0;
+    CloseHandle(f);
+    return n;
+}
+
+// This process makes up the folder's identity (made_up_id against the exe's). Never under Wine, whose ids are inodes.
+inline bool made_up_here(const std::wstring& dir, const std::wstring& exe) {
+    FILE_ID_INFO d, e;
+    if (under_wine() || !open_id(dir, d) || !open_id(exe, e)) return false;
+    test_made_up(d);
+    return made_up_id(d, e);
+}
+
+// A folder's key by its path (ScsKiller.PathFolderKey): path_key of its final path without the trailing backslash, as the
+// recorder folder's stamps\ and revocation list carry it beside file_key; "" when it can't be had.
+inline std::wstring path_folder_key(const std::wstring& dir) {
+    const std::wstring f = final_dir(dir);
+    return f.empty() ? L"" : path_key(f.size() > 3 ? f.substr(0, f.size() - 1) : f);
 }
 
 // sig=: the HMAC-SHA1 (lower-case hex) under key of "<exe's file_key>\n<its folder's file_key>\n" + stamp +

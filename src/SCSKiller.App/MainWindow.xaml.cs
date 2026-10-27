@@ -368,8 +368,30 @@ public sealed partial class MainWindow : Window
             }
         }
 
+        // A DLSS game on NVIDIA: with the preloader, with its names held by other files, and blocked (its exe imports none).
+        // SCSKILLER_SHOTS=dlss takes only these.
+        async Task Dlss()
+        {
+            const string id = "ubisoft:Sample.Outlaws";
+            foreach (var (name, change) in new (string, Func<GameState, GameState>)[]
+                     { ("preload", s => s),
+                       ("held", s => s with { Preload = null, PreloadHeld = "winmm.dll, version.dll and dinput8.dll", StreamlineFirst = true, Status = GameStatus.Unsupported,
+                           StatusReason = "needs a recording, " + ScsKiller.PreloadHeldNoRecording("winmm.dll, version.dll and dinput8.dll"), RecorderSkip = ScsKiller.PreloadHeldSkip("winmm.dll, version.dll and dinput8.dll") }),
+                       ("blocked", s => s with { PreloadHeld = null, RecorderSkip = ScsKiller.SkipStreamline, StatusReason = "needs a recording, " + ScsKiller.StreamlineNoRecording }) })
+            {
+                fake.Change(id, change);
+                foreach (var theme in themes)
+                {
+                    Root.RequestedTheme = theme;
+                    Navigate(typeof(DetailPage), id);
+                    await Shot("detail-dlss-" + name);
+                }
+            }
+        }
+
         switch (Environment.GetEnvironmentVariable("SCSKILLER_SHOTS"))
         {
+            case "dlss": await Dlss(); Application.Current.Exit(); return;
             case "asd": await Asd(); Application.Current.Exit(); return;
             case "amd-profiles": await AmdProfiles(); Application.Current.Exit(); return;
             case "problem": await Problem(); Application.Current.Exit(); return;
@@ -455,6 +477,7 @@ public sealed partial class MainWindow : Window
                        ("detail-compiling", typeof(DetailPage), "steam:3489700"),   // mid-compile: the queue's progress on the game page
                        ("detail-report-off", typeof(DetailPage), "xbox:Sample.AtomicHeart"),   // Rate this compile off (not played since), "did not help"
                        ("detail-similar-warning", typeof(DetailPage), "epic:3300000"),   // similar systems: ran worse
+                       ("detail-recorder-failed", typeof(DetailPage), "steam:3900270"),   // the recorder couldn't install
                        ("queue", typeof(QueuePage), null), ("cache", typeof(CachePage), null), ("settings", typeof(SettingsPage), null) })
             {
                 Navigate(page, arg);
@@ -519,6 +542,18 @@ public sealed partial class MainWindow : Window
             await Task.Delay(1000);
             ((QueuePage)ContentFrame.Content).Select("steam:990080", "steam:1627720");   // Hogwarts Legacy and Lies of P
             await Shot("queue-selected", 400);
+
+            fake.CopyAt(0.42);
+            Navigate(typeof(QueuePage));
+            await Shot("queue-copying");
+            Navigate(typeof(DetailPage), "steam:3489700");
+            await Shot("detail-copying");
+            fake.SavingFor("1 min 05 s, 1.2 GB written");
+            Navigate(typeof(QueuePage));
+            await Shot("queue-saving");
+            Navigate(typeof(DetailPage), "steam:3489700");
+            await Shot("detail-saving");
+            fake.JumpTo(0.548);
 
             // The Patreon card: signed out, signed in with "db" (the share prompt), signed out again (the download checkbox
             // turns off live, on the same page), signed in without "db".

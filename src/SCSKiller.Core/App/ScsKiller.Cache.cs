@@ -134,7 +134,7 @@ public sealed partial class ScsKiller
             // a kept or killed compile's staged folders wait for their fold (MergeD3DSCache): the game's, never leftovers
             var unfolded = OperatingSystem.IsWindows() && rec.D3DSCacheSince is { } since
                 ? D3DSCache.Made(Path.Combine(LocalAppData, "D3DSCache"), WorkDirs(Store.GameDir(s.Game.Id)), since).SelectMany(D3DSCache.CacheFiles) : [];
-            Add(CacheGroupKind.Installed, s.Game.Name, GameD3DSCacheFiles(s.Game, rec).Concat(unfolded).Where(f => gameD3ds.Add(f.FullName)).ToList(), [s.Game.Id]);
+            Add(CacheGroupKind.Installed, s.Game.Name, GameD3DSCacheAll(s.Game, rec).Concat(unfolded).Where(f => gameD3ds.Add(f.FullName)).ToList(), [s.Game.Id]);
         }
 
         var gamesDir = Path.Combine(Store.DataDir, "games");

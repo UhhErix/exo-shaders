@@ -55,6 +55,8 @@ public sealed class NixxesReader : IEngineReader
         return null;
     }
 
+    public int ReaderVersion(EngineInfo engine) => 2;
+
     public EngineInfo? Detect(Game game)
     {
         if (!Directory.Exists(game.InstallDir) || Layout(game.InstallDir) is not { } layout) return null;
@@ -97,7 +99,7 @@ public sealed class NixxesReader : IEngineReader
         {
             ct.ThrowIfCancellationRequested();
             if (new FileInfo(f.Path) is { Exists: true } fi)
-                content.AppendData(Encoding.UTF8.GetBytes($"{f.Rel}|{fi.Length}|{fi.LastWriteTimeUtc.Ticks}\n"));
+                content.AppendData(Encoding.UTF8.GetBytes(ContentStamps.Of(f.Rel, fi.FullName)));
             var opened = Each(f, game.InstallDir, detect: false, meter, (entry, library, src) =>
             {
                 var pool = new List<string>();

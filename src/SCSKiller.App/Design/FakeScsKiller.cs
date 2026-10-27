@@ -156,6 +156,12 @@ public sealed class FakeScsKiller : IScsKiller
                 Engine = new EngineInfo(Core.Carved.CarvedReader.Family, "DXBC", null, "D3D12", false, null), RecorderOverride = RecorderOverride.On, RecorderEffective = true,
                 RecorderInstalled = true, RecorderRefused = ScsKiller.RanOtherExeNote("ACValhalla.exe"),
             },
+            // DLSS on NVIDIA: the recorder goes in with its preloader (SCSKILLER_SHOTS=dlss also shows it without one)
+            G("Sample.Outlaws", "Star Wars Outlaws", "DXBC", "Outlaws.exe", 46_210, GameStatus.NeedsRecording, Core.Planning.Planner.Record, at: "ubisoft") with
+            {
+                Engine = new EngineInfo(Core.Carved.CarvedReader.Family, "DXBC", null, "D3D12", false, null), Preload = ScsKiller.PreloadNames[0],
+                Middleware = [new("DLSS", ["nvngx_dlss.dll"], 0)],
+            },
             G("3900030", "Ember Tide", "5.2", "EmberTide-Win64-Shipping.exe", 33_610, GameStatus.NeedsRecording, Core.Planning.Planner.Record) with
                 { RecorderOverride = RecorderOverride.On, RecorderEffective = true, RecorderInstalled = true, RecorderRefused = ScsKiller.GameChangedNote },
             G("3900040", "Quiet Orbit", "5.4", "QuietOrbit-Win64-Shipping.exe", 29_975, GameStatus.NeedsRecording, Core.Planning.Planner.Record) with
@@ -163,6 +169,9 @@ public sealed class FakeScsKiller : IScsKiller
             // its recorder placed by another SCSKiller copy (the installed one, its data copied here): off until turned on here
             G("3900060", "Foreign Field", "5.3", "ForeignField-Win64-Shipping.exe", 31_400, GameStatus.NeedsRecording, Core.Planning.Planner.Record) with
                 { RecorderOverride = RecorderOverride.On, RecorderForeign = true, RecorderNote = ScsKiller.ForeignNote },
+            // Windows Security removed the recorder: every install fails
+            G("3900270", "Pale Harbor", "5.3", "PaleHarbor-Win64-Shipping.exe", 30_200, GameStatus.NeedsRecording, Core.Planning.Planner.Record) with
+                { RecorderOverride = RecorderOverride.On, RecorderEffective = true, RecorderFailure = AvFailure, RecorderNote = AvFailure },
             G("3900050", "Ashen Ward", "5.3", "AshenWard-Win64-Shipping.exe", 36_200, GameStatus.Stale,
                 "the last compile filled the cache of start_protected_game.exe, but the game runs AshenWard-Win64-Shipping.exe") with
                 { WarmedDriverVersion = "610.88", WarmedAt = DateTimeOffset.Now.AddDays(-3), LastWarmTime = TimeSpan.FromSeconds(240) },
@@ -222,7 +231,11 @@ public sealed class FakeScsKiller : IScsKiller
     public CacheDeleteResult DeleteCaches(IReadOnlyList<CacheItem> items) =>
         new(items.Sum(i => i.Bytes), items.Sum(i => i.Files.Count), items.Skip(1).Take(1).Select(i => $"{i.Name}: files in use by Discord.exe (pid 4321)").ToList());
 
-    public long OldDriverBytes() => SampleCaches.Bytes(CacheGroupKind.OldDriver);
+    const string AvFailure = "couldn't install: Windows Security or another antivirus removed the recorder file";
+
+    /// <summary>SCSKILLER_TEST_READ_FAIL: throws, as a failing driver read would, to test that a background read can't end the app.</summary>
+    public long OldDriverBytes() => Environment.GetEnvironmentVariable("SCSKILLER_TEST_READ_FAIL") is { Length: > 0 }
+        ? throw new InvalidOperationException("SCSKILLER_TEST_READ_FAIL") : SampleCaches.Bytes(CacheGroupKind.OldDriver);
 
     static CacheInventory SampleCaches { get; } = new(
         [new("DirectX 12 and 11", Path.Combine(SampleLocal, @"NVIDIA\DXCache"), true, null, false, (long)(105.35 * (1L << 30)))],
@@ -595,8 +608,18 @@ public sealed class FakeScsKiller : IScsKiller
     {
         long total = TotalFor(q.GameId);
         long done = (long)(total * fraction);
-        return q with { Stage = QueueStage.Warming, Progress = new(done, total, 3, 480, done * 24_000, Skipped: 50) };
+        return q with { Stage = QueueStage.Warming, Progress = new(done, total, 3, 480, done * 24_000, Skipped: 50), Note = null };
     }, includeWaiting: true));
+
+    /// <summary>Screenshots: the running item's warm is through and its process exits while the driver writes its cache.</summary>
+    public void SavingFor(string note) => Update(() => SetCurrent(q => q with { Stage = QueueStage.Saving, Progress = null, Note = note }));
+
+    /// <summary>Screenshots: the running item's compile is through and its cache is being copied, at a given fraction.</summary>
+    public void CopyAt(double fraction) => Update(() => SetCurrent(q =>
+    {
+        long total = TotalFor(q.GameId) * 24_000;
+        return q with { Stage = QueueStage.Merging, Progress = new((long)(total * fraction), total, 0, 180_000_000) };
+    }));
 
     void SetRecorder(string gameId, RecorderOverride value)
     {
@@ -614,6 +637,17 @@ public sealed class FakeScsKiller : IScsKiller
     }
 
     /// <summary>Screenshots: the game's recorder is another SCSKiller copy's again, its switch as copied from that copy.</summary>
+    public void Change(string gameId, Func<GameState, GameState> change)
+    {
+        GameState g;
+        lock (gate)
+        {
+            int i = games.FindIndex(x => x.Game.Id == gameId);
+            games[i] = g = change(games[i]);
+        }
+        GameChanged?.Invoke(g);
+    }
+
     public void MakeForeign(string gameId)
     {
         GameState g;
@@ -638,7 +672,7 @@ public sealed class FakeScsKiller : IScsKiller
         GameState? finished = null;
         Update(() => SetCurrent(q =>
         {
-            if (paused || !running) return q;
+            if (paused || !running || q.Stage is QueueStage.Merging or QueueStage.Saving) return q;
             if (q.Stage == QueueStage.Waiting) return q with { Stage = QueueStage.Planning };
             long total = TotalFor(q.GameId);
             if (q.Stage == QueueStage.Planning) return q with { Stage = QueueStage.Warming, Progress = new(0, total, 0, 0, 0) };
@@ -668,7 +702,7 @@ public sealed class FakeScsKiller : IScsKiller
 
     QueueItem? SetCurrent(Func<QueueItem, QueueItem> change, bool includeWaiting = false)
     {
-        int i = queue.FindIndex(q => !q.PlanCheck && (q.Stage is QueueStage.Planning or QueueStage.Warming or QueueStage.Paused
+        int i = queue.FindIndex(q => !q.PlanCheck && (q.Stage is QueueStage.Planning or QueueStage.Warming or QueueStage.Merging or QueueStage.Saving or QueueStage.Paused
                                      || (includeWaiting && q.Stage == QueueStage.Waiting)));
         if (i < 0) return null;
         var next = change(queue[i]);

@@ -41,6 +41,8 @@ public sealed class ForzaTechReader : IEngineReader
     /// carver's; ReadShaders re-indexes when it runs without an Index in the same process.</summary>
     readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, Loc>> located = new();
 
+    public int ReaderVersion(EngineInfo engine) => 2;
+
     public EngineInfo? Detect(Game game)
     {
         var zip = GameFiles.Find(game.InstallDir, EngineZip);
@@ -200,7 +202,7 @@ public sealed class ForzaTechReader : IEngineReader
         try
         {
             var f = new FileInfo(path);
-            return $"{rel}|{f.Length}|{f.LastWriteTimeUtc.Ticks}\n";
+            return ContentStamps.Of(rel, f.FullName);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return $"{rel}|gone\n"; }
     }

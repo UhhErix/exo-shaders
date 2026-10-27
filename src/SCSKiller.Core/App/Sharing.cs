@@ -122,9 +122,11 @@ public sealed record IdentityReport(string Read, AppIdentity[] Registered, strin
 /// content hash last looked at to the end (uploaded, or found to have nothing to share); <see cref="Sent"/>: the uploads of
 /// it the server has (SHA-256 of an upload's records, "|", its content hash), kept across a pass cut short; the rest is the
 /// last upload, if any (<see cref="Psos"/> / <see cref="NewPsos"/>: summed over its uploads). <see cref="Meta"/>: the plan's
-/// rule check the server last got with an upload of it.</summary>
+/// rule check the server last got with an upload of it. <see cref="Build"/>: the store build key it was looked at for ("" for
+/// none), null in a state from before content stamps without write times; <see cref="WaitUntil"/>: when that state's first
+/// upload under another content hash may go (<see cref="Sharing.RekeySpread"/>).</summary>
 public sealed record SharedRecording(string Stamp, DateTimeOffset? At = null, string? UploadId = null, int Psos = 0, int NewPsos = 0, string[]? Sent = null,
-    string? Meta = null);
+    string? Meta = null, string? Build = null, DateTimeOffset? WaitUntil = null);
 
 /// <summary>The write side of the community database: a game's own
 /// recording (recording.db, never the merge with the community's), stripped to its hash-only form, posted with an anonymous
@@ -166,6 +168,15 @@ public sealed class Sharing
     /// (<see cref="Recordings.IncompleteLayerList"/>); null = it didn't. The caller logs it once a pass.</summary>
     public string? Waiting { get; set; }
 
+    /// <summary>How far the first upload of a recording shared before under another content hash is spread.</summary>
+    public static readonly TimeSpan RekeySpread = TimeSpan.FromDays(7);
+
+    /// <summary>The same wait for a device and a build at every start, uniform over <see cref="RekeySpread"/>; random while the
+    /// device id isn't read yet (kept in shared.json either way).</summary>
+    internal static TimeSpan RekeyWait(string? deviceId, string contentHash) => deviceId == null ? TimeSpan.FromTicks(Random.Shared.NextInt64(RekeySpread.Ticks))
+        : TimeSpan.FromTicks((long)(System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(
+        SHA256.HashData(System.Text.Encoding.UTF8.GetBytes($"{deviceId}|{contentHash}"))) % (ulong)RekeySpread.Ticks));
+
     /// <summary>The upload device's id (for the admin's trust-device), null before the first registration, and while the
     /// keyring holds it until it was read in this run.</summary>
     public string? DeviceId => (held ?? file.Peek(out _)?.Value)?.Id;
@@ -206,6 +217,14 @@ public sealed class Sharing
         var last = Shared(gameDir) ?? new("");
         if (last.Stamp == stamp) return null;
         var shared = Path.Combine(gameDir, "shared.json");
+        // every device re-uploads its recordings once under the write-time-free content hashes: spread past the server's daily cap
+        if (last.Build == null && last.UploadId != null && last.Sent is { Length: > 0 } before && !before.Any(s => s.EndsWith("|" + contentHash, StringComparison.Ordinal)))
+        {
+            var until = last.WaitUntil ?? clock.GetUtcNow() + RekeyWait(DeviceId, contentHash);
+            if (last.WaitUntil == null) Community.Write(shared, last = last with { WaitUntil = until });
+            if (clock.GetUtcNow() < until) return null;
+        }
+        string BuildKey() => meta().StoreBuildKey ?? "";
         List<PsoDb.Rec> records;
         IReadOnlySet<string>? excluded;
         try { excluded = layerMade?.Invoke(); }   // read now, right before the payload; one that can't be read throws: nothing shared
@@ -218,7 +237,7 @@ public sealed class Sharing
             try { records = HashOnly.Canonical(all, local: true, out _, HashOnly.MaxEntryStateObjectRefs, excluded); }   // shader and DXIL library blobs dropped (state objects kept)
             catch (InvalidDataException e) when (draws.Count == 0)   // e.g. no PSOs yet: not again until the recording changes
             {
-                Community.Write(shared, last with { Stamp = stamp });
+                Community.Write(shared, last with { Stamp = stamp, Build = BuildKey(), WaitUntil = null });
                 Problem = $"A recording has nothing to share ({e.Message}).";
                 return null;
             }
@@ -327,7 +346,8 @@ public sealed class Sharing
                 return Stop(e is HttpRequestException or OperationCanceledException ? "Can't reach the community database to share a recording." : e.Message);
             }
         }
-        var got = uploadId is null ? last with { Stamp = stamp, Sent = [.. sent] } : new SharedRecording(stamp, clock.GetUtcNow(), uploadId, psos, fresh, [.. sent], sentWith);
+        var got = uploadId is null ? last with { Stamp = stamp, Sent = [.. sent], Build = BuildKey(), WaitUntil = null }
+            : new SharedRecording(stamp, clock.GetUtcNow(), uploadId, psos, fresh, [.. sent], sentWith, BuildKey());
         Community.Write(shared, got);   // looked at: not again until the recording changes
         return uploadId is null ? null : got;
 

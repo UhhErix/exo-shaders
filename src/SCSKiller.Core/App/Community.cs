@@ -448,18 +448,45 @@ public sealed class Community
 
     /// <summary><paramref name="output"/> = <paramref name="first"/>'s records (none when it doesn't exist), then the
     /// records of each of <paramref name="more"/> that the ones before lack (by Rec.Key) and <paramref name="leaveOut"/>
-    /// doesn't name, every 'B' first, as a proxy db.</summary>
-    public static void Union(string first, IReadOnlyList<string> more, string output, IReadOnlySet<string>? leaveOut = null)
+    /// doesn't name, every 'B' first, as a proxy db. An 'N' of <paramref name="more"/> about a PSO <paramref name="first"/>
+    /// has an 'N' for is left out (<see cref="OwnNv"/>): the replay applies a record's last one, and this PC's game creates it
+    /// with its own. A state object's stays: a download's options repair an older recorder's missing ones (RtCollections.OptionFixes). A 'B' of <paramref name="more"/> whose bytes don't hash to its SHA-1 is
+    /// left out: it would take the place of <paramref name="first"/>'s copy. Returns how many were.</summary>
+    public static int Union(string first, IReadOnlyList<string> more, string output, IReadOnlySet<string>? leaveOut = null)
     {
+        var bad = 0;
+        bool Sound(PsoDb.Rec r)
+        {
+            if (r.Tag != 'B' || r.Payload.Length >= 20 && SHA1.HashData(r.Payload.AsSpan(20)).AsSpan().SequenceEqual(r.Payload.AsSpan(0, 20))) return true;
+            bad++;
+            return false;
+        }
         // streamed: a local recording with its shader bytes can be large
-        var have = File.Exists(first) ? PsoDb.Read(first).Select(r => r.Key).ToHashSet() : [];
+        var have = new HashSet<string>();
+        var nv = OwnNv(File.Exists(first) ? PsoDb.Read(first) : [], have);
         if (leaveOut != null) have.UnionWith(leaveOut);
         IEnumerable<PsoDb.Rec> Pass(bool blobs) => (File.Exists(first) ? PsoDb.Read(first) : []).Where(r => r.Tag == 'B' == blobs)
-            .Concat(more.SelectMany(m => PsoDb.Read(m).Where(r => r.Tag == 'B' == blobs && have.Add(r.Key))));
+            .Concat(more.SelectMany(m => PsoDb.Read(m).Where(r => r.Tag == 'B' == blobs && Sound(r) && !(NvTarget(r) is { } t && nv.Contains(t)) && have.Add(r.Key))));
         var tmp = output + ".tmp";
         using (var f = new BufferedStream(File.Create(tmp), 1 << 20))
             foreach (var r in Pass(true).Concat(Pass(false))) PsoDb.Write(f, r.Tag, r.Payload);
         File.Move(tmp, output, true);
+        return bad;
+    }
+
+    /// <summary>The record an 'N' is about; null for any other record.</summary>
+    internal static string? NvTarget(PsoDb.Rec r) => r.Tag == 'N' && r.Payload.Length == PsoDb.NvState.Size ? PsoDb.Hex(r.Payload.AsSpan(0, 20)) : null;
+
+    /// <summary>The PSOs ('G' 'C' 'S') of a recording that have an 'N' there; <paramref name="keys"/> gets every record's key.</summary>
+    internal static HashSet<string> OwnNv(IEnumerable<PsoDb.Rec> recording, HashSet<string>? keys = null)
+    {
+        var (psos, nv) = (new HashSet<string>(), new HashSet<string>());
+        foreach (var r in recording)
+            if (keys?.Add(r.Key) is false) continue;
+            else if (r.Tag is 'G' or 'C' or 'S') psos.Add(r.Key);
+            else if (NvTarget(r) is { } t) nv.Add(t);
+        nv.IntersectWith(psos);
+        return nv;
     }
 
     /// <summary>How long a download's body may send nothing before it's given up (OperationCanceledException): the

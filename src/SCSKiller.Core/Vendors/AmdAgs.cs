@@ -45,6 +45,7 @@ public static class AmdAgs
         if (!names.TryGetValue(stamp, out var app))
         {
             var hashes = dxc.Select(k => uint.TryParse(k.AsSpan(AmdAppCache.D3D12Prefix.Length), System.Globalization.NumberStyles.HexNumber, null, out var h) ? h : 0).ToHashSet();
+            hashes.UnionWith(dxc.SelectMany(AmdAppCache.ProfiledApps).Select(AmdAppCache.Fnv1a));
             try
             {
                 using var s = new FileStream(fi.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan);

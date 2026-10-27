@@ -50,7 +50,7 @@ public sealed class SantaMonicaReader : IEngineReader
     /// carver's; ReadShaders re-indexes when it runs without an Index in the same process.</summary>
     readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, Loc>> located = new();
 
-    public int ReaderVersion(EngineInfo engine) => engine.Version == Version ? 2 : 1;
+    public int ReaderVersion(EngineInfo engine) => engine.Version == Version ? 3 : 2;
 
     public EngineInfo? Detect(Game game)
     {
@@ -92,7 +92,7 @@ public sealed class SantaMonicaReader : IEngineReader
             if (budget < 0) { overCap++; continue; }
             if (pack == null) { notPacks++; continue; }
             packs++;
-            content.AppendData(Encoding.UTF8.GetBytes($"{rel}|{f.Length}|{f.LastWriteTimeUtc.Ticks}\n"));
+            content.AppendData(Encoding.UTF8.GetBytes(ContentStamps.Of(rel, f.FullName)));
             // the programs' root evidence counts even when the pack's containers turn out damaged
             programs.AddRange(pack.Programs.Select(p => (rel, p)));
             // read whole before any of it is kept: a block that doesn't decompress leaves nothing of the pack's containers
@@ -232,7 +232,7 @@ public sealed class SantaMonicaReader : IEngineReader
             if (h == null || ShaderPack1.Read(h) is not { } records) { notPacks++; continue; }
             packs++;
             var rel = GameFiles.Rel(game.InstallDir, f.FullName, f.DirectoryName!, PackDir);
-            content.AppendData(Encoding.UTF8.GetBytes($"{rel}|{f.Length}|{f.LastWriteTimeUtc.Ticks}\n"));
+            content.AppendData(Encoding.UTF8.GetBytes(ContentStamps.Of(rel, f.FullName)));
             var pool = new List<string>();
             foreach (var r in records)
             {
