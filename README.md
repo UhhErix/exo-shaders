@@ -4,7 +4,7 @@
   driver's cache before you play, so a game doesn't stop to compile one the first time it meets a new effect.
 </p>
 
-Exo Shaders is the shader precompiler in [Exo Launcher](https://github.com/ImAvgErix/ExoLauncher)'s System > Shaders.
+Exo Shaders is the shader precompiler in [Exo Launcher](https://github.com/UhhErix/ExoLauncher)'s System > Shaders.
 It ships with Exo and runs as its add-on; download Exo Launcher to use it.
 
 > [!NOTE]
@@ -32,7 +32,7 @@ record can still compile in game.
 
 | | |
 |---|---|
-| App | [Exo Launcher](https://github.com/ImAvgErix/ExoLauncher) on Windows 11 x64 |
+| App | [Exo Launcher](https://github.com/UhhErix/ExoLauncher) on Windows 11 x64 |
 | GPU | NVIDIA or AMD |
 | Games | DirectX 12, and DirectX 11 (on AMD after a recording) |
 
