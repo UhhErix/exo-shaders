@@ -26,8 +26,9 @@ public static class CompiledItems
     }
 
     /// <summary>The items of a warm's work dbs it created: all but those a <see cref="Recordings.FailedFile"/> names, and
-    /// those before scskiller_warm's item <paramref name="from"/> (its --start: a resumed warm's last part).</summary>
-    public static HashSet<string> Created(IReadOnlyList<string> dbs, IEnumerable<string> failed, long from = 0)
+    /// those before scskiller_warm's item <paramref name="from"/> (its --start: a resumed warm's last part) or from item
+    /// <paramref name="to"/> on (a stopped warm's first unfinished one). <paramref name="psosOnly"/>: no state objects.</summary>
+    public static HashSet<string> Created(IReadOnlyList<string> dbs, IEnumerable<string> failed, long from = 0, long to = long.MaxValue, bool psosOnly = false)
     {
         var notCreated = new HashSet<string>(StringComparer.Ordinal);
         foreach (var f in failed.Where(System.IO.File.Exists))
@@ -41,8 +42,8 @@ public static class CompiledItems
         foreach (var r in existing.SelectMany(db => Read(db).TakeWhile(r => r.Tag != '\0').Where(r => r.Tag != 'B')))
             if (r.Tag is 'N' or 'W' or 'D' or '1' or '2' or '3') continue;
             else if (r.Tag == 'P') items.Add((r.Key, plans++, true));
-            else if (recs.Add(r.Key) && IsItem(r.Tag)) items.Add((r.Key, recs.Count - 1, false));
-        return items.Where(x => (x.Plan ? recs.Count + x.At : x.At) >= from && !notCreated.Contains(x.Key))
+            else if (recs.Add(r.Key) && IsItem(r.Tag) && !(psosOnly && IsStateObject(r.Tag))) items.Add((r.Key, recs.Count - 1, false));
+        return items.Where(x => (x.Plan ? recs.Count + x.At : x.At) is var at && at >= from && at < to && !notCreated.Contains(x.Key))
             .Select(x => nv.GetValueOrDefault(x.Key, x.Key)).ToHashSet();
     }
 

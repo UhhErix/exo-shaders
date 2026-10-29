@@ -173,14 +173,14 @@ public class FormatTests
             (S(GameStatus.Warmed, "warmed for driver 610.88") with { Plan = new PlanStats(0, 0, 0, 0, true, D3D11Shaders: 41_206) }, "Driver 610.88"),
             (S(GameStatus.Warmed, "warmed for driver 610.88") with { Plan = new PlanStats(0, 900, 0, 0, true, D3D11Shaders: 10, Uncovered: 101) }, "DirectX 11 and 12 · partly covered"),
             (S(GameStatus.Warmed, ScsKiller.UnreachedReason) with { CompileUnreached = true }, "This game needs a custom loader"),
-            (Tekken(GameStatus.Warmed), $"The driver skipped {180_000:N0} of {258_210:N0} pipelines"),
+            (Tekken(GameStatus.Warmed), $"{180_000:N0} of {258_210:N0} pipelines couldn't be compiled"),
             (Tekken(GameStatus.Warmed) with { CompileUnreached = true, StatusReason = ScsKiller.UnreachedReason }, "This game needs a custom loader"),
             (Tekken(GameStatus.Stale) with { StatusReason = "driver changed: 610.88 -> 616.92" }, "Driver 616.92 cleared its cache"),
         };
         Assert.All(cases, c => Assert.Equal(c.Note, Format.ShortNote(c.State)));
     }
 
-    static GameState Tekken(GameStatus status) => S(status, "partly compiled for driver 610.88: the driver skipped 180,000 of 258,210 pipelines")
+    static GameState Tekken(GameStatus status) => S(status, "partly compiled for driver 610.88: 180,000 of 258,210 pipelines couldn't be compiled")
         with { Plan = new PlanStats(39_870, 218_340, 0, 0, true), LastWarmFailed = 179_990, LastWarmCrashed = 10 };
 
     /// <summary>The threshold sits between the warms measured on a dev PC (at most 0.4% rejected) and TEKKEN 8 on Windows 10's
@@ -199,25 +199,25 @@ public class FormatTests
         Assert.False(ScsKiller.IsPartlyCompiled(Tekken(GameStatus.Stale)));
         Assert.False(ScsKiller.IsPartlyCompiled(Tekken(GameStatus.Warmed) with { CompileUnreached = true }));
         Assert.False(ScsKiller.IsPartlyCompiled(Tekken(GameStatus.Warmed) with { LastWarmFailed = 0, LastWarmCrashed = 0, LastWarmSkipped = 200_000 }));   // not in the install: the game never creates them
-        Assert.Equal($"the driver skipped {180_000:N0} of {258_210:N0} pipelines", ScsKiller.PartlyCompiledNote(Tekken(GameStatus.Warmed)));
+        Assert.Equal($"{180_000:N0} of {258_210:N0} pipelines couldn't be compiled", ScsKiller.PartlyCompiledNote(Tekken(GameStatus.Warmed)));
         // the ones it crashed on apart (SCSKiller 1.3.3)
-        Assert.Equal($"the driver refused {179_990:N0} of {258_210:N0} pipelines and crashed on 10, so those can still stutter the first time", ScsKiller.RefusedNote(Tekken(GameStatus.Warmed)));
+        Assert.Equal($"{179_990:N0} of {258_210:N0} pipelines couldn't be compiled and the driver crashed on 10, so those can still stutter the first time", ScsKiller.RefusedNote(Tekken(GameStatus.Warmed)));
         Assert.Equal($"the GPU driver crashed on 10 of {258_210:N0} pipelines, so those can still stutter the first time", ScsKiller.RefusedNote(Tekken(GameStatus.Warmed) with { LastWarmFailed = 0 }));
         Assert.Equal(30, ScsKiller.ShownPercent(Tekken(GameStatus.Warmed)));   // 78,210 of 258,210 compiled, floored
         Assert.Equal(99, ScsKiller.ShownPercent(Tekken(GameStatus.Warmed) with { LastWarmFailed = 92 }));
     }
 
-    /// <summary>The coverage ring is one measure in every state: recorded pipelines the last warm didn't compile count against
-    /// it, refusals lower it by their share with no jump past a tenth, and with nothing new a Stale game shows what it showed
-    /// warmed. Items skipped for hanging the driver or that SCSKiller can't build yet weren't compiled either.
+    /// <summary>The coverage ring is one measure in every state: what the last compile covers. Pipelines found since (new
+    /// planned or recorded ones) only show in the line that offers to compile them (1.3.4), refusals lower it by their share
+    /// with no jump past a tenth, and a Stale game shows what it showed warmed. Items skipped for hanging the driver or that SCSKiller can't build yet weren't compiled either.
     /// <paramref name="covered"/>: percent of 100 stage sets, 0 = not counted.</summary>
     [Theory]
-    [InlineData(GameStatus.Stale, 0, 0, 0, 840, 54)]   // 1,000 of 1,840
+    [InlineData(GameStatus.Stale, 0, 0, 0, 840, 100)]   // 840 recorded since: not against the last compile
     [InlineData(GameStatus.Warmed, 32, 99, 0, 0, 28)]
     [InlineData(GameStatus.Warmed, 32, 101, 0, 0, 28)]   // partly compiled: no higher than 99 refused
     [InlineData(GameStatus.Warmed, 32, 50, 0, 0, 30)]
     [InlineData(GameStatus.Stale, 32, 50, 0, 0, 30)]
-    [InlineData(GameStatus.Stale, 0, 0, 200, 0, 80)]
+    [InlineData(GameStatus.Stale, 0, 0, 200, 0, 100)]   // 200 new planned: the same
     [InlineData(GameStatus.Warmed, 29, 0, 0, 0, 29)]
     [InlineData(GameStatus.Warmed, 0, 0, 0, 0, 80, 200)]   // 200 skipped for hanging the driver
     [InlineData(GameStatus.Warmed, 0, 0, 0, 0, 80, 0, 200)]   // 200 D3D11 items SCSKiller can't build yet

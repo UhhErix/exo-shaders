@@ -569,7 +569,7 @@ internal sealed partial class Host
         k.Store.SaveNotified(_told = notified);
         foreach (GameState g in compile)
         {
-            k.EnqueueWhenIdle(g.Game.Id);
+            NewShaders.Queue(k, g.Game.Id);   // when idle, or once no game runs with NewShadersRightAway (1.4.0-beta.1; the policy keeps it off)
             _autoQueued.Add(g.Game.Id);
         }
         List<GameState> compiling = notify.Where(compile.Contains).ToList();

@@ -7,7 +7,8 @@ using static SCSKiller.Core.BeforeAfterStage;
 
 namespace SCSKiller.Tests.Platform;
 
-// Before and after on a DirectX 11 game: AMD's recorder as it is, NVIDIA's frames-only one only while a pair is in progress.
+// Before and after on a DirectX 11 game: AMD's recorder as it is, NVIDIA's frames-only one while a pair is in progress
+// and, with "Record in all compatible games" on, in regular play (SCSKiller 1.4.0-beta.1).
 public partial class AppTests
 {
     async Task<Pair> Dx11PairRig(string profile, GpuVendor vendor = GpuVendor.Nvidia, bool recordAll = true, bool manage = true)
@@ -41,14 +42,14 @@ public partial class AppTests
     [Fact]
     public async Task On_NVIDIA_a_frames_only_install_cut_off_after_the_copy_never_records_in_full()
     {
-        var p = await Dx11PairRig("nvidia-1");
+        var p = await Dx11PairRig("nvidia-1", recordAll: false);
         var rec = p.K.Store.LoadGame(p.Id);
         rec.BeforeAfter = new BeforeAfterRecord { Stage = BeforeArmed, ArmedAt = p.At };
         p.K.Store.SaveGame(p.Id, rec);
         File.Copy(_proxy, Proxy11);
         Assert.False(File.Exists(Ini));
 
-        var k = Killer11();   // the next start
+        var k = Killer11(recordAll: false);   // the next start
         await k.ScanAsync(default);
         Assert.Contains("\r\nframes_only=1\r\n", File.ReadAllText(Ini));
         Assert.True(ScsKiller.IsOurProxy(Proxy11));
@@ -66,7 +67,7 @@ public partial class AppTests
     [Fact]
     public async Task On_NVIDIA_another_copys_frames_only_recorder_is_left_to_that_copy()
     {
-        var p = await Dx11PairRig("nvidia-1");
+        var p = await Dx11PairRig("nvidia-1", recordAll: false);
         File.Copy(_proxy, Proxy11);
         File.WriteAllText(Ini, "[scskiller]\r\nmode=record\r\nframes_only=1\r\n");
         File.WriteAllText(Path.Combine(_exeDir, ScsKiller.LedgerStamp), Path.Combine(_root, "other", "armed"));
@@ -85,7 +86,7 @@ public partial class AppTests
     [Fact]
     public async Task On_NVIDIA_a_pair_ended_while_the_game_runs_loses_its_recorder_at_the_next_start()
     {
-        var p = await Dx11PairRig("nvidia-1");
+        var p = await Dx11PairRig("nvidia-1", recordAll: false);
         p.K.Settings = p.K.Settings with { ScanAtStart = false };
         p.K.StartBeforeAfter(p.Id, 5);
         Assert.True(Attested(_game));
@@ -95,7 +96,7 @@ public partial class AppTests
         Assert.True(ScsKiller.IsOurProxy(Proxy11));   // the game holds it
         Assert.False(Attested(_game));   // but no launch is admitted from now on
 
-        var k = Killer11();   // the app closed, the game exited, the app starts again
+        var k = Killer11(recordAll: false);   // the app closed, the game exited, the app starts again
         await k.ScanAsync(default);
         Assert.False(File.Exists(Proxy11) || File.Exists(Ini));
         Assert.False(Attested(_game));
@@ -136,14 +137,15 @@ public partial class AppTests
     string Ini => Path.Combine(_exeDir, "scskiller.ini");
     string Proxy11 => Path.Combine(_exeDir, ScsKiller.Dll11);
 
-    /// <summary>NVIDIA: a DirectX 11 game has no recorder, and a pair puts one in as d3d11.dll with frames_only=1 from the
-    /// click to the after run's exit, then takes it out; the report still reads the pinned runs.</summary>
+    /// <summary>NVIDIA: with "Record in all compatible games" off a DirectX 11 game has no recorder, and a pair puts one in
+    /// as d3d11.dll with frames_only=1 from the click to the after run's exit, then takes it out; the report still reads the
+    /// pinned runs.</summary>
     [Fact]
     public async Task On_NVIDIA_a_DirectX_11_pair_has_a_frames_only_recorder_from_start_to_done()
     {
-        var p = await Dx11PairRig("nvidia-1");
+        var p = await Dx11PairRig("nvidia-1", recordAll: false);
         var s = p.K.Games.Single();
-        Assert.Equal((ScsKiller.SkipNotDx12, false, false), (s.RecorderSkip, s.RecorderEffective, File.Exists(Proxy11)));
+        Assert.Equal(((string?)null, false, false), (s.RecorderSkip, s.RecorderEffective, File.Exists(Proxy11)));
         Assert.Null(p.K.BeforeAfterBlocked(p.Id));
 
         p.K.StartBeforeAfter(p.Id, 5);
@@ -166,7 +168,19 @@ public partial class AppTests
         Assert.False(File.Exists(Ini));
         Assert.False(Attested(_game));
         Assert.NotNull(p.K.BeforeAfterReport(p.Id));
-        Assert.Equal(ScsKiller.SkipNotDx12, p.K.Games.Single().RecorderSkip);
+        Assert.Equal(((string?)null, false), (p.K.Games.Single().RecorderSkip, p.K.Games.Single().RecorderEffective));
+    }
+
+    /// <summary>NVIDIA (SCSKiller 1.4.0-beta.1): with "Record in all compatible games" on, a DirectX 11 game runs the
+    /// frames-only recorder in regular play too, for the frame-time graph alone.</summary>
+    [Fact]
+    public async Task On_NVIDIA_Record_in_all_compatible_games_measures_a_DirectX_11_games_regular_play()
+    {
+        var p = await Dx11PairRig("nvidia-1");
+        Assert.True(p.K.Games.Single() is { RecorderEffective: true, RecorderSkip: null, Records11: true });
+        Assert.True(ScsKiller.IsOurProxy(Proxy11));
+        Assert.False(File.Exists(Path.Combine(_exeDir, ScsKiller.Dll12)));
+        Assert.Contains("\r\nframes_only=1\r\n", File.ReadAllText(Ini));
     }
 
     /// <summary>NVIDIA: Start over takes the frames-only recorder out; the game's switch Off, anti-cheat or VAC keep it out
@@ -321,7 +335,9 @@ public partial class AppTests
         await p.Compiled();
         p.K.EndBeforeAfter(p.Id, compile: false);   // Cancel, with files set aside again for a new pair
         AmdDx("eeee");
-        if (!shared || sampled) rec.CacheKeys.Remove("dx:0000000000009999");
+        rec = k.Store.LoadGame(p.Id);
+        // the key unknown again: SCSKiller 1.4.0-beta.1 keeps a key the game or a warm held among CacheKeys (AppStore.SaveGame)
+        if (!shared || sampled) foreach (var keys in new[] { rec.CacheKeys, rec.GameKeys, rec.WarmedKeys ?? [] }) keys.Remove("dx:0000000000009999");
         k.Store.SaveGame(p.Id, rec);
         p.K.StartBeforeAfter(p.Id, 5);
         Assert.False(File.Exists(browser));

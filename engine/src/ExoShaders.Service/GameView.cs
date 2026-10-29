@@ -252,7 +252,7 @@ internal sealed class GameView(GameState state, ViewContext ctx)
                 string left = r.Progress is { PerSecond: > 0.0 } && Fmt.Left(r, s) is { } t ? " · " + Format.Duration(t) + " left" : "";
                 return text + left;
             }
-            if (Place.Item is { Stage: QueueStage.Waiting, Note: { } waits } && waits != Fmt.IdleNote) return Fmt.Sentence(waits);   // what it waits for (a plan check giving way)
+            if (Place.Item is { Stage: QueueStage.Waiting, Note: { } waits } item && !ScsKiller.WaitsOnItsOwn(item)) return Fmt.Sentence(waits);   // what it waits for (a plan check giving way)
             return GameReason;
         }
     }
@@ -457,7 +457,10 @@ internal sealed class GameView(GameState state, ViewContext ctx)
 
     // ---------------------------------------------------------------- recorder
 
-    private bool PairFramesOnly => s.Records11 && ScsKiller.Frames11(s.Engine, ctx.Vendor.Caps);
+    // NVIDIA, DirectX 11: the recorder times frames and records nothing; for a before and after pair it goes in whatever
+    // the switch says (PairFramesOnly), in regular play as the switch says (FramesOnly, SCSKiller 1.4.0-beta.1)
+    private bool PairFramesOnly => ScsKiller.Frames11(s.Engine, ctx.Vendor.Caps) && s.BeforeAfter is { Stage: not BeforeAfterStage.Done };
+    private bool FramesOnly => ScsKiller.Frames11Play(s.Engine, ctx.Vendor.Caps);
 
     public bool ShowOffline => s.OfflineEligible || s.RiskEligible;
     private bool Risk => s.RiskEligible;
@@ -490,7 +493,10 @@ internal sealed class GameView(GameState state, ViewContext ctx)
                 case { } skip:
                     return "Not available: " + skip + ".";
             }
-            return "Adds a small " + RecorderFiles + " next to the game to catch anything the plan missed and time each frame, so this page shows what stuttered. Remove any time. If a game has anti-cheat SCSKiller didn't detect, don't turn this on."
+            return (s.Engine is { } e && SCSKiller.Core.Vulkan.VulkanPlan.IsVulkan(e) ? "Adds a Vulkan layer for this game and a small scskiller.ini next to it to catch anything the plan missed."
+                    : FramesOnly ? "Adds a small " + RecorderFiles + " next to the game that times each frame for the graph above and records nothing else."
+                    : "Adds a small " + RecorderFiles + " next to the game to catch anything the plan missed and time each frame, so this page shows what stuttered.")
+                + " Remove any time. If a game has anti-cheat SCSKiller didn't detect, don't turn this on."
                 + (RecorderNoteOrFailure is { } n ? " (" + Fmt.Sentence(n) + ")" : "")
                 + (s.RecorderRefused is { } r && (s.Status != GameStatus.NeedsRecording || !ScsKiller.NeverRecorded(s)) ? " " + r : "");
         }
@@ -929,7 +935,7 @@ internal sealed class GameView(GameState state, ViewContext ctx)
             if (f is null && count is null) return null;
             return new
             {
-                verdict = f is null ? null : Format.Frames(f, ShaderHitches),
+                verdict = f is null ? null : Format.Frames(f, ShaderHitches, f.D3D11),
                 summary = f is null ? null : FramesText(f),
                 stuttersLabel = f != null ? "Stutters last time you played" : "Compiles while you played",
                 stutters = count is { } c ? c != 0L ? Fmt.N(c) : "None" : null,
@@ -965,7 +971,7 @@ internal sealed class GameView(GameState state, ViewContext ctx)
                 startupMs = f.Startup.TotalMilliseconds,
                 peaks = f.Peaks,
                 hitches = f.Hitches.Select(h => new { atMs = h.At.TotalMilliseconds, ms = h.Ms, cause = Fmt.Camel(h.Cause.ToString()) }),
-                verdict = Format.Frames(f, ShaderHitches),
+                verdict = Format.Frames(f, ShaderHitches, f.D3D11),
                 summary = FramesText(f),
                 low1PctFps = f.Low1PctFps,
                 avgFps = f.AvgFps,
@@ -1140,6 +1146,17 @@ internal sealed class GameView(GameState state, ViewContext ctx)
             partlyCompiledWhy = PartlyCompiled ? PartlyCompiledWhy : null,
             needsAesKey = false,
             dxvk = DxvkNote is { } dxvkNote ? new { compiled = s.DxvkCompiled, text = dxvkNote } : null,
+            // SCSKiller 1.4.0-beta.1: a game that switched graphics API keeps its compile for the other one
+            keptApisNote = ScsKiller.KeptApisNote(s),
+            // SCSKiller 1.4.1-alpha.1's traversal stutter fix, where it can run (never with anti-cheat): game.setTraversal
+            traversal = TraversalFix.Applies(s, ctx.Vendor.Caps) ? new
+            {
+                on = TraversalFix.On(ctx.Settings, s, ctx.Vendor.Caps),
+                @override = s.TraversalOverride is { } t ? t ? "on" : "off" : "default",
+                defaultOn = TraversalFix.ByDefault(ctx.Settings, s),
+                note = TraversalFix.GameNote(s, ctx.Vendor.Gpu),
+                lowVram = TraversalFix.LowVram(ctx.Vendor.Gpu) == true ? TraversalFix.LowVramWarning : null,
+            } : null,
             cacheLimitWarning = CacheLimitWarning,
             error = ctx.Error(Id),
             frames = FramesSummary,

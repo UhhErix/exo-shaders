@@ -6,6 +6,124 @@ repository's root `CHANGELOG.md`.
 
 ## [Unreleased]
 
+**A compile's pipelines reach the game's Windows shader cache, and nothing useless stays**
+
+- On NVIDIA from 621, the step that moves a compile's pipelines from its staged exe's D3DSCache folder into the game's
+  own read every database and log of the D3DSCache folders made since, each into one array. One file over 2 GB, of any
+  program, failed it with "Arithmetic operation resulted in an overflow" at every start and game exit: the pipelines
+  stayed in folders named for the staged exe's path, which the game never opens (Beast of Reincarnation: 9.6 GB in
+  two), the stranded check of 7 games failed the same way, and so did the Cache page. Those files are now read 4 MB
+  at a time (`D3DSCache.ScanRows`), so the waiting folders go into their games' at the next start and are deleted.
+  Reading this PC's D3DSCache for Beast of Reincarnation, the 1.4.1-alpha.2 engine's search threw after allocating
+  499 MB; the new one finds both of its folders in about 0.1 s with 22 MB, and reads a real 2.4 GiB WAL in 1.1 s with
+  4 MB.
+- A folder the runtime made for another program, one of whose databases can't be read without its log (a game that
+  quit with its newest pipelines still in the WAL), is that program's: no longer a doubt that kept a compiled game
+  "the compiled pipelines go into the game's cache when the game exits" for good, and its log isn't read.
+- After a driver update, a staged or waiting database an earlier driver compiled, which no driver reads, is deleted
+  instead of merged into the game's folder (`D3DSCache.EarlierDriver`): its compiler differs from this driver's for
+  the same GPU family. This driver's compiler is the one a warm on it recorded, or, before any warm on it, for a
+  database older than the driver's install (NVIDIA's DriverStore folder), the one every database of that adapter
+  written since names when they agree. Read on this PC after 621.01 -> 621.12: the dbs written since name
+  1128470231318528, and both of Beast of Reincarnation's staged databases (9.6 GB, 1128466500354048) are deleted
+  rather than written into its folder. A database written since the install is never one, nor one of another GPU
+  family. A compile on this driver while the game's own database is still the earlier driver's waits for the game's
+  next run and is never deleted: waiting databases go only by the same test, no longer by the game's database.
+
+**SCSKiller 1.3.4 and 1.4.1-alpha.2 (engine 1.4.1-alpha.2)**
+
+The engine merges SCSKiller's published 1.3.4 (the branch shares its history), in the 1.4 code's form where alpha.2 shows
+how SCSKiller combined the two, and carries alpha.2's own changes, written from its binaries as alpha.1's were. The native
+files are alpha.2's (`engine/prebuilt/SOURCE.md`): 1.3.4's compiles pass the compile program two arguments alpha.1's
+refuses. As they reach Exo:
+
+- A game with Advanced Shader Delivery compiles only what Windows didn't deliver. A pipeline that crashed or hung the
+  GPU driver stays skipped on later compiles until the driver changes; one that hung is tried alone first, and one that
+  hangs before the compile's workers start no longer stalls it. Progress keeps its total after a crash or hang.
+- The game page says why pipelines couldn't be compiled (the driver refused them or their root signatures, or the
+  engine couldn't build them), and the coverage ring shows what the last compile covers: pipelines found since show only
+  in the line that offers to compile them.
+- Plan checks after an update take at most a quarter of the RAM, up to 8 GB; a compile started by hand no longer waits
+  for them, and a check that can't finish keeps the game's plan instead of running again at every start. The Library's
+  line says what runs (`afterUpdateLine`), and handing a compile to the game's cache shows its progress.
+- Unreal games with a recording compile all their pipelines again on NVIDIA (the affected games compile once more);
+  Unreal 5.8 compute shaders with NVIDIA's extensions compile as the game creates them; a game partly readable without
+  its AES key says it needs the key and compiles the rest; no extra root-signature layout for NVIDIA players without a
+  recording.
+- On NVIDIA, pipelines whose pixel shader sets the stencil reference aren't compiled (they always fail), a stopped
+  compile's pipelines aren't compiled again after a plan change, and per-stage plans pair what one pipeline covers
+  (ELDEN RING 39,814 to 31,773 pipelines, same coverage).
+- A Plague Tale: Requiem compiles every combination in its files, the RE4 Chainsaw Demo compiles from its own root
+  signatures on AMD, Resident Evil Requiem (demo) and Dragon's Dogma 2 Character Creator compile most of their
+  pipelines, Crimson Desert about 98% of its combinations before its key is added, and Microsoft Flight Simulator 2024
+  takes its compiled cache.
+- DLSS games whose exe loads none of winmm, version or dinput8 (Dying Light: The Beast) get the recorder's preloader
+  under another System32 name the exe imports, and no game reads Not supported because of DLSS.
+- DirectX 9 games say compiling them waits for DirectX 9 support, DirectX 10 games read "DirectX 11 (runs on DirectX
+  10)", and a small launcher beside a DirectX 9 exe reads as DirectX 9. BeamNG.drive isn't taken for a 32-bit game and
+  is recorded on whichever API it runs.
+- Vulkan games compiled into Steam's shader cache compile again after Steam clears it (NVIDIA and AMD), and on AMD a
+  compile no longer replays every pipeline while that cache is intact.
+- A game whose shader cache folder was moved with a junction gets its compile, a damaged cache file or an early driver
+  update no longer loses a compile, and the hand-off after a session reads the game's whole cache once a week.
+- The cache card's limit list has the NVIDIA app's sizes, 512 MB to Unlimited.
+- Not in Exo: "Always record" and the recording sessions 1.3.4 offers for anti-cheat games and unknown steam_appid.txt
+  apps (Exo never records an anti-cheat game: its policy keeps that off and the engine never arms one), and the official
+  app's own screens.
+
+**SCSKiller 1.4.1-alpha.1 (engine 1.4.1-alpha.1)**
+
+SCSKiller's 1.4.0-beta.1 and 1.4.1-alpha.1 came to its Patreon alpha channel as binaries only: their source isn't public.
+The engine carries them by studying those GPL binaries (their decompiled Core, the changelog they embed and the native
+files' strings) and writing each change again in this fork's code; the native files are 1.4.1-alpha.1's own
+(`engine/prebuilt/SOURCE.md`). This branch stays local until SCSKiller publishes 1.4's source. From SCSKiller's own
+changelog (the root `CHANGELOG.md`), as they reach Exo:
+
+- Traversal stutter fix (1.4.1-alpha.1, experimental): the recorder can place a DirectX 12 game's new resources in heaps
+  it pools, which may reduce the big stutters when a game streams in a new area. Off unless chosen: the settings policy
+  leaves it as it is (the official app's choice where there is one), `settings.setTraversal` turns it on for every game
+  and `game.setTraversal` for one. It runs only where the recorder runs, and never in a game with anti-cheat, VAC
+  included (SCSKiller allows those at the user's risk; Exo Shaders doesn't). Recommended for GPUs with more than 8 GB.
+- A game that switches between DirectX 11 and 12 (or Vulkan) keeps both compiles: switching back no longer shows 0% and
+  asks for everything again. The game page says which other API is compiled (`keptApisNote`).
+- On NVIDIA, the pipelines a game ships (Unreal's pipeline cache) or a recording holds compile first, before the ones
+  the planner pairs itself, and a game's compile size limit is no longer ignored on NVIDIA. Unreal games' shipped vertex
+  declarations give the planner exact layouts where a recording has none.
+- A recording whose root signatures the engine's rule rebuilds in half or more of the cases, but not all, compiles the
+  rest with the rule's instead of leaving them out.
+- A compile on a GPU driver that crashes on a large share of the pipelines stops after about a thousand of them instead
+  of recovering for days; compiling again continues past them. Compiling again after a compile stopped on driver crashes
+  no longer stops after a few pipelines on one thread (1.4.1-alpha.1's compile program reports what it passed over).
+- Compiles are refused while the NVIDIA shader cache is turned off (Shader Cache Size 0), with how to turn it back on;
+  the cache card says so (`cache.off`).
+- A compile that waits shows why: paused until the PC is idle, or waiting for an earlier compile to go into its game's
+  shader cache.
+- Games that load ReShade and RenoDX through Special K compile through that ReShade and its add-ons when it is certain
+  which ReShade Special K loads; otherwise the page says what to change.
+- DirectX 9 games (Half-Life 2) and OpenGL games say they aren't supported yet; FNA games say their shaders are built
+  while they run. A Vulkan game whose launcher starts its renderer from a subfolder is detected as Vulkan, and the
+  Vulkan recorder follows that renderer from the launch after it is first seen.
+- On NVIDIA, DirectX 11 games run the recorder for the frame-time graph in regular play too ("Record in all compatible
+  games"), recording nothing; their frame lines no longer claim "no stutters from shader compiles". Games that need a
+  recording get the recorder with "Record in all compatible games" too.
+- On NVIDIA, a game's disk space counts only the driver cache the game and its last compile use; keys no longer in use
+  whose files are gone leave its record. With a compile size limit, each pipeline's Windows shader cache copy counts
+  too (621 and later).
+- Marvel Rivals' first compile estimates its cache from what other PCs measured (about twice the old figure). A plan
+  five times the last compile's says so on the game's status. A Vulkan session in an anti-cheat game no longer says the
+  game ran as administrator when that couldn't be told. Exo's API choice offers Vulkan wherever the GPU has a Vulkan compile.
+- New native files (1.4.1-alpha.1): the recorder steps aside from frame generation's swap chain and works in Dragon's
+  Dogma 2's Character Creator, frame times are measured with OptiScaler, HelixSR and DLSS, FSR or OptiScaler frame
+  generation, a recording near its size limit keeps the pipelines with new shaders, and on AMD the recorder's AGS
+  chain is renamed (amd_ags_x64_scskiller.dll), so it installs in Cyberpunk 2077 2.5 again; chains alpha.3's wrapper
+  made go out and back in under the new name.
+- Not taken (the official app's, not the engine's): the updater, alpha gate and toast registration as before, the
+  traversal fix's one-time question, the Cache page's icons and "Open folder" picker, "Move to bottom" (`queue.move`
+  already moves anywhere), the before and after image's version corner, and "Use shared shader hashes" per game (in the
+  engine, but Exo Shaders never downloads them).
+- Planner 47 (as SCSKiller's): every plan is rebuilt at the next compile or plan check; a compile is asked for only
+  where the new plan adds pipelines.
+
 **Starts on every NVIDIA PC**
 
 - A display driver whose registry names its user-mode driver by file name alone (no folder) made the engine stop at
@@ -141,8 +259,8 @@ repository's root `CHANGELOG.md`.
 - Already in Exo Shaders before: the start on drivers that list their files without a folder (SCSKiller #229), older
   Unreal Engine 4 games' memory limit, DLSS games recorded through the preloader, Ubisoft Connect games with the recorder.
   The community database's fixes come with the code but do nothing here: Exo Shaders never uses it.
-- Waiting for newer native files: these fixes are in the recorder and compile programs, and Exo Shaders still ships
-  SCSKiller 1.4.0-alpha.3's (`engine/prebuilt/SOURCE.md`). Until those are updated: frame times stay off with OptiScaler
+- Waiting for newer native files, which came with 1.4.1-alpha.1's (above): these fixes are in the recorder and compile
+  programs, and Exo Shaders shipped SCSKiller 1.4.0-alpha.3's until then. Before them: frame times stayed off with OptiScaler
   or another mod as dxgi.dll, with FSR mods that rename the game's FSR file (HelixSR), with DLSS and OptiScaler frame
   generation, and after a swap chain is re-created; the recorder doesn't step aside from frame generation's swap chain,
   and parts of it stay active where it doesn't run; Dragon's Dogma 2's Character Creator isn't recorded; on AMD the

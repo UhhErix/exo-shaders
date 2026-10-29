@@ -35,7 +35,13 @@ public sealed class Planner(string? packDir = null, string? sharedPackDir = null
     public string PackFingerprint(Game game, string? shared = null) =>
         (Packs?.Fingerprint(game) ?? "") + ((shared ?? SharedFingerprint(game)) is { Length: > 0 } s ? "|shared:" + s : "");
 
-    public string SharedFingerprint(Game game) => SharedPacks?.Fingerprint(game) ?? "";
+    public string SharedFingerprint(Game game) => !Uses(game) ? "" : SharedPacks?.Fingerprint(game) ?? "";
+
+    /// <summary>Whether a game's plans take the shared packs: its "Use shared shader hashes" (ScsKiller.UsesShared, by game
+    /// id); null = every game's do.</summary>
+    public Func<string, bool>? UsesShared { get; set; }
+
+    bool Uses(Game game) => UsesShared?.Invoke(game.Id) ?? true;
 
     /// <summary>A plan of this engine takes pack entries: middleware pipelines are D3D12 PSOs. With <see cref="MiddlewarePacks.Runs"/>,
     /// the one rule for what packs seed, what counts as still to compile, and the upscaler chip.</summary>
@@ -50,7 +56,7 @@ public sealed class Planner(string? packDir = null, string? sharedPackDir = null
     /// <summary>Bump when the plan for the same game and inputs changes (new pipeline kinds, root-signature rules, D3D11):
     /// the app then rebuilds plans (warmed games' when idle, ScsKiller.CheckPlans) and offers a re-warm only where the new
     /// plan has records the warm didn't replay.</summary>
-    public const int Version = 46;
+    public const int Version = 52;   // SCSKiller 1.4.1-alpha.2's
 
     /// <summary>The vendor's D3D11 driver cache persists across processes, is keyed on the exe file name and caches per
     /// shader, whatever the state or the other stages (measured on NVIDIA and Intel, proxy/probe11.cpp): a staged warm
@@ -125,6 +131,10 @@ public sealed class Planner(string? packDir = null, string? sharedPackDir = null
     /// <summary>Ends the reason of a game that may run on DirectX 11, where the recorder never loads.</summary>
     public const string Dx12Only = "helps only when played on DirectX 12 (the game may run on DirectX 11)";
     public const string RecordedOnly = "plans only the recorded pipelines";
+    public const string Dx9AmdReason = "runs on DirectX 9: compiling it waits for SCSKiller's DirectX 9 compile on AMD";
+
+    /// <summary>A DirectX 9 game's reason on AMD, where SCSKiller's own DirectX 9 compile is what it waits for.</summary>
+    static string Dx9For(string reason, VendorCaps caps) => reason == CarvedReader.Dx9Reason && caps.Profile == "amd-1" ? Dx9AmdReason : reason;
 
     public PlanCheck Check(Game game, EngineInfo engine, Recording? recording, VendorCaps caps)
     {
@@ -149,7 +159,7 @@ public sealed class Planner(string? packDir = null, string? sharedPackDir = null
             return !caps.CacheKeyedByExeName ? new(Readiness.Unsupported, "not supported on this GPU yet")
                 : recording != null && File.Exists(recording.DbPath) && new FileInfo(recording.DbPath).Length > 0 ? new(Readiness.Ready, RecordedOnly)
                 : new(Readiness.NeedsRecording, Record);
-        if (engine.Unsupported != null) return new(Readiness.Unsupported, engine.Unsupported);
+        if (engine.Unsupported != null) return new(Readiness.Unsupported, Dx9For(engine.Unsupported, caps));
         if (engine.Encrypted) return new(Readiness.Unsupported, "encrypted game files");
         // GraphicsApi: "D3D12[ (why)]", "D3D11[ (why)]", "Vulkan…", or "D3D11 or D3D12" when the game offers both (UnrealRhi)
         var api = engine.GraphicsApi;
@@ -160,7 +170,8 @@ public sealed class Planner(string? packDir = null, string? sharedPackDir = null
         if (!api.Contains("D3D12"))
             return dx11 ? new(Readiness.Ready, App.Format.Then(all11 + api[5..], noVs ? D3D11VsRecord : null))
                 : SteamOnly(recording, null) is { } steam ? steam
-                : new(Readiness.Unsupported, $"runs on {(api.StartsWith("D3D11") ? "DirectX 11" + api[5..] : api)}");
+                : new(Readiness.Unsupported, (CarvedReader.OldDxReason(api) is { } old ? Dx9For(old, caps) : null)
+                    ?? $"runs on {(api.StartsWith("D3D11") ? "DirectX 11" + api[5..] : api)}");
         var dx12 = CheckD3D12(engine, recording, caps, api.StartsWith("D3D12") || dx11 ? null : Dx12Only);
         if (!dx11) return dx12;
         // may run on either: DX11 shaders help whatever DX12 still needs (a recording can come later)
@@ -300,7 +311,7 @@ public sealed class Planner(string? packDir = null, string? sharedPackDir = null
     Plan Build(Game game, EngineInfo engine, ShaderIndex index, Recording? recording, VendorCaps caps, string outDir,
         IProgress<string>? log, CancellationToken ct, bool maximum, bool rayTracing, bool pairs)
     {
-        var budget = new PlanBudget(MemoryBudget ?? PlanBudget.DefaultMemory(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes), TimeBudget ?? PlanBudget.DefaultTime);
+        var budget = new PlanBudget(MemoryBudget ?? PlanBudget.DefaultMemory(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes), TimeBudget ?? PlanBudget.DefaultTime) { Stop = ct };
         var rules = Rules ?? RulesFile.Current;
         if (rules.Hash(engine) == RulesFile.Embedded.Hash(engine)) return Kept(One(rules, outDir, log));
         void Keep(string why) => log?.Report($"warning: planning rules: the server's rules for {engine.Family} {engine.Version} {why}: this game keeps the app's own rules");
@@ -341,7 +352,7 @@ public sealed class Planner(string? packDir = null, string? sharedPackDir = null
 
         (Plan Plan, string? Fingerprint) One(RulesFile r, string dir, IProgress<string>? l)
         {
-            var builder = new PlanBuilder(game, engine, index, recording, caps, dir, l, ct, maximum, Packs, SharedPacks, r, budget, CacheBudget, rayTracing, pairs);
+            var builder = new PlanBuilder(game, engine, index, recording, caps, dir, l, ct, maximum, Packs, Uses(game) ? SharedPacks : null, r, budget, CacheBudget, rayTracing, pairs);
             return (builder.Build(), builder.PackFingerprint);
         }
     }
@@ -597,6 +608,36 @@ public sealed class Planner(string? packDir = null, string? sharedPackDir = null
     internal static bool Positioned(IReadOnlyDictionary<Stage, ShaderInfo> st) =>
         new[] { Stage.Geometry, Stage.Domain, Stage.Mesh, Stage.Vertex }.Where(st.ContainsKey).Select(x => st[x]).FirstOrDefault() is not { } last || Rasterizable(last);
 
+    /// <summary>The PS writes SV_StencilRef, which NVIDIA's D3D12 doesn't support (PSSpecifiedStencilRefSupported false): the
+    /// runtime rejects the pipeline (E_INVALIDARG; RE Requiem demo: 20 of 20 failed items of a warm, all such pairings).</summary>
+    internal static bool StencilRefUnsupported(VendorCaps caps, IReadOnlyDictionary<Stage, ShaderInfo> st) =>
+        caps.Profile.StartsWith("nvidia") && st.TryGetValue(Stage.Pixel, out var ps) && ps.Outputs.Any(o => o.SysValue == StencilRef);
+
+    const int StencilRef = 69;   // D3D_NAME_STENCIL_REF
+
+    /// <summary>The recorded pipelines another GPU vendor's game made: the root signature is the engine rule's construction for
+    /// the other vendor (<see cref="ReRule.OtherCbvBase"/>) and not this one's, so the game here never creates them (RE Requiem
+    /// demo: a shared recording of 15,758 pipelines in the layout off NVIDIA). Null when the rule builds the same everywhere.</summary>
+    internal static Func<Rec, bool>? OtherVendors(EngineInfo engine, ShaderIndex index, VendorCaps caps, string db)
+    {
+        if (RulesFile.Current.RuleFor(engine) is not { RootSignature.Re.OtherCbvBase: not null } rule) return null;
+        var nvidia = caps.Profile.StartsWith("nvidia");
+        var blobs = Read(db).Where(r => r.Tag == 'B' && r.Payload.Length > 20).GroupBy(r => Hex(r.Payload.AsSpan(0, 20))).ToDictionary(g => g.Key, g => g.First().Payload[20..]);
+        return r =>
+        {
+            if (r.Tag is not ('G' or 'C' or 'S')) return false;
+            var p = Parse(r);
+            if (!blobs.TryGetValue(p.Rs, out var blob) || !p.Stages.Values.All(index.Shaders.ContainsKey)) return false;
+            var st = p.Stages.ToDictionary(x => (Stage)x.Key, x => index.Shaders[x.Value]);
+            bool Built(bool nv)
+            {
+                try { return RootSig.Serialize(RootSig.Build(rule, st, true, nvidia: nv), RootSig.Samplers(blob)).AsSpan().SequenceEqual(blob); }
+                catch (RootSig.SerializeException) { return false; }
+            }
+            return !Built(nvidia) && Built(!nvidia);
+        };
+    }
+
     /// <summary>The last stage before the rasterizer writes SV_ShadingRate and the PS doesn't declare it. Legal D3D12 linkage, but
     /// with view instancing AMD rejects the pipeline (E_INVALIDARG; Crimson Desert: 1,338 shadow pairs, the same pairs without
     /// view instancing create, and the game never draws them).</summary>
@@ -801,10 +842,15 @@ public sealed class Planner(string? packDir = null, string? sharedPackDir = null
 /// is written. A library whose shaders all link pairs N x N (a carved archive is one pool): no plan of it would fit.</summary>
 public sealed class PlanBudget(long memoryBytes, TimeSpan time)
 {
-    /// <summary>Half the RAM, at least 4 GiB, at most 32 GiB; <see cref="UserMemory"/> when that is more.</summary>
-    public static long DefaultMemory(long ram) => Math.Max(Math.Clamp(ram / 2, 4L << 30, 32L << 30), UserMemory);
+    /// <summary>Half the RAM, at least 4 GiB, at most 32 GiB; <see cref="UserMemory"/> when that is more. In a
+    /// <see cref="Background"/> flow: <see cref="BackgroundMemory"/>.</summary>
+    public static long DefaultMemory(long ram) => Background.Value ? BackgroundMemory(ram) : Math.Max(Math.Clamp(ram / 2, 4L << 30, 32L << 30), UserMemory);
     /// <summary>Bytes of "Maximum memory for compiling" (Settings.MaxCompileMemoryGB); 0 = Auto.</summary>
     public static long UserMemory { get; set; }
+    /// <summary>A quarter of the RAM, at most 8 GiB: what a plan check (nobody started it) may take.</summary>
+    public static long BackgroundMemory(long ram) => Math.Min(ram / 4, 8L << 30);
+    /// <summary>True in the flow of a job nobody started: its reads and plans get <see cref="BackgroundMemory"/>.</summary>
+    public static readonly AsyncLocal<bool> Background = new();
     /// <summary>Planning runs at below-normal priority, often while the PC is in use.</summary>
     public static readonly TimeSpan DefaultTime = TimeSpan.FromMinutes(30);
 
@@ -817,6 +863,8 @@ public sealed class PlanBudget(long memoryBytes, TimeSpan time)
     /// <summary>What the budget bounds and why it ran out, for the message.</summary>
     internal string What { get; init; } = "the plan";
     internal string Why { get; init; } = "this game's shaders combine into more pipelines than a compile can hold";
+    /// <summary>Checked with the budget, so a cancel stops the planner mid-stage.</summary>
+    public CancellationToken Stop { get; init; }
 
     /// <summary>The most managed memory a check saw, garbage included.</summary>
     public long Peak { get; private set; }
@@ -828,6 +876,7 @@ public sealed class PlanBudget(long memoryBytes, TimeSpan time)
 
     public void Check()
     {
+        Stop.ThrowIfCancellationRequested();
         if (clock.Elapsed > time) throw new PlanTooBigException($"{What} took over {time.TotalMinutes:N0} minutes{At()}");
         var used = GC.GetTotalMemory(false);
         Peak = Math.Max(Peak, used);

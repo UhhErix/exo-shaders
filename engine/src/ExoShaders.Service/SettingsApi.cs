@@ -49,6 +49,7 @@ internal sealed partial class Host
             theme = s.Theme switch { AppTheme.Light => "light", AppTheme.Dark => "dark", _ => "system" },
             startWithWindows = s.StartWithWindows,
             shareDiagnostics = s.ShareDiagnostics,
+            traversal = s.Traversal == TraversalMode.All ? "all" : "off",   // SCSKiller 1.4.1-alpha.1: settings.setTraversal; Recommended reads as off
             meta = new
             {
                 processorCount = Environment.ProcessorCount,
@@ -146,6 +147,34 @@ internal sealed partial class Host
             MarkState();
             RequestCacheInfo(force: true);
             if (problem != null) throw new ServiceError(problem);
+            return SettingsDto();
+        }
+        finally
+        {
+            _settingsGate.Release();
+        }
+    }
+
+    /// <summary>settings.setTraversal: the traversal stutter fix for every game it applies to ("all") or none ("off"). The
+    /// policy leaves it as it is, so the official app's choice and this one are the same setting; answering it also
+    /// answers the app's one-time question.</summary>
+    private async Task<object> SetTraversal(string mode)
+    {
+        var to = mode switch
+        {
+            "off" => TraversalMode.Off,
+            "all" => TraversalMode.All,
+            _ => throw new ServiceError($"'{mode}' isn't a valid mode: off, all"),
+        };
+        if (!TraversalFix.Available) throw new ServiceError("The traversal stutter fix isn't available on this system.");
+        await _settingsGate.WaitAsync();
+        try
+        {
+            Settings was = _k.Settings;
+            Settings s = TraversalFix.Answered(was, to);
+            if (s == was) return SettingsDto();
+            _k.Settings = s;   // every recorder's scskiller.ini is written again (ScsKiller.Settings)
+            MarkState();
             return SettingsDto();
         }
         finally

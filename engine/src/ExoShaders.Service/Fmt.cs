@@ -196,7 +196,7 @@ internal static class Fmt
     {
         List<QueueItem> list = queue.Where(q => !q.PlanCheck).ToList();
         if (list.Any(q => q.GameId == gameId && Format.Running(q))) return true;
-        return queueRunning && list.FirstOrDefault(q => q.Stage == QueueStage.Waiting && q.Note != IdleNote)?.GameId == gameId;
+        return queueRunning && list.FirstOrDefault(q => q.Stage == QueueStage.Waiting && !ScsKiller.WaitsOnItsOwn(q))?.GameId == gameId;
     }
 
     public static string? Play(GameState s)

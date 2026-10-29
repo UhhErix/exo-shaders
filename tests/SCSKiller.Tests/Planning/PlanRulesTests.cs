@@ -66,7 +66,9 @@ public class PlanRulesTests : IDisposable
         var raw = JsonNode.Parse(ContentFile.Embedded("SCSKiller.Core.Planning.plan-rules.json"))!["rules"]!.AsArray();
         Assert.Empty(RulesFile.Embedded.Dropped);
         Assert.Equal(raw.Count, RulesFile.Embedded.Rules.Count);
-        Assert.Equal(Ids.Values.Concat(["re-pragmata", "re-re8", "nixxes-got", "nixxes-rc", "ue-kuro", "ue-wukong", "snowdrop-helix"]).Order(), RulesFile.Embedded.Rules.Where(r => r.RootSignature != null).Select(r => r.Id).Order());
+        // the last five came with SCSKiller 1.3.4
+        Assert.Equal(Ids.Values.Concat(["re-pragmata", "re-re8", "nixxes-got", "nixxes-rc", "ue-kuro", "ue-wukong", "snowdrop-helix",
+            "carved-zouna", "re-re9demo", "re-dd2ccs", "re-re4demo", "ue-5.5-eday"]).Order(), RulesFile.Embedded.Rules.Where(r => r.RootSignature != null).Select(r => r.Id).Order());
     }
 
     /// <summary>Every engine family, version and fork gets the rule the code gave it, with its verification and static samplers.</summary>
@@ -347,9 +349,9 @@ public class PlanRulesTests : IDisposable
         };
         var f = RulesFile.TryParse(Body(ReRuleV2("good", v2, Re(false, true, 8)), ReRuleV2("v1-plain", v1, Re()), ReRuleV2("v1-mesh", v1, Re(denyMesh: false)),
             ReRuleV2("v1-above", v1, Re(cbvUavAbove: true)), ReRuleV2("v1-bindless", v1, Re(bindlessSpaces: 1)), ReRuleV2("too-many", v2, Re(bindlessSpaces: 17)),
-            ReRuleV2("v3", ["rs.re.v1", "rs.re.v3"], Re())))!;
+            ReRuleV2("v9", ["rs.re.v1", "rs.re.v9"], Re())))!;   // rs.re.v3 is 1.3.4's: a capability no build has
         Assert.Equal(["good", "v1-plain"], f.Rules.Select(r => r.Id));
-        Assert.Equal(["v1-mesh: bad re", "v1-above: bad re", "v1-bindless: bad re", "too-many: bad re", "v3: needs rs.re.v3"], f.Dropped);
+        Assert.Equal(["v1-mesh: bad re", "v1-above: bad re", "v1-bindless: bad re", "too-many: bad re", "v9: needs rs.re.v9"], f.Dropped);
     }
 
     [Fact]

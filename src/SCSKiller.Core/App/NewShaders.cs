@@ -136,6 +136,17 @@ public static class NewShaders
         return picked;
     }
 
+    /// <summary>Queues an automatic compile of the game's new shaders: once no game runs with
+    /// <see cref="Settings.NewShadersRightAway"/>, else when the PC is idle.</summary>
+    public static void Queue(IScsKiller core, string gameId)
+    {
+        if (core.Settings.NewShadersRightAway) core.EnqueueRightAway(gameId);
+        else core.EnqueueWhenIdle(gameId);
+    }
+
+    /// <summary>When the queued new shaders compile, as the notification says.</summary>
+    public static string When(Settings s) => s.NewShadersRightAway ? "They compile now." : "They compile when the PC is idle.";
+
     /// <summary>Of the automatic compiles queued (<paramref name="queued"/>), the ones to take out of the queue: still waiting
     /// for idle while the game's setting no longer compiles automatically, nor <see cref="NewGames"/> takes it. <paramref name="forget"/>: the ones no longer
     /// waiting for idle (started, finished, or made a normal item by the user), left alone from now on.</summary>
@@ -145,7 +156,7 @@ public static class NewShaders
         var (withdraw, forget) = (new List<string>(), new List<string>());
         foreach (var id in queued)
         {
-            if (queue.FirstOrDefault(q => q.GameId == id) is not { Stage: QueueStage.Waiting, Note: ScsKiller.WhenIdleNote }) forget.Add(id);
+            if (queue.FirstOrDefault(q => q.GameId == id) is not { } item || !ScsKiller.WaitsOnItsOwn(item)) forget.Add(id);
             else if (games.FirstOrDefault(s => s.Game.Id == id) is not { } s
                      // a never-compiled game is only ever NewGames': the new-shaders mode never queues one
                      || (s.WarmedAt == null ? !(settings.CompileNewGames && ScsKiller.InAddAllReady(s))

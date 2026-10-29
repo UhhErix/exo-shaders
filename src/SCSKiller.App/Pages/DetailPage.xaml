@@ -429,9 +429,23 @@
                                  Message="{x:Bind Vm.RecorderFailure, Mode=OneWay}" />
                         <StackPanel Spacing="14" Visibility="{x:Bind Vm.ShowOfflineOn, Mode=OneWay}">
                             <InfoBar IsOpen="True" IsClosable="False" Severity="Error" Title="Ban risk" Message="{x:Bind Vm.OfflineRiskText, Mode=OneWay}" />
+                            <Grid ColumnSpacing="12" Visibility="{x:Bind Vm.ShowAlways, Mode=OneWay}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="2">
+                                    <TextBlock Text="Always record" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                    <TextBlock Text="Records every launch without asking each time." Style="{StaticResource Secondary}" TextWrapping="Wrap" />
+                                </StackPanel>
+                                <ToggleSwitch x:Name="AlwaysSwitch" Grid.Column="1" MinWidth="0" VerticalAlignment="Top" OnContent="" OffContent=""
+                                              IsOn="{x:Bind Vm.AlwaysOn, Mode=OneWay}" IsEnabled="{x:Bind Vm.CanToggleAlways, Mode=OneWay}" Toggled="OnAlwaysToggled"
+                                              AutomationProperties.Name="Always record" />
+                            </Grid>
                             <InfoBar Severity="Informational" IsClosable="False" IsOpen="{x:Bind Vm.HasSessionNote, Mode=OneWay}" Visibility="{x:Bind Vm.HasSessionNote, Mode=OneWay}"
                                      Message="{x:Bind Vm.SessionNote, Mode=OneWay}" />
                             <Button HorizontalAlignment="Right" Content="{x:Bind Vm.OfflineButtonText, Mode=OneWay}" Click="OnRecordOffline" IsEnabled="{x:Bind Vm.CanStartOffline, Mode=OneWay}"
+                                    Visibility="{x:Bind Vm.ShowSessionButton, Mode=OneWay}"
                                     AutomationProperties.Name="{x:Bind Vm.OfflineButtonText, Mode=OneWay}" />
                         </StackPanel>
                         <Grid ColumnSpacing="12" Visibility="{x:Bind Vm.HasMod, Mode=OneWay}">

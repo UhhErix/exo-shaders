@@ -21,11 +21,11 @@ public sealed class RulesFile
     /// parameters; rs.select.v1: a construction shape in code (<see cref="RsShapes"/>); stagesets.v1: an allow-list of stage
     /// sets; rt.collection.v1: a ray tracing collection rule (<see cref="RtShapes"/>); rt.noconfig.v1: collections without a state
     /// object config (<see cref="RtRule.Config"/>); rs.re.v1: RE Engine's construction with its parameters (<see cref="ReRule"/>);
-    /// rs.re.v2: its <see cref="ReRule.DenyMesh"/>, <see cref="ReRule.CbvUavAbove"/> and <see cref="ReRule.BindlessSpaces"/>;
-    /// rs.samplers.v1: static samplers as raw descriptions; rs.stock.v2: <see cref="StockRule.DenyMesh"/>; rt.nv.v1: <see cref="RtRule.Nv"/>;
+    /// rs.re.v2: its <see cref="ReRule.DenyMesh"/>, <see cref="ReRule.CbvUavAbove"/> and <see cref="ReRule.BindlessSpaces"/>; rs.re.v3: its <see cref="ReRule.OtherCbvBase"/>;
+    /// rs.samplers.v1: static samplers as raw descriptions; rs.stock.v2: <see cref="StockRule.DenyMesh"/>; rs.stock.v3: <see cref="StockRule.NvExtensionEverywhere"/>; rt.nv.v1: <see cref="RtRule.Nv"/>;
     /// amd.ags.v1: <see cref="PlanRule.Ags"/>; nv.aftermath.v1: <see cref="PlanRule.Aftermath"/>; vi.v1: <see cref="PlanRule.ViewInstancing"/>;
     /// passnames.v1: <see cref="PlanRule.PassNames"/>; d3ds.identity.v1: an <see cref="IdentityRule"/>, alone.</summary>
-    public static readonly IReadOnlySet<string> Capabilities = new HashSet<string> { "rs.desc.v1", "rs.desc.v2", "rs.stock.v1", "rs.select.v1", "stagesets.v1", "rt.collection.v1", "rt.noconfig.v1", "rs.re.v1", "rs.re.v2", "rs.samplers.v1", "rs.stock.v2", "rt.nv.v1", "amd.ags.v1", "nv.aftermath.v1", "vi.v1", "passnames.v1", IdentityCap };
+    public static readonly IReadOnlySet<string> Capabilities = new HashSet<string> { "rs.desc.v1", "rs.desc.v2", "rs.stock.v1", "rs.select.v1", "stagesets.v1", "rt.collection.v1", "rt.noconfig.v1", "rs.re.v1", "rs.re.v2", "rs.re.v3", "rs.samplers.v1", "rs.stock.v2", "rs.stock.v3", "rt.nv.v1", "amd.ags.v1", "nv.aftermath.v1", "vi.v1", "passnames.v1", IdentityCap };
 
     public const string IdentityCap = "d3ds.identity.v1";
 
@@ -172,15 +172,16 @@ public sealed class RulesFile
             {
                 if (!Needs("rs.re.v1") || rs.Stock != null || rs.Select != null || re.CbvBase > 14 || re.ComputeUavs is 0 or > 1_000_000
                         || (!re.DenyMesh || re.CbvUavAbove || re.BindlessSpaces > 0) && !Needs("rs.re.v2") || re.BindlessSpaces > 16
+                        || re.OtherCbvBase is { } other && (!Needs("rs.re.v3") || other > re.CbvBase)
                         || !Sizes(re.CbvSizes) || !Sizes(re.SrvSizes) || !Sizes(re.UavSizes))
                     return "bad re";
                 foreach (var stages in new[] { new[] { Stage.Compute }, [Stage.Vertex, Stage.Pixel] })
-                    try { RootSig.Serialize(RootSig.BuildRe(re, stages, re.CbvSizes[^1], re.SrvSizes[^1], re.UavSizes[^1]), samplers); }
+                    try { RootSig.Serialize(RootSig.BuildRe(re, stages, re.CbvSizes[^1] + re.CbvBase - (re.OtherCbvBase ?? re.CbvBase), re.SrvSizes[^1], re.UavSizes[^1]), samplers); }
                     catch (RootSig.SerializeException e) { return $"a description doesn't serialize ({e.Message})"; }
             }
             else if (shapes > 1 || (shapes == 1) == (rs.Stock != null)) return "no single construction";
             if (rs.Stock is { } p && (!Needs("rs.stock.v1") || !Stages(p.Stages) || p.Stages.Contains("CS") || !Stages(p.UavStages, empty: true)
-                    || p.MaxSrvs is 0 or > 1_000_000 || p.MaxSamplers is 0 or > 2048 || p.DenyMesh && !Needs("rs.stock.v2")))
+                    || p.MaxSrvs is 0 or > 1_000_000 || p.MaxSamplers is 0 or > 2048 || p.DenyMesh && !Needs("rs.stock.v2") || p.NvExtensionEverywhere && !Needs("rs.stock.v3")))
                 return "bad stock";
         }
         if (r.Rt is { } rt)
@@ -241,7 +242,7 @@ public sealed class RulesFile
         return m.Select(r => r.Writes).Distinct().Count() == 1 ? m[0] : null;
     }
 
-    /// <summary>The root-signature rule matching the engine: one naming its fork first, then file order.</summary>
+    /// <summary>The root-signature rule matching the engine: one naming its fork first, then one naming the game, then file order.</summary>
     public PlanRule? RuleFor(EngineInfo e) => First(e, r => r.RootSignature != null);
 
     /// <summary>The ray tracing collection rule matching the engine (a plan without recorded collections uses it).</summary>
@@ -254,7 +255,7 @@ public sealed class RulesFile
     public PlanRule? PassNamesFor(EngineInfo e) => First(e, r => r.PassNames != null);
 
     PlanRule? First(EngineInfo e, Func<PlanRule, bool> kind) =>
-        Rules.Where(r => kind(r) && Matches(r.Match, e)).OrderBy(r => r.Match.Fork == null).FirstOrDefault();
+        Rules.Where(r => kind(r) && Matches(r.Match, e)).OrderBy(r => r.Match.Fork == null).ThenBy(r => r.Match.Games == null).FirstOrDefault();
 
     static bool Matches(RuleMatch m, EngineInfo e)
     {
@@ -345,9 +346,11 @@ public sealed record RootSigRule(StockRule? Stock = null, string[]? Select = nul
 /// CBVs), the sizes its CBV, SRV and pixel shader UAV tables come in, its compute UAV table, the directly-indexed heap flag,
 /// denying the mesh and amplification stages (RE Village's flags don't), CBV and UAV tables sized above what the pipeline
 /// binds (as SRV tables always are), and the bindless tables after the rest: one per space 1 up to
-/// <paramref name="BindlessSpaces"/>, an unbounded SRV range t0 visible to every stage (RE Village: 8).</summary>
+/// <paramref name="BindlessSpaces"/>, an unbounded SRV range t0 visible to every stage (RE Village: 8). <paramref name="OtherCbvBase"/>:
+/// the base on GPUs other than NVIDIA's, where the engine binds fewer root CBVs (RE Requiem demo: 4 on NVIDIA, 0 elsewhere); null = the same.</summary>
 public sealed record ReRule(uint CbvBase, uint[] CbvSizes, uint[] SrvSizes, uint[] UavSizes, uint ComputeUavs, bool HeapIndexed = false,
-    bool DenyMesh = true, bool CbvUavAbove = false, uint BindlessSpaces = 0);
+    bool DenyMesh = true, bool CbvUavAbove = false, uint BindlessSpaces = 0,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] uint? OtherCbvBase = null);
 
 /// <summary>Stock Unreal's parameters (<see cref="RootSig"/>'s BuildStock): its stage list in priority order, MAX_SRVS and
 /// MAX_SAMPLERS, the stages with a UAV table, tables only for the resource types a stage binds, the input-layout flag only
@@ -356,7 +359,8 @@ public sealed record ReRule(uint CbvBase, uint[] CbvSizes, uint[] SrvSizes, uint
 /// signature whatever the stages list (<paramref name="DenyMesh"/>: Kuro's 4.26 fork). Unset, it is left out of <see cref="RulesFile.Hash"/>'s serialization.</summary>
 public sealed record StockRule(string[] Stages, uint MaxSrvs, uint MaxSamplers, string[] UavStages, bool TablesWhenUsed = false,
     bool LayoutNeedsVertexInput = false, bool GrowSrvs = false, bool Ags = false, bool RootConstants = false, bool Diagnostic = false, bool HeapFlags = false,
-    bool NvExtension = false, [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool DenyMesh = false);
+    bool NvExtension = false, [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool DenyMesh = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool NvExtensionEverywhere = false);
 
 /// <summary>An entry of <see cref="RootSigRule.ByStages"/>; without a description the stages it names have none. It applies
 /// only when every shader of the pipeline declares no resource (<paramref name="BindsNothing"/>) and when one is shader

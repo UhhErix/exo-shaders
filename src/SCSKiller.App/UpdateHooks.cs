@@ -9,7 +9,11 @@ namespace SCSKiller.App;
 public static class UpdateHooks
 {
     // read when a line is written, not when the type loads: a portable build's first start copies its data there
-    public static string DataDir => AppStore.DefaultDir;
+    public static string DataDir => DesignDir ?? AppStore.DefaultDir;
+
+    /// <summary>--fake and --screenshots: their temp folder (App.Launch's), set first in Main, so their updates.log and crash
+    /// log never reach the data folder.</summary>
+    public static string? DesignDir { get; set; }
 
     // every step of an update, in the data folder: up to 128 KB, then one older file
     public static void Log(string line) => ScsKiller.AppendLog(DataDir, "updates.log", line, 128 * 1024);

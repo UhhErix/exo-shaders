@@ -36,7 +36,7 @@ public static partial class GameFiles
         if (launcherExe != null)
         {
             var p = Path.GetFullPath(Find(installDir, launcherExe));
-            if (File.Exists(p)) return RedLauncherTarget(installDir, p) ?? p;
+            if (File.Exists(p)) return RedLauncherTarget(installDir, p) ?? BuildOf32BitLauncher(installDir, p) ?? p;
         }
         // ponytail: non-Unreal games get a guess; Steam's launch target (appinfo.vdf config/launch, SteamSource.Apps) could seed it, but for launcher games it names the launcher
         var exes = EnumerateFiles(installDir, "*.exe", Deep)
@@ -242,12 +242,38 @@ public static partial class GameFiles
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or BadImageFormatException) { return false; }
     }
 
+    /// <summary>An x64 PE; false when it isn't one or can't be read.</summary>
+    static bool IsX64(string exe)
+    {
+        try
+        {
+            using var pe = PeFile.Open(exe);
+            return pe.PEHeaders.CoffHeader.Machine == System.Reflection.PortableExecutable.Machine.Amd64;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or BadImageFormatException) { return false; }
+    }
+
+    /// <summary>The 64-bit game a 32-bit launcher starts (SCSKiller 1.4.1-alpha.2): the one x64 exe in the install named
+    /// &lt;launcher&gt;.* (BeamNG.drive.exe starts BeamNG.drive.x64.exe). Null: the launcher isn't 32-bit, none or
+    /// several, or the install has anti-cheat (no binary read there).</summary>
+    static string? BuildOf32BitLauncher(string installDir, string launcher)
+    {
+        if (!Is32Bit(launcher)) return null;
+        var stem = Path.GetFileNameWithoutExtension(launcher) + ".";
+        var builds = EnumerateFiles(installDir, "*.exe", Deep)
+            .Where(f => Path.GetFileName(f).StartsWith(stem, StringComparison.OrdinalIgnoreCase) && !NotTheGameExe(installDir, f)).ToList();
+        if (builds.Count == 0 || DetectAntiCheat(new Game("", "", Store.Other, installDir, launcher), quick: true) != AntiCheat.None) return null;
+        return builds.Where(IsX64).ToList() is [var one] ? Path.GetFullPath(one) : null;
+    }
+
     /// <summary>The game a launcher (<paramref name="guess"/>) starts: the target of CD PROJEKT RED's launcher-configuration.json
-    /// next to it, else, when the guess imports no graphics API, the one larger exe of <paramref name="exes"/> that does (no
-    /// binary read in an install with anti-cheat). Anything else (one unreadable, several, none) keeps the guess.</summary>
+    /// next to it, else the 64-bit build of a 32-bit launcher (<see cref="BuildOf32BitLauncher"/>), else, when the guess
+    /// imports no graphics API, the one larger exe of <paramref name="exes"/> that does (no binary read in an install with
+    /// anti-cheat). Anything else (one unreadable, several, none) keeps the guess.</summary>
     static string LaunchedExe(string installDir, FileInfo guess, IReadOnlyList<FileInfo> exes)
     {
         if (RedLauncherTarget(installDir, guess.FullName) is { } red) return red;
+        if (BuildOf32BitLauncher(installDir, guess.FullName) is { } build) return build;
         var larger = exes.Where(f => f.Length > guess.Length).ToList();
         if (larger.Count == 0 || ImportsGraphics(guess.FullName) != false
             || DetectAntiCheat(new Game("", "", Store.Other, installDir, guess.FullName)) != AntiCheat.None) return guess.FullName;
@@ -847,9 +873,10 @@ public static partial class GameFiles
     /// manifest that can't be read counts for its library's whole steamapps\common, each folder in it as on disk too.</summary>
     static bool SteamAntiCheatApp(Game g, string? steamRoot)
     {
-        const StringComparison names = StringComparison.OrdinalIgnoreCase;
+        // paths compare as the file system does: without case on Windows only (1.4.0-beta.1)
+        var names = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         var paths = new[] { g.InstallDir, g.ExePath }.SelectMany(p => new[] { Path.GetFullPath(p), FinalPath(p) }).OfType<string>().ToList();
-        var libraries = paths.Select(p => p.IndexOf(@"\steamapps\common\", names) is var at and >= 0 ? p[..at] : null).OfType<string>().ToList();
+        var libraries = paths.Select(p => p.IndexOf(SteamSource.CommonPart, names) is var at and >= 0 ? p[..at] : null).OfType<string>().ToList();
         try { libraries.AddRange(SteamSource.Libraries(steamRoot ?? SteamSource.Root())); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or System.Security.SecurityException) { }
         bool Holds(string? root) => root != null && paths.Any(p => p.Equals(root, names) || p.StartsWith(root + Path.DirectorySeparatorChar, names));
@@ -858,7 +885,7 @@ public static partial class GameFiles
             try { return Directory.GetDirectories(dir); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return []; }
         }
-        foreach (var lib in libraries.Select(Path.TrimEndingDirectorySeparator).Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (var lib in libraries.Select(Path.TrimEndingDirectorySeparator).Distinct(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal))
             foreach (var id in AntiCheatIds.Where(i => i.StartsWith("steam:", StringComparison.Ordinal)))
             {
                 var common = Path.Combine(lib, "steamapps", "common");

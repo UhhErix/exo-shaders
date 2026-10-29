@@ -208,7 +208,7 @@ internal sealed partial class Host
                 timeLeftSeconds = left is { } ls && q.Progress is { PerSecond: > 0.0 } ? Math.Round(ls.TotalSeconds) : (double?)null,
                 note = NoteOf(q, g),
                 cache = g is null ? "—" : Fmt.Cache(g),
-                whenIdle = q.Note == Fmt.IdleNote,
+                whenIdle = ScsKiller.WaitsOnItsOwn(q),   // "starts when the PC is idle", or (1.4.0-beta.1) "starts when no game is running"
                 error = q.Error,
             };
         }
@@ -279,11 +279,21 @@ internal sealed partial class Host
     private int _cacheReading, _cacheAgain, _cacheForce;
     private DateTime _cacheAt = DateTime.MinValue;
 
+    // the NVIDIA app's sizes, as SCSKiller 1.3.4's Settings offers them
     public static readonly (string Label, CacheLimit Limit)[] Sizes =
     [
-        ("16 GB (driver default)", new CacheLimit(17179869184L, IsDriverDefault: true)),
-        ("32 GB", new CacheLimit(34359738368L, IsDriverDefault: false)),
-        ("100 GB", new CacheLimit(107374182400L, IsDriverDefault: false)),
+        ("512 MB", new CacheLimit(512L << 20, IsDriverDefault: false)),
+        ("1 GB", new CacheLimit(1L << 30, IsDriverDefault: false)),
+        ("4 GB", new CacheLimit(4L << 30, IsDriverDefault: false)),
+        ("5 GB", new CacheLimit(5L << 30, IsDriverDefault: false)),
+        ("10 GB", new CacheLimit(10L << 30, IsDriverDefault: false)),
+        ("12 GB", new CacheLimit(12L << 30, IsDriverDefault: false)),
+        ("16 GB (driver default)", new CacheLimit(16L << 30, IsDriverDefault: true)),
+        ("24 GB", new CacheLimit(24L << 30, IsDriverDefault: false)),
+        ("32 GB", new CacheLimit(32L << 30, IsDriverDefault: false)),
+        ("48 GB", new CacheLimit(48L << 30, IsDriverDefault: false)),
+        ("64 GB", new CacheLimit(64L << 30, IsDriverDefault: false)),
+        ("100 GB", new CacheLimit(100L << 30, IsDriverDefault: false)),
         ("Unlimited", new CacheLimit(null, IsDriverDefault: false)),
     ];
 
@@ -387,6 +397,7 @@ internal sealed partial class Host
             isDriverDefault = c.Limit?.IsDriverDefault ?? false,
             percent = Math.Round(percent, 1),
             warn = warn ? c.Limit!.IsDriverDefault ? "Driver default limit may evict games" : "The cache is nearly full" : null,
+            off = Format.CacheOffLine(v.Vendor, c.Limit),   // 1.4.0-beta.1: NVIDIA's cache turned off, compiles are refused
             configurable = v.Caps.CacheSizeConfigurable,
             largest = c.Limit is { Bytes: null },
             sizeIndex = Array.FindIndex(Sizes, s => !s.Limit.IsDriverDefault && s.Limit == c.Limit) is var i && i >= 0 ? i : (int?)null,

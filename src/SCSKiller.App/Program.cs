@@ -16,6 +16,7 @@ public static class Program
     [STAThread]
     static int Main(string[] args)
     {
+        if (IsDesignRun(args)) UpdateHooks.DesignDir = Path.Combine(Path.GetTempPath(), $"SCSKiller-fake-{Environment.ProcessId}");
         // logged, not handled: the app still ends as it would have
         AppDomain.CurrentDomain.UnhandledException += (_, e) => LogCrash(e.ExceptionObject as Exception ?? new Exception($"{e.ExceptionObject}"));
         TaskScheduler.UnobservedTaskException += (_, e) => LogCrash(e.Exception);
@@ -42,7 +43,7 @@ public static class Program
         return 0;
     }
 
-    public static void LogCrash(Exception e) => Core.App.CrashLog.Write(Core.App.AppStore.DefaultDir, e);
+    public static void LogCrash(Exception e) => Core.App.CrashLog.Write(UpdateHooks.DataDir, e);
 
     /// <summary>Logs a start that failed and, unless it is a design-data run, which nobody watches, says where the log is.</summary>
     public static void StartFailed(Exception e, string[] args)

@@ -50,6 +50,62 @@ static class FakeD3DSCache
         finally { sqlite3_close(db); }
     }
 
+    /// <summary>The adapter db NVIDIA's driver from 621 keeps in a D3DSCache folder, for an RTX 3070.</summary>
+    public const string AdapterName = "6F75932F-7DFC-4FB0-B4B8-12DE1AC415DA_VEN_10DE&DEV_2484&SUBSYS_87BC&REV_A1.dxcache";
+
+    /// <summary>An adapter db in <paramref name="dir"/> as the runtime writes it (its schema read from one on 621.12): one
+    /// compiler row (<c>abi:version:family</c>), one app_id row naming <paramref name="exePath"/>, and each of
+    /// <paramref name="keys"/> (hex) with a value.</summary>
+    public static string Adapter(string dir, string exePath, string compiler, params string[] keys)
+    {
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, AdapterName);
+        var (abi, version, family) = compiler.Split(':') is [var a, var v, var f] ? (a, v, f) : throw new ArgumentException(compiler);
+        Assert.Equal(0, sqlite3_open(path, out var db));
+        try
+        {
+            Exec(db, "create table keys(keyid INTEGER PRIMARY KEY, key BLOB, last_accessed REAL); create unique index key_index on keys(key); "
+                + "create index lru on keys(last_accessed DESC); create table vals(keyid INTEGER REFERENCES keys(keyid) ON DELETE CASCADE, type INTEGER, value BLOB); "
+                + "create unique index value_index on vals(keyid, type); create table groupkeys(keyid INTEGER PRIMARY KEY, key BLOB, version INTEGER); "
+                + "create unique index groupkey_index on groupkeys(key); create table groups(groupkeyid INTEGER REFERENCES groupkeys(keyid) ON DELETE CASCADE, valuekeyid INTEGER); "
+                + "create table app_id(id INTEGER PRIMARY KEY, exe_path TEXT, app_name TEXT, engine_name TEXT, app_version INTEGER, engine_version INTEGER, app_profile_version INTEGER); "
+                + "create table compiler_id(id INTEGER PRIMARY KEY, abi INTEGER, version INTEGER, family TEXT)");
+            Exec(db, $"insert into compiler_id values (0, {abi}, {version}, '{family}'); insert into app_id(id, exe_path) values (0, '{exePath.Replace("'", "''")}')");
+            foreach (var k in keys) Exec(db, $"insert into keys(key, last_accessed) values (x'{k}', 0); insert into vals values (last_insert_rowid(), 0, x'{k}')");
+        }
+        finally { sqlite3_close(db); }
+        return path;
+    }
+
+    /// <summary>The runtime's open of <paramref name="db"/> under another driver: WAL on, <paramref name="compiler"/> named in it, and
+    /// while that connection is open (the WAL not folded back), the db, its WAL and -shm copied into <paramref name="to"/>.</summary>
+    public static void Recompiled(string db, string compiler, string to)
+    {
+        var (abi, version, family) = compiler.Split(':') is [var a, var v, var f] ? (a, v, f) : throw new ArgumentException(compiler);
+        Assert.Equal(0, sqlite3_open(db, out var h));
+        try
+        {
+            Exec(h, "pragma journal_mode=wal");
+            Exec(h, $"update compiler_id set abi = {abi}, version = {version}, family = '{family}'");
+            Directory.CreateDirectory(to);
+            foreach (var ext in new[] { "", "-wal", "-shm" })
+            {
+                using var from = new FileStream(db + ext, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var copy = File.Create(Path.Combine(to, Path.GetFileName(db) + ext));
+                from.CopyTo(copy);
+            }
+        }
+        finally { sqlite3_close(h); }
+    }
+
+    /// <summary>The keys a db holds, in hex, read as it is on disk.</summary>
+    public static List<string> Keys(string db)
+    {
+        var keys = new List<string>();
+        Assert.True(D3DSCache.Query(db, "select hex(key) from keys order by key", st => keys.Add(Marshal.PtrToStringUTF8(D3DSCache.sqlite3_column_text(st, 0))!)));
+        return keys;
+    }
+
     static void Exec(nint db, string sql) => Assert.Equal(0, sqlite3_exec(db, sql, 0, 0, 0));
 
     [DllImport("winsqlite3.dll")] static extern int sqlite3_open([MarshalAs(UnmanagedType.LPUTF8Str)] string file, out nint db);
@@ -149,6 +205,104 @@ public class GameCachesTests : IDisposable
         // a fragment of a path before a byte that isn't UTF-8 text: not joined to the path after it
         File.WriteAllBytes(Path.Combine(walOnly, "a.dxcache-wal"), [.. @"C:\partial"u8, 0xFF, .. FakeD3DSCache.WalRow(g.ExePath), 0]);
         Assert.Equal([g.ExePath], D3DSCache.ExePaths(walOnly)!);
+    }
+
+    /// <summary>A WAL or db is read a chunk at a time, never into one array (a game's 2.6 GB WAL overflowed it, and every fold
+    /// failed on it): a row across two reads, a path longer than a read, and rows at the very start and end are each found.</summary>
+    [Fact]
+    public void Rows_are_found_across_reads_without_reading_the_file_whole()
+    {
+        string[] paths = [@"C:\Games\A\a.exe", @"D:\Spiele\Ä Game\Binaries\Win64\" + new string('x', 80) + ".exe", @"C:\b.exe"];
+        byte[] bytes = [.. FakeD3DSCache.WalRow(paths[0]), .. Enumerable.Repeat((byte)'j', 300), .. FakeD3DSCache.WalRow(paths[1]),
+            0xFF, .. @"C:\partial"u8, .. new byte[257], .. FakeD3DSCache.WalRow(paths[2])];
+        for (var chunk = 1; chunk <= 64; chunk++)
+        {
+            var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            D3DSCache.ScanRows(new MemoryStream(bytes), found, chunk, after: 128);
+            Assert.Equal(paths.Order(), found.Order());
+        }
+    }
+
+    /// <summary>A folder the runtime made for another program, one of whose dbs can't be read without its WAL (a game that quit
+    /// with its pipelines still in it), is that program's: never one of ours and never a doubt, which kept a compiled game's
+    /// fold pending for good. Its WAL isn't read. A folder no db reads in is decided by the paths in its bytes.</summary>
+    [Fact]
+    public void Another_programs_folder_whose_db_needs_its_WAL_is_never_a_doubt()
+    {
+        var (d3ds, mine) = (Path.Combine(_root, "D3DSCache"), Path.Combine(_root, "games", "steam_1", "work"));
+        var started = DateTime.UtcNow;
+        const string game = @"c:\program files (x86)\steam\steamapps\common\Other\Other-Win64-Shipping.exe";
+        var other = FakeD3DSCache.Folder(d3ds, D3DSCache.FolderName(game), game);   // its small db reads
+        var adapter = Path.Combine(other, "6F75932F-7DFC-4FB0-B4B8-12DE1AC415DA_VEN_10DE&DEV_2484&SUBSYS_87BC&REV_A1.dxcache");
+        File.WriteAllBytes(adapter, new byte[4096]);   // its main file alone isn't a db
+        File.WriteAllBytes(adapter + "-wal", FakeD3DSCache.WalRow(game));
+
+        string Unreadable(string name, string named)   // no db reads, its bytes name an exe
+        {
+            var dir = Path.Combine(d3ds, name);
+            Directory.CreateDirectory(dir);
+            File.WriteAllBytes(Path.Combine(dir, "a.dxcache"), new byte[4096]);
+            File.WriteAllBytes(Path.Combine(dir, "a.dxcache-wal"), FakeD3DSCache.WalRow(named));
+            return dir;
+        }
+        const string gone = @"C:\Games\Gone\gone.exe";
+        Unreadable(D3DSCache.FolderName(gone), gone);                                       // named for another program: its
+        var staged = Path.Combine(mine, "stage-1-1", "Other-Win64-Shipping.exe");
+        var ours = Unreadable(D3DSCache.FolderName(staged), staged);                        // a staged exe's: the fold finds it damaged
+        var unknown = Unreadable("123abc", gone);                                           // named for no path it holds: a doubt
+
+        var doubt = new List<string>();
+        using (new FileStream(adapter + "-wal", FileMode.Open, FileAccess.ReadWrite, FileShare.None))   // a read of it would be a doubt
+            Assert.Equal([ours], D3DSCache.Made(d3ds, [mine], started, doubt: doubt));
+        Assert.Equal([unknown], doubt);
+    }
+
+    internal const string Old = "1128466500354048:1128466500354048:NVIDIA_AMPERE_GA104";   // 621.01's, as this PC's dbs name it
+    internal const string New = "1128470231318528:1128470231318528:NVIDIA_AMPERE_GA104";   // 621.12's
+
+    /// <summary>After a driver update, a compile's staged or waiting adapter db of the earlier driver is known by its compiler:
+    /// against this driver's once a warm on it told it, else, for a db older than the driver's install, against what every db of
+    /// that adapter written since names. A db written since, another GPU's, and one in doubt never are.</summary>
+    [Fact]
+    public void An_earlier_drivers_adapter_db_is_known_by_this_drivers_compiler()
+    {
+        var root = Path.Combine(_root, "D3DSCache");
+        var installed = DateTime.UtcNow.AddHours(-1);
+        string Db(string folder, string compiler, DateTime? written = null)
+        {
+            var db = FakeD3DSCache.Adapter(Path.Combine(root, folder), $@"C:\Games\{folder}.exe", compiler, "0A");
+            if (written is { } w) File.SetLastWriteTimeUtc(db, w);
+            return db;
+        }
+        var staged = Path.GetDirectoryName(Db("01", Old, installed.AddDays(-4)))!;   // a fold that waited across the update
+        var fresh = Path.GetDirectoryName(Db("02", New))!;                          // a compile on this driver
+        Db("03", New);                                                              // what programs wrote since
+        Db("04", Old, installed.AddDays(-1));                                       // written before: never counted
+        var db = Path.Combine(staged, FakeD3DSCache.AdapterName);
+
+        Assert.Equal([db], D3DSCache.EarlierDriver(staged, root, null, installed, staged: true));
+        Assert.Empty(D3DSCache.EarlierDriver(fresh, root, null, installed, staged: true));   // written since: this driver's
+        Assert.Empty(D3DSCache.EarlierDriver(staged, root, null, null, staged: true));       // nothing tells this driver's: merged as before
+        Assert.Equal([db], D3DSCache.EarlierDriver(staged, root, New, null, staged: true));  // a warm on this driver told it
+        Assert.Empty(D3DSCache.EarlierDriver(fresh, root, New, null, staged: true));
+        Assert.Empty(D3DSCache.EarlierDriver(staged, root, "1:1:INTEL_XE2", null, staged: true));   // another GPU's compiler
+        File.WriteAllBytes(Db("05", Old), [0x6E, 0x6F]);
+        Assert.Empty(D3DSCache.EarlierDriver(Path.Combine(root, "05"), root, New, null, staged: true));   // not a db: a doubt
+
+        // a program's WAL may hold the compiler the runtime wrote at its last open: such a db isn't counted
+        string[] programs = [Path.Combine(root, "03", FakeD3DSCache.AdapterName), Path.Combine(fresh, FakeD3DSCache.AdapterName)];
+        foreach (var p in programs) File.WriteAllBytes(p + "-wal", [1]);
+        Assert.Empty(D3DSCache.EarlierDriver(staged, root, null, installed, staged: true));
+        foreach (var p in programs) File.Delete(p + "-wal");
+        Db("06", "1128470231318529:1128470231318529:NVIDIA_AMPERE_GA104");   // dbs since that disagree: not known
+        Assert.Empty(D3DSCache.EarlierDriver(staged, root, null, installed, staged: true));
+
+        // a moved install's folder waiting: the runtime made its db this driver's at the game's last run, in the WAL it left;
+        // a staged db's WAL adds pipelines only, so its file tells
+        var moved = Path.Combine(root, "07");
+        FakeD3DSCache.Recompiled(Db("08", Old, installed.AddDays(-4)), New, moved);
+        Assert.Empty(D3DSCache.EarlierDriver(moved, root, New, null, staged: false));
+        Assert.Equal([Path.Combine(moved, FakeD3DSCache.AdapterName)], D3DSCache.EarlierDriver(moved, root, New, null, staged: true));
     }
 
     [Fact]

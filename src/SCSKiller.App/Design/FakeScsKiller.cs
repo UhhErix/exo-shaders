@@ -127,7 +127,7 @@ public sealed class FakeScsKiller : IScsKiller
                 plan: new PlanStats(39_870, 218_340, 2_410, 386, true, StageSets: 218_340), cache: 13_000_000_000, time: TimeSpan.FromMinutes(30)) with
             {
                 WarmedDriverVersion = "616.92", WarmedAt = DateTimeOffset.Now.AddDays(-3), LastWarmTime = TimeSpan.FromSeconds(13), CacheOnDisk = 1_610_000_000,
-                LastWarmFailed = 180_412, LastWarmSkipped = 0,
+                LastWarmFailed = 180_412, LastWarmSkipped = 0, LastWarmFailedBy = 1,
             },
             // runs on DirectX 11 or 12: both compiled
             G("warthunder", "War Thunder", "-", "aces.exe", 41_206, GameStatus.Warmed, "warmed for driver 610.88", at: "gaijin",
@@ -298,10 +298,13 @@ public sealed class FakeScsKiller : IScsKiller
     public bool QueueRunning => running;
     public bool Compiling => Queue.Any(Format.Running);
     public bool SetEncryptionKey(string gameId, string key) => false;
+    public bool HasEncryptionKey(string gameId) => false;
+    public void RemoveEncryptionKey(string gameId) { }
     public bool ShouldNotifyStale() => Settings.OnDriverUpdate == DriverUpdateMode.Ask && DriverStaleGames().Count > 0;
     public void ApplyDriverUpdateMode() { }
     public Task<IReadOnlyList<GameState>> RescanAsync(CancellationToken ct, bool userRequested = false) => ScanAsync(ct);
     public void EnqueueWhenIdle(string gameId) => Enqueue(gameId);
+    public void EnqueueRightAway(string gameId) => Enqueue(gameId);
 
     /// <summary>Adds at the end; runs only after StartQueue, like the real queue.</summary>
     public void Enqueue(string gameId) => Update(() =>
@@ -408,7 +411,7 @@ public sealed class FakeScsKiller : IScsKiller
         lock (gate)
         {
             int i = games.FindIndex(x => x.Game.Id == gameId);
-            games[i] = g = games[i] with { OfflineRecord = on };
+            games[i] = g = games[i] with { OfflineRecord = on, AlwaysRecord = on && games[i].AlwaysRecord };
         }
         GameChanged?.Invoke(g);
     }
@@ -418,6 +421,16 @@ public sealed class FakeScsKiller : IScsKiller
         lock (gate) return Task.FromResult(games.First(x => x.Game.Id == gameId).AntiCheat);
     }
     public Task StartRiskSession(string gameId, bool confirmed, AntiCheat shown) => Task.CompletedTask;
+    public void SetAlwaysRecord(string gameId, bool on, bool confirmed, AntiCheat shown)
+    {
+        GameState g;
+        lock (gate)
+        {
+            int i = games.FindIndex(x => x.Game.Id == gameId);
+            games[i] = g = games[i] with { AlwaysRecord = on };
+        }
+        GameChanged?.Invoke(g);
+    }
     public void SetApiOverride(string gameId, DxApi? value) => SetApi(gameId, value);
     readonly Dictionary<string, string> proofs = [];
     /// <summary>Screenshots: this PC's recording shows <paramref name="api"/> ("D3D11"/"D3D12"); null = no recording.</summary>
@@ -517,6 +530,26 @@ public sealed class FakeScsKiller : IScsKiller
         }
         GameChanged?.Invoke(g);
     }
+    public void SetGameTraversal(string gameId, bool? on)
+    {
+        GameState g;
+        lock (gate)
+        {
+            int i = games.FindIndex(x => x.Game.Id == gameId);
+            games[i] = g = games[i] with { TraversalOverride = on };
+        }
+        GameChanged?.Invoke(g);
+    }
+    public void SetGameUseShared(string gameId, bool on)
+    {
+        GameState g;
+        lock (gate)
+        {
+            int i = games.FindIndex(x => x.Game.Id == gameId);
+            games[i] = g = games[i] with { NoSharedHashes = !on };
+        }
+        GameChanged?.Invoke(g);
+    }
     public void SetGameLeftOutOfAddAll(string gameId, bool on)
     {
         GameState g;
@@ -572,6 +605,9 @@ public sealed class FakeScsKiller : IScsKiller
     public string? ScanProgress { get; set; }
     string? afterUpdateLine;
     public string? AfterUpdateLine { get => afterUpdateLine; set { afterUpdateLine = value; GameChanged?.Invoke(games[0]); } }
+    /// <summary>--screenshots: the game whose D3DSCache fold runs, at 42%.</summary>
+    public string? Folding { get; set; }
+    public string? FoldLine(string gameId) => Folding == gameId ? ScsKiller.FoldText("the game's", 42) : null;
     public void RenameManualGame(string gameId, string name)
     {
         GameState renamed;

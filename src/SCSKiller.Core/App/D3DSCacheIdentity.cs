@@ -9,11 +9,11 @@ public sealed record AppIdentity(string? Name, string? Engine, long Version, lon
 {
     public static readonly AppIdentity None = new(null, null, 0, 0);
 
-    /// <summary>Values a db and a report take: no identity, or a name and an engine (either may be empty) of at most 256
-    /// UTF-16 units with no control character or lone surrogate, and versions not negative.</summary>
+    /// <summary>Values a db and a report take: no identity, or a name (may be empty) and an engine (may be empty or none) of at
+    /// most 256 UTF-16 units with no control character or lone surrogate, and versions not negative.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public bool Valid => Version >= 0 && EngineVersion >= 0
-        && (Name == null ? Engine == null && Version == 0 && EngineVersion == 0 : Engine != null && Text(Name) && Text(Engine));
+        && (Name == null ? Engine == null && Version == 0 && EngineVersion == 0 : (Engine == null || Text(Engine)) && Text(Name));
 
     static readonly UTF8Encoding Strict = new(false, true);
 

@@ -1,7 +1,8 @@
 // scskiller preloader: placed beside a Streamline game's exe under a DLL name the exe imports statically (winmm.dll,
-// version.dll or dinput8.dll). Static imports initialise before the game's code, so the recorder (d3d12.dll beside it) is
-// loaded before Streamline's first by-name load of d3d12.dll, which the loader then hands the recorder. Every export jumps
-// to the System32 DLL of this file's name (preload.asm). Without a d3d12.dll beside it, it is only that forwarder.
+// version.dll or dinput8.dll as built, or another System32 DLL's name with an export table the app writes: PreloadPe.cs).
+// Static imports initialise before the game's code, so the recorder (d3d12.dll beside it) is loaded before Streamline's
+// first by-name load of d3d12.dll, which the loader then hands the recorder. Every export jumps to the System32 DLL of this
+// file's name (preload.asm). Without a d3d12.dll beside it, it is only that forwarder.
 //
 // The recorder is loaded in DllMain, under the loader lock: nothing later comes before the game's code. It runs on the
 // initial thread during process start, and a deadlock needs a wait on another thread: this DllMain waits on nothing (no
@@ -9,7 +10,8 @@
 // DllMain already runs at this point in games whose static imports pull in d3d12.dll.
 #include <windows.h>
 
-extern "C" void* g_real[256] = {};  // export stub i (preload.asm) jumps through g_real[i]
+constexpr size_t kStubs = 1024;     // preload.asm's REPT and PreloadPe.Stubs
+extern "C" void* g_real[kStubs] = {};  // export stub i (preload.asm) jumps through g_real[i]
 extern "C" char s0[];               // the first stub; each is 8 bytes
 constexpr size_t kStub = 8;
 
@@ -41,12 +43,13 @@ BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID) {
     for (DWORD i = 0; i < ex->NumberOfFunctions; ++i) {
         if (!fns[i]) continue;
         size_t k = (size_t)(base + fns[i] - (BYTE*)s0) / kStub;
-        if (k >= 256) return FALSE;
+        if (k >= kStubs) return FALSE;
         FARPROC f = GetProcAddress(real, MAKEINTRESOURCEA(ex->Base + i));
         g_real[k] = f ? (void*)f : (void*)not_here;
     }
     for (DWORD i = 0; i < ex->NumberOfNames; ++i) {
         size_t k = (size_t)(base + fns[ords[i]] - (BYTE*)s0) / kStub;
+        if (k >= kStubs) return FALSE;
         FARPROC f = GetProcAddress(real, (const char*)(base + names[i]));
         g_real[k] = f ? (void*)f : (void*)not_here;
     }

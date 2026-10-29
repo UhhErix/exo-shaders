@@ -951,7 +951,9 @@ public class WarmerTests : IDisposable
         Assert.DoesNotContain("--rt-threads", runs[1]);
         Assert.DoesNotContain("--skip-keys", runs[1]);
         Assert.DoesNotContain("--isolate", runs[1]);
-        Assert.Contains("skipping pipelines that hung the GPU driver", notes);
+        // 1.3.4's note: a hang retry's items are created alone first (its isolate list); this stand-in lists them to skip, as
+        // an older scskiller_warm did, and they are skipped
+        Assert.Contains("retrying the pipelines that hung the GPU driver, each alone", notes);
     }
 
     /// <summary>Hang retries that go on forever stop after the recoveries, at a point the next compile resumes from.</summary>

@@ -72,8 +72,9 @@ public sealed class UnityReader : IEngineReader
         var lastRun = LastRun(PlayerLog(data));
         var launch = UnrealRhi.LaunchOptions(game);
         var api = Api(apis, lastRun, launch);
-        return new EngineInfo(Family, version, null, api, false,
-            probed > 0 && readable == 0 ? $"Unity {version}: none of {probed} built-in shaders has DirectX (d3d11) code this reader can read" : null,
+        // 1.4.1-alpha.2: a DirectX 9 build says what it waits for, before what its shaders hold
+        return new EngineInfo(Family, version, null, api, false, CarvedReader.OldDxReason(api)
+            ?? (probed > 0 && readable == 0 ? $"Unity {version}: none of {probed} built-in shaders has DirectX (d3d11) code this reader can read" : null),
             ApiGuessed: ApiGuessed(apis, LaunchApi(launch) ?? lastRun), OffersVulkan: apis?.Contains(VulkanApi) == true || api.StartsWith("Vulkan", StringComparison.Ordinal));
     }
 
@@ -89,7 +90,7 @@ public sealed class UnityReader : IEngineReader
     public static string Api(int[]? apis, string? lastRun, string launch = "") =>
         LaunchApi(launch) is { } forced ? $"{forced} (launch option)"
         : lastRun != null ? $"{lastRun} (last run)"
-        : apis is [var first, ..] ? first switch { 2 => "D3D11", 18 => "D3D12", VulkanApi => "Vulkan", _ => "OpenGL" }
+        : apis is [var first, ..] ? first switch { 1 => "D3D9", 2 => "D3D11", 18 => "D3D12", VulkanApi => "Vulkan", _ => "OpenGL" }
         : UnrealRhi.Ambiguous;
 
     /// <summary>The build offers DirectX 11 and 12 and no log shows which ran: the first of its list is a guess (a launch

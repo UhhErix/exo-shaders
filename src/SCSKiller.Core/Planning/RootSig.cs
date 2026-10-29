@@ -67,11 +67,12 @@ public static unsafe partial class RootSig
     /// GRHISupportsMeshShadersTier0 on mesh-shader GPUs and so denies the mesh/amplification stages it doesn't use</param>
     /// <param name="maxSrvs">the game's MAX_SRVS when it isn't the rule's (<see cref="MaxSrvsFor"/>); 0 = the rule's</param>
     /// <param name="nvExtension">the game puts the NVIDIA extension table in every root signature (<see cref="NvExtensionEverywhere"/>)</param>
-    public static Desc Build(PlanRule r, IReadOnlyDictionary<Stage, ShaderInfo> stages, bool meshTier, uint maxSrvs = 0, bool nvExtension = false)
+    /// <param name="nvidia">the plan's GPU is NVIDIA's (<see cref="ReRule.OtherCbvBase"/>)</param>
+    public static Desc Build(PlanRule r, IReadOnlyDictionary<Stage, ShaderInfo> stages, bool meshTier, uint maxSrvs = 0, bool nvExtension = false, bool nvidia = true)
     {
         var rs = r.RootSignature!;
         if (rs.ByStages is { } by) return ByStages(r, by, stages);
-        if (rs.Re is { } re) return BuildRe(re, stages);
+        if (rs.Re is { } re) return BuildRe(re, stages, nvidia);
         if (Selects(r, "dagor")) return Dagor.DagorRootSig.Build(stages);
         if (Selects(r, "dagorCbvRanges")) return Dagor.DagorRootSig.Build(stages, cbvRanges: true);
         if (Selects(r, "snowdrop")) return Snowdrop.SnowdropRootSig.Build(stages);
@@ -101,7 +102,8 @@ public static unsafe partial class RootSig
     /// with range offsets) are the ones the games created in recordings, picked as the games pick them (15,756 of 15,756 and
     /// 9,421 of 9,421 recorded PSOs of their own shaders): GoT a compute root, another for a compute shader declaring no
     /// resource, one graphics root; R&amp;C one for a pipeline with a DXBC shader (the exe's), then compute, tessellation and
-    /// the graphics root.</summary>
+    /// the graphics root. Asobo's (Zouna): one compute root and one graphics root whatever the stages, per stage a table of
+    /// 64 SRVs, 14 CBVs and 16 samplers, then 8 UAVs and three 256-SRV tables in spaces 42-44 (2,995 of 2,995 recorded PSOs).</summary>
     static Desc ByStages(PlanRule r, StagesDesc[] by, IReadOnlyDictionary<Stage, ShaderInfo> stages)
     {
         if (!InStageSets(r, stages.Keys)) throw new SerializeException($"no {r.Id} root signature confirmed for {string.Join('+', stages.Keys)}");
@@ -121,9 +123,11 @@ public static unsafe partial class RootSig
     /// <see cref="ReRule.CbvUavAbove"/>, CBVs and UAVs too the smallest above, as RE Village's: u0-u1 gets 4). Compute:
     /// the same once, visible to every stage, a table each, the largest CBV and SRV sizes and <see cref="ReRule.ComputeUavs"/>.
     /// Flags: input layout with a VS, a deny for each graphics stage the pipeline hasn't, the heap flag. Last, the bindless
-    /// tables (<see cref="ReRule.BindlessSpaces"/>; RE Village's recording: 18708 of 18710 PSOs rebuilt byte for byte).</summary>
-    public static Desc BuildRe(ReRule re, IReadOnlyDictionary<Stage, ShaderInfo> stages)
+    /// tables (<see cref="ReRule.BindlessSpaces"/>; RE Village's recording: 18708 of 18710 PSOs rebuilt byte for byte).
+    /// Off NVIDIA a rule's <see cref="ReRule.OtherCbvBase"/> replaces the base, the CBV table sizes growing by the root CBVs it drops.</summary>
+    public static Desc BuildRe(ReRule re, IReadOnlyDictionary<Stage, ShaderInfo> stages, bool nvidia = true)
     {
+        if (!nvidia && re.OtherCbvBase is { } other) re = re with { CbvBase = other, CbvSizes = [.. re.CbvSizes.Select(s => s + re.CbvBase - other)], OtherCbvBase = null };
         if (stages.ContainsKey(Stage.Compute)) return BuildRe(re, [Stage.Compute], re.CbvSizes[^1], re.SrvSizes[^1], 0);
         long End(IEnumerable<ShaderInfo> sh, string cls) => sh.SelectMany(s => s.Bindings).Where(b => b.Class == cls && b.Space == 0)
             .Select(b => b.Count < 0 ? long.MaxValue / 2 : (long)b.Lower + b.Count).DefaultIfEmpty(0).Max();
@@ -231,7 +235,7 @@ public static unsafe partial class RootSig
     /// War: E-Day (5.6): the driver's cache entries of the game's own pipelines carry one root argument more than the stock
     /// rule's, and its 1068 compute shaders binding space 1001 have no root signature without the table.</summary>
     public static bool NvExtensionEverywhere(PlanRule r, IEnumerable<ShaderInfo> shaders) =>
-        r.RootSignature?.Stock is { NvExtension: false } && !Selects(r, "ff7")
+        r.RootSignature?.Stock is { NvExtensionEverywhere: true } || r.RootSignature?.Stock is { NvExtension: false } && !Selects(r, "ff7")
         && shaders.Any(s => s.Bindings.Any(b => b is { Class: "uav", Space: 1001, Lower: 0 })) && shaders.All(s => (s.Counts.Flags & UeFlags.NvIntrinsics) == 0);
 
     /// <summary>The MAX_SRVS a game was built with, from its own shaders: a project may raise the define (D3D12RHI.h: "Titles using

@@ -119,6 +119,17 @@ public sealed class UnrealKeys(string dataDir)
     /// <summary>The stored key, unchecked (a full mount checks it: SubmitKey mounts only what it opens).</summary>
     public FAesKey? Stored(Game game) => File.Exists(KeyFile(game)) ? Parse(File.ReadAllText(KeyFile(game))) : null;
 
+    /// <summary>A key is kept for the game.</summary>
+    public bool Has(Game game) => File.Exists(KeyFile(game));
+
+    /// <summary>Deletes the kept key, its public-list mark and the remembered failed scan.</summary>
+    public void Remove(Game game)
+    {
+        File.Delete(KeyFile(game));
+        File.Delete(AutoFile(game));
+        File.Delete(ScanFile(game));
+    }
+
     /// <summary>A key the user supplies (hex, "0x" optional): stored if it opens the game's files.</summary>
     public bool Set(Game game, string key, Func<FAesKey, bool> opens)
     {

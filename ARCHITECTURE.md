@@ -147,10 +147,22 @@ refused with why otherwise (`BeforeAfterRecorderReady`). `BeforeAfter.Compare` r
 - **D3D11** has no create rows, so a run whose csv launch has `#api,d3d11` compares every hitch of 50 ms or more, the
   time frozen, the worst hitch and the 1% low, with no shader split and no ready share. Stutters on
   loading screens count too.
-- **NVIDIA, D3D11** (`ScsKiller.Frames11`): the `d3d11.dll` goes in only while a pair is in progress and records
-  frame times only (SCSKiller's `scskiller.ini` has `frames_only=1`: no `scskiller.db`, no keys file, no input layout
-  hook). It is stamped only with a pair in progress and that line, else taken out as for VAC. The game's switch Off
-  keeps it out, and a `scskiller.ini` that isn't SCSKiller's refuses it. Every other recorder rule applies.
+- **NVIDIA, D3D11** (`ScsKiller.Frames11`): the `d3d11.dll` records frame times only (SCSKiller's `scskiller.ini` has
+  `frames_only=1`: no `scskiller.db`, no keys file, no input layout hook). While a pair is in progress
+  (`PairFrames11`) it goes in whatever "Record in all compatible games" says; since 1.4.0-beta.1 it also goes in for
+  regular play where that setting or the game's switch says so (`Frames11Play`, NVIDIA's profiles, not Intel's), and a
+  launch's frame line then counts every hitch as a stutter, with no shader split. The game's switch Off keeps it out,
+  and a `scskiller.ini` that isn't SCSKiller's refuses it. Every other recorder rule applies.
+- **Traversal stutter fix** (1.4.1-alpha.1, experimental, native code only in this fork: `engine/prebuilt/SOURCE.md`):
+  SCSKiller's `scskiller.ini` carries `traversal_<key>=<n>` lines for the keys of `ScsKiller.TraversalKeys`
+  (`suballocate`, `buffers`, `textures`, `upload`, `readback`, `uav_buffers`, `uav_textures`, `reuse_frames`, `reuse_ms`,
+  `heap_mb`, `spare_heaps`, `max_pool_mb`, `max_resource_mb`, `probe_ms`, `dred`), signed with the other lines
+  (`SignedLineKeys`), so a hand edit can't switch it on. `TraversalFix.Keys` writes three: `suballocate=1`,
+  `uav_buffers=0`, `max_pool_mb=4096`; the D3D12 recorder then places the game's committed resources in heaps it pools
+  and reuses (up to that many MB), instead of a heap per resource. On for a game by `Settings.Traversal` (`All`) or its
+  override (`GameRecord.Traversal`), only where `TraversalFix.Applies`: the `d3d12.dll` recorder (not D3D11's, not the
+  Vulkan layer), no recorder skip, and in this fork never a game with anti-cheat or VAC. `SCSKILLER_TEST_TRAVERSAL`
+  ("key=value;...") writes its own lines for every recorder, for trying the native knobs.
 - **In-game panel** (`proxy/overlay.h`): while a run is armed or playing and the pair has it on, SCSKiller's
   `scskiller.ini` has `overlay=1`, `ab_play_s` and `ab_tag`. In the outermost Present the recorder copies a panel to the
   top right of the back buffer: the time left, a progress bar, the last 5 s of frame times with a 50 ms line, and on

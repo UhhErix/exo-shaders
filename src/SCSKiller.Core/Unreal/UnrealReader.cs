@@ -76,7 +76,7 @@ public sealed partial class UnrealReader(string? dataDir = null) : IEngineReader
         else if (newer == null && fork == null && baseGame == EGame.GAME_UE5_5 && HasVerseCells(paks, key)) baseGame = EGame.GAME_UE5_6;
         if (newer == null && fork == null && RegistryEngine(s.Registry) is { } r && r != baseGame) guessed = true; // the registry names another version
         ReleaseMemory();
-        var encrypted = newer == null && s.Libraries.Count == 0 && s.Encrypted.Count > 0;
+        var encrypted = newer == null && key == null && s.Libraries.Count == 0 && s.Encrypted.Count > 0;
         var keyMissing = newer == null && !encrypted && key == null && s.Encrypted.Count > 0;
         var platforms = s.Libraries.Count > 0 ? s.Libraries : s.Globals; // no libraries: the shaders are inside the packages
         var unsupported = newer != null ? $"Unreal {newer} isn't supported yet"
@@ -94,7 +94,7 @@ public sealed partial class UnrealReader(string? dataDir = null) : IEngineReader
         return new EngineInfo("Unreal", version, fork?.ToString(), api, encrypted, unsupported, rtOff || UnrealRhi.RtPipelinesOff(s.Configs, project), rtOff,
             false, guessed, apiGuessed,
             MaxAnisotropy: UnrealRhi.MaxAnisotropy(version.StartsWith('4') ? 4 : 5, s.Configs, project, userDir, launch),
-            KeyMissing: keyMissing);
+            KeyMissing: keyMissing, Game: game.Id);   // a rule may name the game (RuleMatch.Games), any build
     }
 
     /// <summary>The engine loads Aftermath from Engine\Binaries\ThirdParty\NVIDIA\NVaftermath (some games in a version folder below it).</summary>
@@ -116,6 +116,13 @@ public sealed partial class UnrealReader(string? dataDir = null) : IEngineReader
         using var check = new KeyCheck(s.Encrypted, fork ?? baseGame);
         return keys.Set(game, key, check.Opens);
     }
+
+    /// <summary>A key for the game's encrypted files is kept (SCSKiller 1.4.0-beta.1: the page's "Change AES key" and
+    /// "Remove AES key").</summary>
+    public bool HasKey(Game game) => keys.Has(game);
+
+    /// <summary>Forgets the kept key and the last scan: the next read scans the exe again (and, Exo Shaders, the public list).</summary>
+    public void RemoveKey(Game game) => keys.Remove(game);
 
     /// <summary>Paks dir, engine version, fork, project folder; null = not a cooked Unreal game.</summary>
     public string DetectStamp(Game game, EngineInfo? engine)
@@ -208,7 +215,7 @@ public sealed partial class UnrealReader(string? dataDir = null) : IEngineReader
     static AbstractAesVfsReader OpenContainer(string path, VersionContainer versions)
     {
         AbstractAesVfsReader r = path.EndsWith(".utoc", StringComparison.OrdinalIgnoreCase)
-            ? Toc(path, versions) : new PakFileReader(path, versions);
+            ? !Sane(path) ? throw new InvalidDataException("a .utoc header whose counts don't fit the file") : Toc(path, versions) : new PakFileReader(path, versions);
         if (versions.Game != EGame.GAME_MarvelRivals || r is not IoStoreReader) r.CustomEncryption = Decryption(versions.Game);
         return r;
     }
@@ -517,7 +524,7 @@ public sealed partial class UnrealReader(string? dataDir = null) : IEngineReader
         var known = graphics.Where(p => p.Shaders.Length > 0 && p.Shaders.All(byHash.ContainsKey)).ToList();
         log?.Report($"{what}: {psos.Count} PSOs, {graphics.Count} graphics{(known.Count < graphics.Count ? $" ({graphics.Count - known.Count} name a shader no library has)" : "")}");
         return known.Select(p => new ShaderMap($"{name}:{p.Key:x8}", library, byHash[p.Shaders[0]].Platform,
-            p.Shaders.Select(h => byHash[h].Sha).ToList(), IsPipeline: true));
+            p.Shaders.Select(h => byHash[h].Sha).ToList(), IsPipeline: true, Layout: p.Layout));
     }
 
     /// <summary>Calls <paramref name="sink"/> once per found shader, one call at a time.</summary>

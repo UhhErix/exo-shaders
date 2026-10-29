@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using SCSKiller.Core.Planning;
 
 namespace SCSKiller.Core.Unreal;
 
@@ -12,7 +13,9 @@ public static class StablePipelineCache
 
     public enum PsoType : uint { Compute = 0, Graphics = 1, RayTracing = 2 }
 
-    public sealed record Pso(ulong Key, PsoType Type, string[] Shaders);
+    /// <param name="Layout">a graphics PSO's vertex declaration, where its body keeps one the planner can read (SCSKiller
+    /// 1.4.0-beta.1, <see cref="Declaration"/>); null = none, or not read</param>
+    public sealed record Pso(ulong Key, PsoType Type, string[] Shaders, IReadOnlyList<PsoDb.LayoutElem>? Layout = null);
 
     const ulong Magic = 0x5049504543414348, TocMagic = 0x544F435354415232, TocMagic17 = 0x544F435354415254, EofMagic = 0x454F462D4D41524B; // PIPECACH, TOCSTAR2, TOCSTART, EOF-MARK
 
@@ -45,6 +48,7 @@ public static class StablePipelineCache
             {
                 var key = keyWidth == 8 ? U64(b, o) : U32(b, o);
                 var body = checked((int)U64(b, o + keyWidth));
+                var size = U64(b, o + keyWidth + 8);
                 o += keyWidth + 16 + 16 + 32 + keyWidth; // key, file offset + size, guid, stats (their PSO hash as wide as the key)
                 var k = BinaryPrimitives.ReadInt32LittleEndian(b[o..]);
                 o += 4;
@@ -52,11 +56,57 @@ public static class StablePipelineCache
                 var shaders = new string[k];
                 for (var j = 0; j < k; j++) shaders[j] = Convert.ToHexStringLower(b.Slice(o + width * j, width)).PadRight(40, '0');
                 o += width * k + 8 + 2 + (v17 ? 0 : 8); // shaders, usage mask, engine flags, last used time
-                psos.Add(new Pso(key, (PsoType)U32(b, body), shaders));
+                var type = (PsoType)U32(b, body);
+                psos.Add(new Pso(key, type, shaders,
+                    type == PsoType.Graphics && !v17 && size <= (ulong)(b.Length - body) ? Declaration(b.Slice(body, (int)size), shaders, width) : null));
             }
             return o == b.Length - 8 ? psos : null;
         }
         catch (Exception e) when (e is ArgumentOutOfRangeException or IndexOutOfRangeException or OverflowException) { return null; }
+    }
+
+    // FVertexElement's EVertexElementType in order (VET_None first), as DXGI formats
+    static readonly uint[] VertexFormats = [0, 41, 16, 6, 2, 31, 30, 28, 87, 38, 14, 37, 34, 10, 13, 36, 12, 35, 11, 24, 42];
+
+    /// <summary>A graphics PSO body's vertex declaration (FVertexDeclarationElementList after the stages' hashes, which must be
+    /// this PSO's shaders): each element's stream, offset, type, attribute index and stride, as D3D12 input elements
+    /// ("ATTRIBUTE" n, per-instance where it reads the instance index). Null when the body isn't laid out so, or an element is off
+    /// (a type out of range, a stream past 32, an attribute twice, an offset its format can't sit at).</summary>
+    static List<PsoDb.LayoutElem>? Declaration(ReadOnlySpan<byte> body, string[] shaders, int width)
+    {
+        foreach (var start in (ReadOnlySpan<int>)[4, 8])
+        {
+            var decl = start + 5 * width;
+            if (body.Length < decl + 4 || !SameShaders(body.Slice(start, 5 * width), shaders, width)) continue;
+            var count = U32(body, decl);
+            if (count > 32 || body.Length < decl + 4 + (int)(8 * count)) return null;
+            var layout = new List<PsoDb.LayoutElem>((int)count);
+            var attributes = new HashSet<byte>();
+            for (var j = 0; j < count; j++)
+            {
+                var e = body.Slice(decl + 4 + 8 * j, 8);
+                if (e[2] == 0 || e[2] >= VertexFormats.Length || e[0] >= 32 || !attributes.Add(e[3])) return null;
+                if (e[1] % Math.Min(4u, ExactLayouts.FormatSize(VertexFormats[e[2]])) != 0) return null;
+                uint instanced = BinaryPrimitives.ReadUInt16LittleEndian(e[6..]) != 0 ? 1u : 0u;
+                layout.Add(new PsoDb.LayoutElem("ATTRIBUTE", e[3], VertexFormats[e[2]], e[1], e[0], instanced, instanced));
+            }
+            return layout;
+        }
+        return null;
+    }
+
+    /// <summary>The body's five stage hashes are the PSO's shaders, in order, the empty stages zero.</summary>
+    static bool SameShaders(ReadOnlySpan<byte> hashes, string[] shaders, int width)
+    {
+        var n = 0;
+        for (var i = 0; i < 5; i++)
+        {
+            var h = hashes.Slice(i * width, width);
+            if (h.IndexOfAnyExcept((byte)0) < 0) continue;
+            if (n == shaders.Length || Convert.ToHexStringLower(h).PadRight(40, '0') != shaders[n]) return false;
+            n++;
+        }
+        return n > 0 && n == shaders.Length;
     }
 
     /// <summary>The file version a pipeline cache starts with; null when it isn't one.</summary>

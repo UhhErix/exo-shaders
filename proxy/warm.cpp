@@ -6,11 +6,12 @@
 //   scskiller_warm <workdir> <game exe file name> [--threads N] [--priority below|idle] [--start N]
 //                  [--stop-event <name>] [--adapter-luid <hex>] [--rt-threads N] [--skip i,j,...]
 //                  [--memory-mb N] [--package <app user model id>] [--stage-path <install folder>\<dir>\<exe>]
-//                  [--skip-keys <sha1 hex>,...|@<file>] [--isolate i,j,...]
+//                  [--skip-keys <sha1 hex>,...|@<file>] [--known-keys <sha1 hex>,...|@<file>] [--isolate i,j,...]
 //                  [--ags <amd_ags_x64.dll> --ags-app <name> --ags-engine <name>] [--pass K] [--layer <folder>]
 //                  [--d3d12 <the game's Agility SDK folder>] [--d3d11 <the game's d3d11.dll>] [--vulkan]
 //                  [--aftermath <the game's GFSDK_Aftermath_Lib.x64.dll> --aftermath-init <version>,<features>,<apis>,<dump flags>]
 //                  [--out <file>] [--err <file>] [--stop-file <path>] [--alive-file <path> --alive-turns N] [--d3dscache-noflush 1]
+//                  [--asd-name <name> --asd-engine <name> --asd-version <version>,<engine version> --asd-psdb <family>=<db>...]
 //
 // Protocol (JSON lines on stdout, exit codes): ARCHITECTURE.md. Stages <workdir>\stage-<pid>-<n>\<exe name> (a new folder
 // of this run's) + d3d12.dll (the proxy) + the dbs and runs that copy (the child), which prints the JSON. The caller only
@@ -40,6 +41,12 @@
 // --d3dscache-noflush 1: the child's d3dscache.dll (NVIDIA from 621 keeps compiled pipelines in its SQLite dbs) skips its
 // FlushFileBuffers while it creates, since those fsyncs under its writer lock cap the compile; they flush again before the
 // exit's checkpoint.
+// --known-keys: items that crashed or hung this driver in an earlier compile, skipped like --skip and counted apart ("known"
+// in the retry and done lines, of driverSkipped). Those lines' "culprits" are this run's own such items, by key.
+// --asd-*: the game's Advanced Shader Delivery registration (its identity, and per adapter family its delivered db), made
+// again for the staged exe in the user's hive while the child runs: the runtime then serves what the delivery holds and the
+// driver compiles only the rest, as for the game. Under this process's own installer key SCSKiller-Warm-<pid>, removed when
+// it returns; the app removes one whose process is gone.
 #define NOMINMAX
 #include <windows.h>
 #include <d3d12.h>
@@ -103,6 +110,7 @@ struct Opts {
     uint32_t memory_mb = 0;      // the staged process's private memory budget (0 = none)
     std::vector<uint64_t> skip;  // a retry: items an earlier run found faulting alone
     std::vector<uint8_t> skip_keys;  // 20 bytes each: items that removed the device in an earlier run
+    std::vector<uint8_t> known_keys;  // 20 bytes each: items that crashed or hung this driver in an earlier compile
     std::vector<uint64_t> isolate;   // a retry: in flight when the device was removed, created alone first
     std::wstring package;        // app user model id whose package identity the child runs with
     std::wstring stage_path;
@@ -117,6 +125,9 @@ struct Opts {
     bool ds_noflush = false;
     std::wstring stop_file, alive_file;
     int alive_turns = 0;
+    std::wstring asd_name, asd_engine;
+    uint64_t asd_version = 0, asd_engine_version = 0;
+    std::vector<std::pair<std::wstring, std::wstring>> asd_psdbs;  // adapter family, delivered db
 };
 
 // a child given --out would create the file anew over the parent's lines
@@ -142,6 +153,19 @@ static bool parse(int argc, wchar_t** argv, int i, Opts& o) {
         else if (k == L"--ags-engine") o.ags_engine = v;
         else if (k == L"--pass") o.pass = (int)wcstol(v.c_str(), &end, 10);
         else if (k == L"--d3dscache-noflush") o.ds_noflush = v == L"1";
+        else if (k == L"--asd-name") o.asd_name = v;
+        else if (k == L"--asd-engine") o.asd_engine = v;
+        else if (k == L"--asd-version") {
+            o.asd_version = _wcstoui64(v.c_str(), &end, 10);
+            if (end == v.c_str() || *end != L',') return false;
+            const wchar_t* c = end + 1;
+            o.asd_engine_version = _wcstoui64(c, &end, 10);
+            if (end == c) return false;
+        } else if (k == L"--asd-psdb") {
+            size_t e = v.find(L'=');
+            if (e == 0 || e == std::wstring::npos || e + 1 == v.size()) return false;
+            o.asd_psdbs.emplace_back(v.substr(0, e), v.substr(e + 1));
+        }
         else if (k == L"--layer") o.layer = v;
         else if (k == L"--d3d12") o.d3d12 = v;
         else if (k == L"--d3d11") o.d3d11 = v;
@@ -166,7 +190,7 @@ static bool parse(int argc, wchar_t** argv, int i, Opts& o) {
                 c = *end ? end + 1 : end;
             }
             end = nullptr;
-        } else if (k == L"--skip-keys") {
+        } else if (k == L"--skip-keys" || k == L"--known-keys") {
             if (v.size() > 1 && v[0] == L'@') {  // @<file>: the same list, too long for a command line
                 FILE* f = _wfopen(v.c_str() + 1, L"rb");
                 if (!f) return false;
@@ -182,7 +206,7 @@ static bool parse(int argc, wchar_t** argv, int i, Opts& o) {
                 for (size_t c = b; c < b + 40; c += 2) {
                     if (!iswxdigit(v[c]) || !iswxdigit(v[c + 1])) return false;
                     auto nib = [](wchar_t x) { return x <= L'9' ? x - L'0' : (x | 0x20) - L'a' + 10; };
-                    o.skip_keys.push_back((uint8_t)(nib(v[c]) << 4 | nib(v[c + 1])));
+                    (k == L"--skip-keys" ? o.skip_keys : o.known_keys).push_back((uint8_t)(nib(v[c]) << 4 | nib(v[c + 1])));
                 }
             }
         } else return false;
@@ -369,6 +393,48 @@ static std::wstring ds_noflush() {
     return L"d3dscache.dll imports no FlushFileBuffers";
 }
 
+static std::wstring asd_key(DWORD pid = GetCurrentProcessId()) { return L"Software\\Microsoft\\DirectX\\ShaderCache\\SCSKiller-Warm-" + std::to_wstring(pid); }
+
+// --asd-*: registers the delivery for exe_path (the staged exe), as Gaming Services registers it for the game; why not,
+// empty when it did. Nothing is left behind on failure.
+static std::wstring asd_register(const Opts& o, const std::wstring& exe_path, std::wstring exe) {
+    if (o.asd_name.empty() || o.asd_name.find(L'\\') != std::wstring::npos) return L"the delivery's app name can't name a registry key";
+    // the runtime matches the launched exe's final path
+    HANDLE h = CreateFileW(exe_path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+    wchar_t fin[MAX_PATH + 8];
+    DWORD n = h == INVALID_HANDLE_VALUE ? 0 : GetFinalPathNameByHandleW(h, fin, MAX_PATH + 8, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+    if (!n || n >= MAX_PATH + 8 || wcsncmp(fin, L"\\\\?\\", 4) || !wcsncmp(fin + 4, L"UNC\\", 4)) return L"the staged exe's final path can't be read";
+    CharLowerBuffW(exe.data(), (DWORD)exe.size());  // as Gaming Services writes it
+    const std::wstring app = asd_key() + L"\\" + o.asd_name, comp = app + L"\\Components\\default";
+    auto sz = [](HKEY k, const wchar_t* name, const std::wstring& v) {
+        return !RegSetValueExW(k, name, 0, REG_SZ, (const BYTE*)v.c_str(), DWORD((v.size() + 1) * sizeof(wchar_t)));
+    };
+    auto qw = [](HKEY k, const wchar_t* name, uint64_t v) { return !RegSetValueExW(k, name, 0, REG_QWORD, (const BYTE*)&v, sizeof v); };
+    auto make = [](const std::wstring& path, const std::function<bool(HKEY)>& fill) {
+        HKEY k;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, nullptr, 0, KEY_SET_VALUE, nullptr, &k, nullptr)) return false;
+        bool ok = fill(k);
+        RegCloseKey(k);
+        return ok;
+    };
+    RegDeleteTreeW(HKEY_CURRENT_USER, asd_key().c_str());  // a dead process's of the same id
+    FILETIME created, x;  // the app's sweep tells this process from a later one with its id by it
+    bool ok = GetProcessTimes(GetCurrentProcess(), &created, &x, &x, &x) &&
+              make(asd_key(), [&](HKEY k) { return qw(k, L"SCSKillerOwner", (uint64_t)created.dwHighDateTime << 32 | created.dwLowDateTime); });
+    ok = ok && make(comp, [&](HKEY k) { return sz(k, L"Name", L"default") && sz(k, L"SODBPath", L""); });
+    for (auto& [family, db] : o.asd_psdbs)
+        ok = ok && family.find(L'\\') == std::wstring::npos && make(comp + L"\\AdapterFamilies\\" + family, [&](HKEY k) { return sz(k, L"PSDBPath", db); });
+    // the app key's values last: the runtime goes by them
+    ok = ok && make(app, [&](HKEY k) {
+        return sz(k, L"ExeFilename", exe) && sz(k, L"Name", o.asd_name) && qw(k, L"Version", o.asd_version) &&
+               sz(k, L"EngineName", o.asd_engine) && qw(k, L"EngineVersion", o.asd_engine_version) && sz(k, L"ExePath", fin + 4);
+    });
+    if (ok) return L"";
+    RegDeleteTreeW(HKEY_CURRENT_USER, asd_key().c_str());
+    return L"the user's shader cache registration can't be written";
+}
+
 static int child(DWORD parent_pid, const Opts& o) {
     for (int fd : {1, 2}) {  // a packaged child's output goes through the parent's pipes
         HANDLE h = CreateFileW(pipe_name(parent_pid, fd).c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -408,9 +474,19 @@ static int child(DWORD parent_pid, const Opts& o) {
     auto items12 = (uint64_t(WINAPI*)())proc("SCSKiller_D3D12Items");
     auto start11 = (void(WINAPI*)(LUID))proc("SCSKiller_StartWarm11");
     auto load = (void(WINAPI*)())proc("SCSKiller_WarmLoad");
+    auto count_cached = (BOOL(WINAPI*)())proc("SCSKiller_CountCached");  // optional: then no cached count
+    auto cached = (uint64_t(WINAPI*)())proc("SCSKiller_Cached");
+    auto warm_known = (void(WINAPI*)(const uint8_t*, uint32_t))proc("SCSKiller_WarmKnown");
+    auto known = (void(WINAPI*)(uint64_t*, const char**))proc("SCSKiller_Known");
     if (!create_device || !options || !start || !progress || !control || !warm_rt || !retry || !memory || !warm_crash || !crashes || !skipped || !hung || !load ||
+        !warm_known || !known ||
         (o.pass >= 0 && !warm_pass))
         return fail(L"proxy d3d12.dll missing or too old");
+    HKEY asd;
+    if (count_cached && cached && !RegOpenKeyExW(HKEY_CURRENT_USER, asd_key(parent_pid).c_str(), 0, KEY_READ, &asd)) {  // the parent registered the delivery
+        RegCloseKey(asd);
+        if (!count_cached()) fwprintf(stderr, L"the pipelines the game's Advanced Shader Delivery serves can't be counted: d3dscache.dll's stores can't be hooked\n");
+    }
     std::vector<uint8_t> pass_of;
     if (o.pass >= 0) {
         HANDLE pf = CreateFileW((dir + L"scskiller_pass.bin").c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -439,6 +515,7 @@ static int child(DWORD parent_pid, const Opts& o) {
     warm_rt(o.rt_threads, o.skip.data(), (uint32_t)o.skip.size());
     memory(o.memory_mb);
     warm_crash(o.skip_keys.data(), (uint32_t)(o.skip_keys.size() / 20), o.isolate.data(), (uint32_t)o.isolate.size());
+    warm_known(o.known_keys.data(), (uint32_t)(o.known_keys.size() / 20));
     // the dbs before the device, which would read them: the parent's start window leaves this out (millions of records take minutes)
     HANDLE loading = OpenEventW(EVENT_MODIFY_STATE, FALSE, loading_name(parent_pid).c_str());
     if (loading) SetEvent(loading);
@@ -502,8 +579,8 @@ static int child(DWORD parent_pid, const Opts& o) {
         uint32_t w[2] = {0, 0};
         if (workers) workers(w);
         skipped(s);
-        emit("{\"event\":\"progress\",\"done\":%llu,\"total\":%llu,\"failed\":%llu,\"driverSkipped\":%llu,\"rate\":%.1f,\"workers\":%u,\"threads\":%u,\"work\":%llu}", p[0], p[1], p[2],
-             s[0], (p[0] - first) * 1000.0 / (now - t0), w[0], w[1], work ? work() : 0ull);
+        emit("{\"event\":\"progress\",\"done\":%llu,\"total\":%llu,\"failed\":%llu,\"driverSkipped\":%llu,\"rate\":%.1f,\"workers\":%u,\"threads\":%u,\"work\":%llu,\"cached\":%llu}", p[0], p[1], p[2],
+             s[0], (p[0] - first) * 1000.0 / (now - t0), w[0], w[1], work ? work() : 0ull, cached ? cached() : 0ull);
     }
     g_ds_noflush = false;  // d3dscache's checkpoints from here on, its last at exit too, reach the disk
     uint64_t r[5];  // needed, from, ray tracing threads, failed before from, the item that failed alone (~0: none)
@@ -513,19 +590,24 @@ static int child(DWORD parent_pid, const Opts& o) {
     BOOL removed = crashes(&crashed, &isolate);  // 2: a replay faulted
     const char* hung_skip;  // JSON array body
     BOOL hang = hung(&hung_skip);
+    uint64_t kn[2];  // of the skipped, those that crashed or hung this driver in an earlier compile; those before the retry's first
+    const char* culprits;  // JSON array body
+    known(kn, &culprits);
     if (r[0] && !stopping) {
         emit("{\"event\":\"retry\",\"from\":%llu,\"rtThreads\":%llu,\"failedItem\":%lld,\"done\":%llu,\"total\":%llu,\"failed\":%llu,\"driverSkipped\":%llu,\"seconds\":%.1f,"
-             "\"reason\":\"%s\",\"crashed\":[%s],\"isolate\":[%s],\"skip\":[%s]}",
+             "\"reason\":\"%s\",\"crashed\":[%s],\"isolate\":[%s],\"skip\":[%s],\"cached\":%llu,\"known\":%llu,\"culprits\":[%s]}",
              r[1], r[2], r[4] == ~0ull ? -1ll : (long long)r[4], r[1], p[1], r[3], s[1], (GetTickCount64() - t0) / 1000.0,
-             removed == 2 ? "fault" : removed ? "removed" : hang ? "hang" : "rt", crashed, isolate, hung_skip);
+             removed == 2 ? "fault" : removed ? "removed" : hang ? "hang" : "rt", crashed, isolate, hung_skip, cached ? cached() : 0ull, kn[1], culprits);
         return ended(3);
     }
-    if (p[0] < p[1] && !stopping) return ended(fail(L"replay aborted after repeated faults, see stage\\scskiller.log"));
+    if (p[0] < p[1] && !stopping)
+        return emit("{\"event\":\"error\",\"message\":%s,\"culprits\":[%s]}", json(L"replay aborted after repeated faults, see stage\\scskiller.log").c_str(), culprits), ended(1);
     // stopped poisoned: items after the first unfinished one may be done, so it resumes from that one, not from the count
     const uint64_t done = r[0] ? r[1] : p[0], failed = r[0] ? r[3] : p[2], skips = r[0] ? s[1] : s[0];
     // noflush: d3dscache.dll's flushes were skipped while it created (ds_noflush hooked them)
-    emit("{\"event\":\"done\",\"done\":%llu,\"total\":%llu,\"failed\":%llu,\"driverSkipped\":%llu,\"seconds\":%.1f,\"stopped\":%s,\"crashed\":[%s],\"noflush\":%s}", done,
-         p[1], failed, skips, (GetTickCount64() - t0) / 1000.0, done < p[1] ? "true" : "false", crashed, g_ds_flush ? "true" : "false");
+    emit("{\"event\":\"done\",\"done\":%llu,\"total\":%llu,\"failed\":%llu,\"driverSkipped\":%llu,\"seconds\":%.1f,\"stopped\":%s,\"crashed\":[%s],\"noflush\":%s,\"cached\":%llu,\"known\":%llu,\"culprits\":[%s]}", done,
+         p[1], failed, skips, (GetTickCount64() - t0) / 1000.0, done < p[1] ? "true" : "false", crashed, g_ds_flush ? "true" : "false",
+         cached ? cached() : 0ull, r[0] ? kn[1] : kn[0], culprits);
     return ended(0);  // a normal exit: the driver writes its cache now
 }
 
@@ -853,7 +935,7 @@ static int parent(int argc, wchar_t** argv, bool vulkan) {
         fputs("usage: scskiller_warm <workdir> <game exe file name> [--threads N] [--priority below|idle] [--start N]\n"
               "                      [--stop-event <name>] [--adapter-luid <hex>] [--rt-threads N] [--skip i,j,...] [--memory-mb N]\n"
               "                      [--package <app user model id>] [--stage-path <install folder>\\<dir>\\<exe>]\n"
-              "                      [--skip-keys <sha1 hex>,...|@<file>] [--isolate i,j,...]\n"
+              "                      [--skip-keys <sha1 hex>,...|@<file>] [--known-keys <sha1 hex>,...|@<file>] [--isolate i,j,...]\n"
               "                      [--ags <amd_ags_x64.dll> --ags-app <name> --ags-engine <name>] [--pass K]\n"
               "                      [--layer <folder>] [--d3d12 <folder>] [--d3d11 <dll>] [--vulkan]\n"
               "                      [--aftermath <dll> --aftermath-init <version>,<features>,<apis>,<dump flags>]\n"
@@ -977,6 +1059,18 @@ static int parent(int argc, wchar_t** argv, bool vulkan) {
         if (v) sdk = *v;
         if (c) FreeLibrary(c);
         if (!sdk) err_printf(L"staging the game's D3D12 runtime from %ls failed (error %lu): the system's runs\n", o.d3d12.c_str(), err);
+    }
+
+    struct Unregister {
+        bool on = false;
+        ~Unregister() {
+            if (on && RegDeleteTreeW(HKEY_CURRENT_USER, asd_key().c_str())) fwprintf(stderr, L"removing the delivery's registration for the staged exe failed\n");
+        }
+    } unregister;
+    if (!o.asd_psdbs.empty()) {
+        std::wstring why = asd_register(o, stage + exe, exe);
+        unregister.on = why.empty();
+        if (!why.empty()) fwprintf(stderr, L"the compile runs without the game's Advanced Shader Delivery, so it compiles what the delivery holds too: %ls\n", why.c_str());
     }
 
     const DWORD me = GetCurrentProcessId();

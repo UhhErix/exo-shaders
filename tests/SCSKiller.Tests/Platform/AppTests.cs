@@ -7526,20 +7526,21 @@ public partial class AppTests : IDisposable
         var done = k.Queue.Single();
         Assert.Equal(QueueStage.Done, done.Stage);
         Assert.Equal((10000L, 3L, 50L), (done.Progress!.Done, done.Progress.Failed, done.Progress.Skipped));   // skipped: not in Total, not failed
-        Assert.Equal("3 failed (the driver rejected them), 50 skipped (a shader not in this install)", done.Note);
+        Assert.Equal("3 failed, 50 skipped (a shader not in this install)", done.Note);   // no tally in the log: no reason
         lock (progress) Assert.All(progress, p => Assert.Equal(50, p.Skipped));   // the warm's own lines carry it too
         var s = k.Games.Single();
         Assert.Equal((3L, 50L), (s.LastWarmFailed, s.LastWarmSkipped));
         Assert.Equal((3L, 50L), (k.Store.LoadGame(_game.Id).LastWarmFailed, k.Store.LoadGame(_game.Id).LastWarmSkipped));
 
-        Assert.Equal(" 10000/10000 (3 failed, 50 skipped: not in this install) 1000/s - 3 failed (the driver rejected them), 50 skipped (a shader not in this install)",
+        Assert.Equal(" 10000/10000 (3 failed, 50 skipped: not in this install) 1000/s - 3 failed, 50 skipped (a shader not in this install)",
             ScsKiller.ProgressText(done with { Progress = done.Progress with { PerSecond = 1000 } }));
         Assert.Equal(" 5/9 (0 failed) 2/s", ScsKiller.ProgressText(new QueueItem("g", QueueStage.Warming, new WarmProgress(5, 9, 0, 2), null)));
         Assert.Equal("", ScsKiller.ProgressText(new QueueItem("g", QueueStage.Waiting, null, null)));
         Assert.Null(ScsKiller.WarmCounts(0, 0));
-        Assert.Equal("2 failed (the driver rejected them)", ScsKiller.WarmCounts(2, 0));
+        Assert.Equal("2 failed", ScsKiller.WarmCounts(2, 0));
+        Assert.Equal("2 failed (the driver rejected them)", ScsKiller.WarmCounts(2, 0, failedBy: 1));   // 1.3.4: what the tally says most were
         Assert.Equal("7 skipped (a shader not in this install)", ScsKiller.WarmCounts(0, 7));
-        Assert.Equal("2 failed (the driver rejected them), 3 skipped (they crash the GPU driver)", ScsKiller.WarmCounts(2, 0, 3));
+        Assert.Equal("2 failed, 3 skipped (they crash the GPU driver)", ScsKiller.WarmCounts(2, 0, 3));
         Assert.Equal("1 skipped for this compile (the GPU driver crashed or hung on it or on what it builds on, or it wasn't tried past a spot where it kept failing)", ScsKiller.WarmCounts(0, 0, 0, 1));
     }
 
@@ -9059,9 +9060,12 @@ public partial class AppTests : IDisposable
         seen.Clear();
         await k.ScanAsync(default);
         Assert.NotEmpty(seen);
-        Assert.All(seen, s => Assert.Equal(line, s));
+        // 1.3.4: once the scan is done the Library shows the plan check waiting for its turn
+        const string checks = "Updating plans: 0 of 1 game";
+        Assert.All(seen, s => Assert.True(s is line or checks, s));
+        Assert.Contains(line, seen);
         Assert.True(k.Queue.Single(q => q.GameId == _game.Id) is { PlanCheck: true, Stage: QueueStage.Waiting });
-        Assert.Equal(line, k.AfterUpdateLine);
+        Assert.Equal(checks, k.AfterUpdateLine);
 
         Plays(k, null);
         await k.WhenQueueIdle().WaitAsync(TimeSpan.FromSeconds(10));
@@ -9194,7 +9198,7 @@ public partial class AppTests : IDisposable
         s = k.Games.Single();
         Assert.Equal((GameStatus.Stale, "SCSKiller can now compile 2 more pipelines for this game", 2L), (s.Status, s.StatusReason, s.NewPipelines));
         Assert.Equal(stats, s.Plan);
-        Assert.Equal(66, ScsKiller.ShownPercent(s));   // 4 of its 6 compiled
+        Assert.Equal(100, ScsKiller.ShownPercent(s));   // what the last compile covers: the 2 new ones are in the line that offers them (1.3.4)
         Assert.Single(warmer.Started);   // the check doesn't warm
         var built = k.Store.LoadGame(_game.Id).PlanBuiltAt;
 
@@ -9216,10 +9220,10 @@ public partial class AppTests : IDisposable
         k.CheckPlans = true;
         await k.ScanAsync(default);
         await k.WhenQueueIdle().WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Equal((2L, (int?)99), (k.Games.Single().NewPipelines, ScsKiller.ShownPercent(k.Games.Single())));
+        Assert.Equal((2L, (int?)100), (k.Games.Single().NewPipelines, ScsKiller.ShownPercent(k.Games.Single())));   // 1.3.4: new ones don't lower it
 
         var s = (await Killer(new FakeReader(Unreal), new FakePlanner(records: records), driver: "101.00").ScanAsync(default)).Single();
-        Assert.Equal((GameStatus.Stale, 2L, false, (int?)99), (s.Status, s.NewPipelines, s.NewOnly, ScsKiller.ShownPercent(s)));
+        Assert.Equal((GameStatus.Stale, 2L, false, (int?)100), (s.Status, s.NewPipelines, s.NewOnly, ScsKiller.ShownPercent(s)));
         Assert.StartsWith("driver changed", s.StatusReason);
     }
 
@@ -9594,10 +9598,11 @@ public partial class AppTests : IDisposable
     }
 
     /// <summary>Special K as dxgi.dll holds the name of ReShade's add-on export, to look it up, and loads ReShade as a plug-in
-    /// with the add-ons beside the exe: it is never taken for ReShade, and a RenoDX add-on that changes every pipeline
-    /// beside it blocks the game, with ReShade64.dll there or ReShade in Special K's own folders.</summary>
+    /// with the add-ons beside the exe: it is never taken for ReShade. While which ReShade it loads isn't certain (none
+    /// beside the exe, or ReShade in Special K's own folders) a RenoDX add-on that changes every pipeline blocks the game;
+    /// since SCSKiller 1.4.0-beta.1 one ReShade64.dll beside the exe is the one it loads (ReShade.Hosted), and nothing blocks.</summary>
     [Fact]
-    public async Task Special_K_loading_ReShade_blocks_a_mod_that_changes_every_pipeline()
+    public async Task Special_K_loading_an_unsure_ReShade_blocks_a_mod_that_changes_every_pipeline()
     {
         string In(string name) => Path.Combine(_exeDir, name);
         File.WriteAllBytes(In("dxgi.dll"), Planning.MiddlewarePackTests.Pe("SpecialK64.dll", "ReShadeRegisterAddon"u8.ToArray()));
@@ -9606,11 +9611,8 @@ public partial class AppTests : IDisposable
         File.WriteAllBytes(In("renodx-ff7rebirth.addon64"), RenoDxAddon);
         var r = Core.Games.ReShade.Detect(_game)!;
         Assert.Equal((In("dxgi.dll"), LayerBlock.SpecialK, true, false, null), (r.Dll, r.Block, r.Blocks, r.Layered, r.Fingerprint));
-        Assert.Equal("Rename ReShade to dxgi.dll next to the exe to compile through RenoDX", ScsKiller.ShaderModReason("RenoDX", r.Block));
-
-        File.WriteAllBytes(In("ReShade64.dll"), ReShadeDll);
-        r = Core.Games.ReShade.Detect(_game)!;
-        Assert.Equal((In("ReShade64.dll"), LayerBlock.SpecialK, true), (r.Dll, r.Block, r.Blocks));
+        // Unsure which ReShade Special K loads, the page says what to change
+        Assert.StartsWith("Have Special K load one ReShade, ReShade64.dll next to the exe", ScsKiller.ShaderModReason("RenoDX", r.Block));
 
         var k = Killer(new FakeReader(Unreal));
         k.ProcessNames = () => new HashSet<string>();
@@ -9619,6 +9621,11 @@ public partial class AppTests : IDisposable
         Assert.Equal((GameStatus.Unsupported, true, ScsKiller.ShaderModReason("RenoDX", LayerBlock.SpecialK), ScsKiller.SkipShaderMod),
             (s.Status, s.ShaderModBlocks, s.StatusReason, s.RecorderSkip));
         Assert.Null(k.LayerFor(_game, Path.Combine(_root, "layer-work")));
+
+        // What the page asks for: ReShade64.dll beside the exe is the ReShade Special K loads, so nothing blocks
+        File.WriteAllBytes(In("ReShade64.dll"), ReShadeDll);
+        r = Core.Games.ReShade.Detect(_game)!;
+        Assert.Equal((In("ReShade64.dll"), LayerBlock.None, false), (r.Dll, r.Block, r.Blocks));
 
         File.Delete(In("ReShade64.dll"));
         File.WriteAllText(In("ReShade.ini"), "[ADDON]\nAddonPath=addons\n");   // Special K still loads the ones beside the exe
@@ -9769,7 +9776,7 @@ public partial class AppTests : IDisposable
         await WarmOnce(k, _game.Id);
         Assert.Equal([0L, 0L, 5000L], warmer.StartAts);
         Assert.Equal([key], warmer.SkipKeys[2]!);
-        Assert.Equal("4 failed (the driver rejected them), 1003 skipped for this compile (the GPU driver crashed or hung on them or on what they build on, or they weren't tried past a spot where it kept failing)",
+        Assert.Equal("4 failed, 1003 skipped for this compile (the GPU driver crashed or hung on them or on what they build on, or they weren't tried past a spot where it kept failing)",
             k.Queue.Single().Note);
         rec = k.Store.LoadGame(_game.Id);
         Assert.Equal((0L, 4L, 1003L, 0L), (rec.ResumeAt, rec.LastWarmFailed, rec.LastWarmDriverSkipped, rec.ResumeSkipEnd));
@@ -10746,13 +10753,19 @@ public partial class AppTests : IDisposable
         s = k.Games.Single();
         Assert.Equal(("D3D12 (your choice)", false, "D3D11", (DxApi?)DxApi.D3D12), (s.Engine!.GraphicsApi, s.Engine.ApiGuessed, s.ApiDetected, s.ApiOverride));
         Assert.Null(ScsKiller.GuessNote(s.Engine));
-        await k.WhenQueueIdle().WaitAsync(HangGuard);   // rebuilt for DirectX 12 at once, not when idle
-        Assert.Equal(("12", QueueStage.Done), (k.Store.LoadGame(_game.Id).PlanApi, k.Queue.Single(q => q.PlanCheck).Stage));
-        Assert.Equal(GameStatus.Stale, k.Games.Single().Status);   // the DirectX 11 compile doesn't serve the DirectX 12 plan
+        await k.WhenQueueIdle().WaitAsync(HangGuard);
+        // SCSKiller 1.4.0-beta.1: the DirectX 11 compile is kept aside and DirectX 12 starts uncompiled, nothing to check
+        var on12 = k.Store.LoadGame(_game.Id);
+        Assert.Equal(("12", false, (DateTimeOffset?)null), (on12.PlanApi, on12.Plan != null, on12.WarmedAt));
+        Assert.Equal(["11"], on12.ApiCompiles!.Keys);
+        Assert.DoesNotContain(k.Queue, q => q.PlanCheck);
+        Assert.Equal(GameStatus.Ready, k.Games.Single().Status);
         Assert.Equal(DxApi.D3D12, Killer(new FakeReader(GuessedDx11)).Store.LoadGame(_game.Id).ApiOverride);
 
         k.SetApiOverride(_game.Id, DxApi.D3D11);
         await k.WhenQueueIdle().WaitAsync(HangGuard);   // its plan check runs as a compile would: no other choice meanwhile
+        var back = k.Store.LoadGame(_game.Id);   // switched back: the DirectX 11 compile is back as it was
+        Assert.Equal(("11", true, (Dictionary<string, System.Text.Json.Nodes.JsonObject>?)null, GameStatus.Warmed), (back.PlanApi, back.WarmedAt != null, back.ApiCompiles, k.Games.Single().Status));
         WriteDb(Path.Combine(k.Store.GameDir(_game.Id), "recording.db"), 'B', 'C');
         var rec = k.Store.LoadGame(_game.Id);
         rec.RecordingImportedAt = DateTimeOffset.Now;
@@ -11075,7 +11088,7 @@ public partial class AppTests : IDisposable
         Assert.Equal((GameStatus.Warmed, unreached), (s.Status, s.CompileUnreached));
         Assert.Equal(unreached, s.StatusReason == ScsKiller.UnreachedReason);
         Assert.Equal(failed > 0, ScsKiller.IsPartlyCompiled(s));
-        Assert.Equal(failed > 0, s.StatusReason == $"partly compiled for driver {Gpu.DriverVersion}: the driver refused {failed:N0} of {10_000:N0} pipelines, so those can still stutter the first time");
+        Assert.Equal(failed > 0, s.StatusReason == $"partly compiled for driver {Gpu.DriverVersion}: {failed:N0} of {10_000:N0} pipelines couldn't be compiled, so those can still stutter the first time");
         if (!unreached) return;
         Assert.Null(NewShaders.Key(s with { NewPipelines = 5 }, new HashSet<string>()));
         var rec = k.Store.LoadGame(_game.Id);
@@ -11102,16 +11115,15 @@ public partial class AppTests : IDisposable
         Assert.False(ScsKiller.IsUnreached(k.Store.LoadGame(_game.Id)));
     }
 
-    /// <summary>A warm the driver refused more than a tenth of (partly compiled) says on the compile card what that means and
-    /// what helps; fewer refusals keep the short line. Refused or crashing items aren't covered: the ring leaves them out, stale
-    /// or not.</summary>
+    /// <summary>A warm with refused pipelines says on the compile card how many of the items it tried couldn't be compiled
+    /// (1.3.4: one line, whatever the share). Refused or crashing items aren't covered: the ring leaves them out, stale or not.</summary>
     [Theory]
     [InlineData(0, 0, 100, null)]
-    [InlineData(1, 0, 99, "The driver skipped 1 combination.")]
-    [InlineData(500, 0, 95, "The driver skipped 500 combinations.")]
-    [InlineData(400, 100, 95, "The driver skipped 400 combinations.")]
-    [InlineData(1_000, 1, 89, "The driver refused 1,000 of 10,000 pipelines. Nothing is broken: the game compiles any of them it uses itself, the first time, which is when it can stutter. A driver or SCSKiller update may let them compile, so compile the game again after one.")]
-    [InlineData(9_000, 0, 10, "The driver refused 9,000 of 10,000 pipelines. Nothing is broken: the game compiles any of them it uses itself, the first time, which is when it can stutter. A driver or SCSKiller update may let them compile, so compile the game again after one.")]
+    [InlineData(1, 0, 99, "1 of 10,000 pipelines couldn't be compiled.")]
+    [InlineData(500, 0, 95, "500 of 10,000 pipelines couldn't be compiled.")]
+    [InlineData(400, 100, 95, "400 of 10,000 pipelines couldn't be compiled.")]
+    [InlineData(1_000, 1, 89, "1,000 of 10,000 pipelines couldn't be compiled.")]
+    [InlineData(9_000, 0, 10, "9,000 of 10,000 pipelines couldn't be compiled.")]
     public async Task Refused_pipelines_are_not_covered_and_a_mostly_refused_compile_says_what_it_means(long failed, long crashed, int ring, string? line)
     {
         var k = Killer(new FakeReader(Unreal), new FakePlanner(), new FakeWarmer(), vendor: new FakeVendor(Gpu with { Vendor = GpuVendor.Nvidia }));
@@ -11468,11 +11480,9 @@ public partial class AppTests : IDisposable
 
         var rec = k.Store.LoadGame(_game.Id);
         rec.GameKeys.Add(agsKey);   // the game's own process held it
-        k.Store.SaveGame(_game.Id, rec);
+        k.Store.SaveGame(_game.Id, rec);   // SCSKiller 1.4.0-beta.1: a key the game held is kept among CacheKeys too
         Assert.Equal("Fake", k.WarmAgs(_game.Id)?.App);
-        Assert.Contains($"{agsKey} that Fake Game gets from its AGS app name Fake isn't learned yet", k.DriverCacheGap(_game.Id));
-        rec.CacheKeys.Add(agsKey);
-        k.Store.SaveGame(_game.Id, rec);
+        Assert.Contains(agsKey, k.Store.LoadGame(_game.Id).CacheKeys);
         Assert.Null(k.DriverCacheGap(_game.Id));
         Assert.True(k.ClearGameCache(_game.Id));
         Assert.False(File.Exists(ags));
@@ -13357,7 +13367,7 @@ public partial class AppTests : IDisposable
     [Fact]
     public async Task Items_that_crash_the_driver_get_one_retry_on_a_new_driver()
     {
-        // an item of the work order: alpha.3 retries another driver's crashers it finds there, each alone first (WarmOptions.Probe)
+        // an item of the work order: another driver's crashers are compiled again on a new driver (1.3.4 dropped alpha.3's probe)
         var gen = GenDb(1, d3d12: true);
         var (aa, bb) = (PsoDb.Read(new MemoryStream(gen)).Single(r => r.Tag == 'C').Key, "bb");
         var warmer = new FakeWarmer { Crashed = [aa] };
@@ -13379,7 +13389,6 @@ public partial class AppTests : IDisposable
         warmer.Crashed = null;   // the new driver compiles it
         k = await Compile("101.00");
         Assert.Null(warmer.Options!.SkipKeys);
-        Assert.Equal([aa], warmer.Options!.Probe!.Keys);
         Assert.StartsWith("@", Kept(k));
 
         warmer.Crashed = [bb];
@@ -13490,14 +13499,14 @@ public partial class AppTests : IDisposable
         warmer.Run!.Failed = 100;
         k.StopQueue();
         await k.WhenQueueIdle().WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Equal((QueueStage.Stopped, "100 failed (the driver rejected them)"), (k.Queue.Single().Stage, k.Queue.Single().Note));
+        Assert.Equal((QueueStage.Stopped, "100 failed"), (k.Queue.Single().Stage, k.Queue.Single().Note));
 
         k.StartQueue();   // continues where it stopped; this segment fails nothing
         await warmer.WhenStarted(2);
         Assert.Equal(10, warmer.Options!.StartAt);
         warmer.Run!.Finish();
         await k.WhenQueueIdle().WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Equal((QueueStage.Done, "100 failed (the driver rejected them)"), (k.Queue.Single().Stage, k.Queue.Single().Note));
+        Assert.Equal((QueueStage.Done, "100 failed"), (k.Queue.Single().Stage, k.Queue.Single().Note));
         Assert.Equal(100, k.Store.LoadGame(_game.Id).LastWarmFailed);
     }
 
@@ -13784,9 +13793,10 @@ public partial class AppTests : IDisposable
     /// <summary>A compile that created nothing ends Failed with the top reason, isn't on record as compiled and can run again.
     /// One the driver rejected only some of stays Done with the count.</summary>
     [Theory]
-    [InlineData("warm: failed x100: replay of 'G' (graphics desc) hr=0x80070057", "the driver rejected all 100 pipelines")]
-    [InlineData("warm: failed x100: replay of 'G' (graphics desc, 900-byte payload) not created: root signature creation failed", "the driver refused the root signature of all 100 pipelines")]
-    public async Task A_compile_whose_every_pipeline_failed_ends_failed_with_why(string tally, string why)
+    [InlineData("warm: failed x100: replay of 'G' (graphics desc) hr=0x80070057", "the driver rejected all 100 pipelines", "3 failed (the driver rejected them)")]
+    [InlineData("warm: failed x100: replay of 'G' (graphics desc, 900-byte payload) not created: root signature creation failed", "the driver refused the root signature of all 100 pipelines",
+        "3 failed (the driver refused their root signatures)")]
+    public async Task A_compile_whose_every_pipeline_failed_ends_failed_with_why(string tally, string why, string note)
     {
         var warmer = new RejectingWarmer { Failed = 100, Lines = [tally] };
         var k = Killer(new FakeReader(Unreal), warmer: warmer);
@@ -13804,7 +13814,7 @@ public partial class AppTests : IDisposable
 
         warmer.Failed = 3;
         await WarmOnce(k, _game.Id);
-        Assert.Equal("3 failed (the driver rejected them)", k.Queue.Single().Note);
+        Assert.Equal(note, k.Queue.Single().Note);   // 1.3.4: what most of the log's failures were
         Assert.Equal(GameStatus.Warmed, k.Games.Single().Status);
         Assert.False(k.Games.Single().CompileFailed);
     }
@@ -16572,7 +16582,7 @@ public partial class AppTests : IDisposable
     }
 
     /// <summary>A community recording at four texture filtering settings and no recording of this PC's: the plan takes the
-    /// most common setting alone, and in Maximum mode every one.</summary>
+    /// most common setting alone, and in Maximum mode three (SCSKiller 1.4.0-beta.1; every one before).</summary>
     [Fact]
     public async Task Without_an_own_recording_the_plan_takes_one_texture_filtering_setting_unless_maximum()
     {
@@ -16597,7 +16607,7 @@ public partial class AppTests : IDisposable
         Assert.Equal(1, Sets());
         k.SetGameMaximum(_game.Id, true);
         await Compile(k);
-        Assert.Equal(4, Sets());
+        Assert.Equal(3, Sets());
     }
 
     /// <summary>The player's texture filtering from the game's config picks the community's setting at it over the most

@@ -8,7 +8,9 @@ namespace SCSKiller.Core.Games;
 /// whatever store found it. A Steam game is VAC when Steam marks it (appinfo.vdf common/category/category_8, the store's
 /// "Valve Anti-Cheat enabled"), when it is one of Valve's multiplayer titles (Deadlock carries no flag), and whenever Steam's
 /// data can't say: no manifest names its folder, appinfo.vdf missing or unreadable, the app absent from it or without its
-/// info. A game outside every Steam library is not VAC. Under Wine (Proton) Steam's data is the Linux Steam's
+/// info. A game outside every Steam library is not VAC, unless a steam_appid.txt in its folders names an app Steam has no
+/// info about (<see cref="Named"/>): its recorder goes in only for a session at the user's own risk, as the proxy's
+/// named_vac admits it. Under Wine (Proton) Steam's data is the Linux Steam's
 /// (<see cref="SteamSource.AppInfoPath(string)"/>). The proxy checks the same flag itself at each launch (proxy.cpp
 /// vac_now), against the app id the ini gives it (<see cref="AppId"/>).</summary>
 public static class Vac
@@ -54,11 +56,67 @@ public static class Vac
     public static bool Is(Game g, string? appinfo = null, string? steamRoot = null)
     {
         var root = steamRoot ?? SteamSource.Root();
+        var path = appinfo ?? SteamSource.AppInfoPath(root);
         var id = AppId(g, root, out var steam);
-        if (!steam) return false;
-        if (id is not { } app) return true;
-        if (Valve.Contains(app)) return true;
-        return Apps(appinfo ?? SteamSource.AppInfoPath(root)) is not { } apps || apps.GetValueOrDefault(app)?.Vac != false;
+        if (steam && (id is not { } app || Valve.Contains(app) || Apps(path) is not { } apps || apps.GetValueOrDefault(app)?.Vac != false)) return true;
+        return Named(g).Any(n => Unknown(n, path));
+    }
+
+    /// <summary>The app is one Steam has no info about: no appinfo.vdf, the app not in it, or its entry without info. A known
+    /// one (VAC or not) and an appinfo.vdf that can't be read aren't, as the proxy's named_vac takes them.</summary>
+    static bool Unknown(uint app, string appinfo) =>
+        !Valve.Contains(app) && (appinfo.Length > 0 && Absent(appinfo) || Apps(appinfo) is { } apps && apps.GetValueOrDefault(app)?.Vac == null);
+
+    /// <summary>The file isn't there, as the proxy's ENOENT: not one that can't be read.</summary>
+    static bool Absent(string path)
+    {
+        try { File.GetAttributes(path); }
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException) { return true; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }
+        return false;
+    }
+
+    /// <summary>The app ids the steam_appid.txt files name in the folders the proxy's vac_named reads (folders_to: the exe's
+    /// folder and each one above it up to the install folder, or the install folder alone besides it when it isn't above it),
+    /// read as it reads them: leading digits after a BOM and blanks. A file without them, or one that can't be read, names none.</summary>
+    internal static IEnumerable<uint> Named(Game g)
+    {
+        var any = new EnumerationOptions { MatchCasing = MatchCasing.CaseInsensitive, IgnoreInaccessible = true, AttributesToSkip = 0 };
+        static string Sep(string p) => Path.EndsInDirectorySeparator(p) ? p : p + Path.DirectorySeparatorChar;
+        var dirs = new List<string>();
+        try
+        {
+            var install = Path.GetFullPath(g.InstallDir);
+            var here = Path.GetDirectoryName(Path.GetFullPath(g.ExePath)) ?? "";
+            if (!Sep(here).StartsWith(Sep(install), StringComparison.OrdinalIgnoreCase)) dirs.AddRange([here, install]);
+            else
+                for (string? d = here; d != null && dirs.Count < 64; d = Path.GetDirectoryName(d))
+                {
+                    dirs.Add(d);
+                    if (Sep(d).Length <= Sep(install).Length) break;
+                }
+        }
+        catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { }
+        foreach (var dir in dirs)
+        {
+            string[] files;
+            try { files = Directory.GetFiles(dir, "steam_appid.txt", any); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException) { files = []; }
+            foreach (var f in files)
+            {
+                byte[] b;
+                try
+                {
+                    if (new FileInfo(f).Length > 4096) continue;
+                    b = File.ReadAllBytes(f);
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException) { continue; }
+                var bom = b.Length >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF ? 3 : 0;
+                var t = System.Text.Encoding.Latin1.GetString(b, bom, b.Length - bom);
+                var digits = new string(t.TrimStart(' ', '\t', '\r', '\n', '\v', '\f', '+').TakeWhile(char.IsAsciiDigit).ToArray());
+                if (digits.Length is > 0 and <= 10 && ulong.Parse(digits) is > 0 and <= uint.MaxValue and var v) yield return (uint)v;
+            }
+        }
     }
 
     /// <summary>The file names of the exes Steam's launch options start for the game's app, in every branch (appinfo.vdf

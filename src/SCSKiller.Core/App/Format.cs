@@ -45,14 +45,18 @@ public static class Format
 
     /// <summary>"5 min: 3 stutters from shader compiles (worst 1.3 s), 2 other hitches, 1% low 35 fps. Loading: 4 slow
     /// frames compiling shaders (worst 9.4 s), 12 others." (compiling shaders: startup only)</summary>
-    public static string Frames(FrameReport f, IReadOnlyList<Hitch> shader)
+    /// <param name="unsplit">a DirectX 11 launch (<see cref="FrameReport.D3D11"/>): its recorder sees no creates, so every
+    /// hitch counts as a stutter and none is said to be from shader compiles</param>
+    public static string Frames(FrameReport f, IReadOnlyList<Hitch> shader, bool unsplit = false)
     {
         int other = f.Hitches.Count(h => h.Cause == HitchCause.Other), loading = f.Hitches.Count(h => h.Cause == HitchCause.Loading);
         var compiling = f.Hitches.Where(h => h.Cause == HitchCause.LoadingShaders).ToList();
-        return (NoPlay(f.Low1PctFps) ? $"{Duration(f.Duration)}, {NoPlayText}." : $"{Duration(f.Duration)}: " + (shader.Count == 0 ? "no stutters from shader compiles"
-                : $"{shader.Count:N0} stutter{(shader.Count == 1 ? "" : "s")} from shader compiles (worst {Ms(shader.Max(h => h.Ms))})")
-            + (other == 0 ? ", no other hitches" : $", {other:N0} other hitch{(other == 1 ? "" : "es")}")
-            + $", 1% low {f.Low1PctFps:0} fps.")
+        return (NoPlay(f.Low1PctFps) ? $"{Duration(f.Duration)}, {NoPlayText}." : $"{Duration(f.Duration)}: " + (unsplit
+                ? other == 0 ? "no stutters" : $"{other:N0} stutter{(other == 1 ? "" : "s")} (worst {Ms(f.Hitches.Where(h => h.Cause == HitchCause.Other).Max(h => h.Ms))})"
+                : (shader.Count == 0 ? "no stutters from shader compiles"
+                    : $"{shader.Count:N0} stutter{(shader.Count == 1 ? "" : "s")} from shader compiles (worst {Ms(shader.Max(h => h.Ms))})")
+                  + (other == 0 ? ", no other hitches" : $", {other:N0} other hitch{(other == 1 ? "" : "es")}"))
+            + $", 1% low {f.Low1PctFps:0} fps." + (unsplit ? " " + Unsplit : ""))
             + (compiling.Count + loading == 0 ? "" : " Loading: " + string.Join(", ", new[]
             {
                 compiling.Count == 0 ? null : $"{compiling.Count:N0} slow frame{(compiling.Count == 1 ? "" : "s")} compiling shaders (worst {Ms(compiling.Max(h => h.Ms))})",
@@ -61,15 +65,32 @@ public static class Format
     }
 
     /// <summary>An earlier launch in the frame history: "1% low 35 fps · 3 stutters".</summary>
-    public static string Session(FrameSession e) => NoPlay(e.Low1PctFps) ? NoPlayText
-        : $"1% low {e.Low1PctFps:0} fps · " + (e.Stutters == 0 ? "no stutters" : $"{e.Stutters:N0} stutter{(e.Stutters == 1 ? "" : "s")}");
+    /// <remarks>The shader stutter count is left out of a DirectX 11 launch (<see cref="FrameSession.D3D11"/>, or <paramref name="unsplit"/>).</remarks>
+    public static string Session(FrameSession e, bool unsplit = false) => NoPlay(e.Low1PctFps) ? NoPlayText
+        : $"1% low {e.Low1PctFps:0} fps" + (unsplit || e.D3D11 ? "" : " · " + (e.Stutters == 0 ? "no stutters" : $"{e.Stutters:N0} stutter{(e.Stutters == 1 ? "" : "s")}"));
+
+    /// <summary>What a DirectX 11 launch's frame line adds (SCSKiller 1.4.0-beta.1).</summary>
+    public const string Unsplit = "DirectX 11: SCSKiller can't tell shader compilation stutters from other stutters.";
+
+    /// <summary>NVIDIA's shader cache is turned off (a size of 0 in the NVIDIA Control Panel): the Library's cache card says
+    /// so; null = it isn't.</summary>
+    public static string? CacheOffLine(GpuVendor vendor, CacheLimit? limit) => ScsKiller.CacheOff(vendor, limit) ? "The NVIDIA shader cache is turned off" : null;
+
+    /// <summary>The Cache page's summary: the driver cache and its limit, and with a Windows shader cache (NVIDIA from 621)
+    /// that and the total: "Driver cache 12.3 GB of 100 GB · Windows shader cache 4.1 GB · Total 16.4 GB".</summary>
+    public static string CacheSplit(long driver, bool upperBound, long? limit, long windows)
+    {
+        string le = upperBound ? "≤ " : "";
+        string first = $"Driver cache {le}{Bytes(driver)}" + (limit is { } l ? " of " + Bytes(l) : "");
+        return windows > 0 ? $"{first} · Windows shader cache {Bytes(windows)} · Total {le}{Bytes(driver + windows)}" : first;
+    }
 
     /// <summary>"Carved DXBC", "Unity 2022.3.10"; just the family (or <paramref name="family"/>) when the reader found no
     /// version: Carved and FromSoft say "-", Unity "?".</summary>
     public static string Engine(EngineInfo e, string? family = null) =>
         e.Version is "" or "-" or "?" ? family ?? e.Family : $"{family ?? e.Family} {e.Version}";
 
-    public const string MergingStage = "Copying the cache to the game's folder";
+    public const string MergingStage = "Handing the compile to the game's cache";
     public const string SavingStage = "Saving the driver's cache";
     public const string FinishingStage = "Finishing up";
 
@@ -150,6 +171,7 @@ public static class Format
             GameStatus.Ready when Has("ray-traced effects aren't compiled") => !s.AnyAntiCheat || s.RiskEligible ? "Ray tracing not compiled" : $"Ray tracing blocked by {ScsKiller.AntiCheatName(s)}",
             GameStatus.Ready when Has(ScsKiller.RtUnseenNote) => "No ray tracing seen while recording",
             GameStatus.Ready when Has(ScsKiller.RtInlineNote) => "Path tracing needs a recording",
+            GameStatus.Ready when s.Engine?.KeyMissing == true => Sentence(ScsKiller.KeyForFullCoverage),
             GameStatus.Ready when ScsKiller.IsPartial(s.Plan) => "Partly covered",
             GameStatus.Ready when Has(Planning.Planner.UntestedNote) => "Not tested on this engine version",
             GameStatus.Ready when Has("for DirectX 12, ") => !s.AnyAntiCheat || s.RiskEligible ? "DirectX 11, DirectX 12 needs a recording" : $"DirectX 11, DirectX 12 blocked by {ScsKiller.AntiCheatName(s)}",

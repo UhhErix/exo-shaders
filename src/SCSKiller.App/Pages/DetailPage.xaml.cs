@@ -24,8 +24,17 @@ public sealed partial class DetailPage : Page
             else if (q.GameId == Vm?.Row.Id) progress.Request();
         }
         // Refresh too: a change raised while the page wasn't loaded (e.g. the game exited) would show only at the next one
-        Loaded += (_, _) => { App.Core.GameChanged += OnChanged; App.Core.QueueChanged += OnQueue; Icons.Failed += refresh.Request; App.Account.Changed += refresh.Request; Vm.Refresh(); Check(); };
-        Unloaded += (_, _) => { App.Core.GameChanged -= OnChanged; App.Core.QueueChanged -= OnQueue; Icons.Failed -= refresh.Request; App.Account.Changed -= refresh.Request; };
+        Loaded += (_, _) =>
+        {
+            App.Core.GameChanged += OnChanged; App.Core.QueueChanged += OnQueue; Icons.Failed += refresh.Request; App.Account.Changed += refresh.Request;
+            if (App.Core is ScsKiller k) k.ScanProgressed += progress.Request;   // a D3DSCache fold's share (FoldLine)
+            Vm.Refresh(); Check();
+        };
+        Unloaded += (_, _) =>
+        {
+            App.Core.GameChanged -= OnChanged; App.Core.QueueChanged -= OnQueue; Icons.Failed -= refresh.Request; App.Account.Changed -= refresh.Request;
+            if (App.Core is ScsKiller k) k.ScanProgressed -= progress.Request;
+        };
     }
 
     // a game the scan hasn't read yet is read now, its state comes back as GameChanged
@@ -43,7 +52,7 @@ public sealed partial class DetailPage : Page
     public ContentDialog PartlyWhyDialog() => new()
     {
         XamlRoot = XamlRoot, Title = $"Why is {Vm.Name} partly compiled?", CloseButtonText = "Close",
-        Content = new TextBlock { Text = DetailVm.PartlyCompiledWhy, TextWrapping = TextWrapping.Wrap },
+        Content = new TextBlock { Text = Vm.PartlyCompiledWhy, TextWrapping = TextWrapping.Wrap },
     };
 
     async void OnPartlyWhy(object _, RoutedEventArgs __) => await App.ShowAsync(PartlyWhyDialog());
@@ -508,6 +517,39 @@ public sealed partial class DetailPage : Page
         // an eligible anti-cheat game: the switch allows sessions (offline, or a confirmed session in a game with anti-cheat)
         if (Vm.ShowOffline) Set((vm, p) => vm.OfflinePending = p, on, id => App.Core.SetOfflineRecording(id, on));
         else SetRecord(on);
+    }
+
+    // On only after the standard anti-cheat wording is confirmed, once: the core then records every launch as a session
+    async void OnAlwaysToggled(object _, RoutedEventArgs __)
+    {
+        var on = AlwaysSwitch.IsOn;
+        if (on == Vm.AlwaysOn) return;
+        if (!on)
+        {
+            Set((vm, p) => vm.AlwaysPending = p, false, id => App.Core.SetAlwaysRecord(id, false, confirmed: false, AntiCheat.None));
+            return;
+        }
+        var (vm, id) = (Vm, Vm.Row.Id);
+        vm.AlwaysPending = true;   // the switch stays on, and off for a second toggle, until the dialog is answered
+        vm.Refresh();
+        AntiCheat shown;
+        try { shown = await App.Core.CheckAntiCheatAsync(id); }
+        catch (Exception ex)
+        {
+            (vm.Error, vm.AlwaysPending) = (Describe(ex), null);
+            vm.Refresh();
+            return;
+        }
+        var fresh = vm.Row.State with { AntiCheat = shown };   // VAC stays the state's: the check only names a client anti-cheat
+        var ok = await App.ConfirmAsync(this, $"Always record {vm.Name} at your own risk?",
+            new TextBlock { TextWrapping = TextWrapping.Wrap, Text = DetailVm.RiskText(fresh) }, "Always record");
+        vm.AlwaysPending = null;
+        if (!ok)
+        {
+            vm.Refresh();   // the switch shows off again
+            return;
+        }
+        Set((v, p) => v.AlwaysPending = p, true, i => App.Core.SetAlwaysRecord(i, true, confirmed: true, shown));
     }
 
     void OnRecordTip(object _, RoutedEventArgs __) => SetRecord(true);

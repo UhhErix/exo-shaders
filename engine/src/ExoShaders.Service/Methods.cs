@@ -32,6 +32,7 @@ internal sealed partial class Host
         "recorder.startRisk", "recorder.clear", "game.clearCache", "game.putBackKept", "game.dropKept", "game.play",
         "games.remove", "games.hide", "cache.delete", "cache.freeOldDriver", "driver.setCacheLimit", "driver.setAutoShader",
         "driver.setCleanupGuard", "game.asdUndo", "ba.start", "ba.launch", "ba.continue", "ba.recordAfterAgain", "ba.cancel",
+        "game.setTraversal", "settings.setTraversal",   // a recorder's scskiller.ini is written in the game's folder
     ];
 
     /// <summary>Options the settings policy (Policy.cs) owns: Exo Shaders has no settings, so these are refused.</summary>
@@ -363,6 +364,24 @@ internal sealed partial class Host
                 await Act(id, () => k.SetGameRayTracing(id, on));
                 return Ok;
             }
+            case "game.setTraversal":
+            {
+                // the policy doesn't own it (the official app's choice, off by default): Exo may offer it per game
+                string id = p.ReqStr("id");
+                GameState g = Game(id);
+                if (!TraversalFix.Applies(g, k.Vendor.Caps)) throw new ServiceError("The traversal stutter fix doesn't apply to this game.");
+                bool? on = p.ReqStr("value") switch
+                {
+                    "default" => null,
+                    "on" => true,
+                    "off" => false,
+                    var v => throw new ServiceError($"'{v}' isn't a valid value: default, on, off"),
+                };
+                await Act(id, () => k.SetGameTraversal(id, on));
+                return Ok;
+            }
+            case "settings.setTraversal":
+                return await SetTraversal(p.ReqStr("mode"));
             case "game.setMaximum":
             {
                 string id = p.ReqStr("id");
@@ -737,7 +756,7 @@ internal sealed partial class Host
     /// <summary>App.CompileQueue: idle-waiting items become normal, then the queue starts.</summary>
     private void CompileQueue()
     {
-        foreach (QueueItem q in _k.Queue.Where(q => q.Stage == QueueStage.Waiting && q.Note == Fmt.IdleNote && !q.PlanCheck).ToList())
+        foreach (QueueItem q in _k.Queue.Where(q => ScsKiller.WaitsOnItsOwn(q) && !q.PlanCheck).ToList())
             _k.Enqueue(q.GameId);
         _k.StartQueue();
     }

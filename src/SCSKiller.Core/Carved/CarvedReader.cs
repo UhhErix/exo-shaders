@@ -30,6 +30,12 @@ public sealed class CarvedReader : IEngineReader
     public const string Family = "Carved", EmbeddedRootSignatures = "+RTS0", Platform = "D3D12";
     public const string RedEngine4 = "REDengine 4", Northlight2 = "Northlight 2";
 
+    /// <summary>Asobo's engine (A Plague Tale: Requiem), a fork of the carved family by its root files, for its root-signature rule.</summary>
+    public const string Zouna = "Zouna";
+
+    static string? ForkOf(string installDir) =>
+        File.Exists(Path.Combine(installDir, "All.psc")) && File.Exists(Path.Combine(installDir, "LangDef.tsc")) ? Zouna : null;
+
     public static readonly string[] Families = [Family, RedEngine4, Northlight2];
 
     public const string NoRawShaders = "no raw DXBC/DXIL shaders in its files";
@@ -101,7 +107,105 @@ public sealed class CarvedReader : IEngineReader
             : programs == 0 ? $"{NoRawShaders} ({read / 1e9:F1} GB sampled): shaders are {packed}"
             : graphics == 0 ? $"only {compute} raw compute shaders: graphics shaders are {packed}"
             : $"only {graphics} raw graphics shaders: the rest are {packed}";
-        return new EngineInfo(Fingerprint(game.InstallDir), programs == 0 ? "-" : version, null, GraphicsApi(game, dxil > 0), false, unsupported);
+        var api = GraphicsApi(ApiExe(game), dxil > 0);
+        // 1.4.0-beta.1: DirectX 9 and OpenGL say so instead of asking for a recording; an FNA game's D3D11 shaders are built
+        // at run time from its effects, so its packed files mean nothing to compile
+        unsupported = OldDxReason(api) ?? (api == "OpenGL" ? "runs on OpenGL"
+            : unsupported != null && api == "D3D11" && Fna(game) ? RuntimeShadersReason : unsupported);
+        // 1.4.1-alpha.2: a DirectX exe that also loads Vulkan (BeamNG.drive) runs on either, so it's recorded on whichever
+        // it runs (ScsKiller.BothApis) and the API stays a guess
+        var both = api.Contains("D3D1", StringComparison.Ordinal) && NamesApi(game.ExePath, []) == true;
+        return new EngineInfo(Fingerprint(game.InstallDir), programs == 0 ? "-" : version, ForkOf(game.InstallDir), api, false, unsupported,
+            ApiGuessed: both, OffersVulkan: both);
+    }
+
+    /// <summary>A game that offers Vulkan beside DirectX is recorded on whichever it runs only in these families.</summary>
+    public static bool Carved(EngineInfo e) => e.Family is Family or RedEngine4 or Northlight2;
+
+    public const string Dx9Reason = "runs on DirectX 9: compiling it waits for DirectX 9 support in SCSKiller";
+    /// <summary>A DirectX 10 game: planned as DirectX 11, which takes its shader models (4.0, 4.1).</summary>
+    public const string Dx10 = "D3D11 (runs on DirectX 10)";
+    public const string RuntimeShadersReason = "This game builds its shaders while it runs, so there's nothing to compile ahead";
+
+    /// <summary>Why a game on an API older than DirectX 10 can't compile yet; null: a newer one.</summary>
+    public static string? OldDxReason(string api) => api.StartsWith("D3D9", StringComparison.Ordinal) ? Dx9Reason : null;
+
+    /// <summary>FNA (XNA's reimplementation) beside the exe: its effects compile while the game runs.</summary>
+    static bool Fna(Game game) => Path.GetDirectoryName(game.ExePath) is { } dir && Directory.Exists(dir) && GameFiles.EnumerateFiles(dir, "FNA3D.dll").Any();
+
+    /// <summary>The API of a game whose binaries import none, from the runtime it ships: an exe named *x64vk is Vulkan,
+    /// FNA without SDL3 (FNA3D's D3D11 backend) and MonoGame with SharpDX are D3D11, MonoGame without it OpenGL; null =
+    /// none of these.</summary>
+    static string? RuntimeApi(Game game)
+    {
+        if (Path.GetDirectoryName(game.ExePath) is not { } dir || !Directory.Exists(dir)) return null;
+        if (Path.GetFileNameWithoutExtension(game.ExePath).EndsWith("x64vk", StringComparison.OrdinalIgnoreCase)) return "Vulkan";
+        if (Has("FNA3D.dll") && !Has("SDL3.dll")) return "D3D11";
+        if (Has("MonoGame.Framework.dll")) return Has("SharpDX*.dll") ? "D3D11" : "OpenGL";
+        return null;
+
+        bool Has(string pattern) => GameFiles.EnumerateFiles(dir, pattern).Any();
+    }
+
+    /// <summary>"D3D10" or "D3D9": the exe or a DLL beside it (or in its bin folder, one level down) imports d3d10.dll /
+    /// d3d10_1.dll, else d3d9.dll, and none imports a newer API or exports the Agility SDK (Half-Life 2). When none imports
+    /// either, the exe or a *dx9* DLL that loads its API at run time and names an entry point of one, and no D3D11/12
+    /// runtime. Null: neither.</summary>
+    static string? OldApi(Game game)
+    {
+        if (Path.GetDirectoryName(game.ExePath) is not { } dir || !Directory.Exists(dir)) return null;
+        var bin = Directory.EnumerateDirectories(dir, "bin", new EnumerationOptions { MatchCasing = MatchCasing.CaseInsensitive, IgnoreInaccessible = true }).FirstOrDefault();
+        var dlls = GameFiles.EnumerateFiles(dir, "*.dll").Concat(bin == null ? []
+                : GameFiles.EnumerateFiles(bin, "*.dll", new EnumerationOptions { RecurseSubdirectories = true, MaxRecursionDepth = 1, IgnoreInaccessible = true }))
+            .Where(p => !Middleware.Any(m => Path.GetFileName(p).StartsWith(m, StringComparison.OrdinalIgnoreCase)));
+        string? old = null;
+        foreach (var p in dlls.Prepend(game.ExePath))
+            try
+            {
+                var imports = PeImports(p, out var agility);
+                if (agility || imports.Any(ApiDlls.ContainsKey)) return null;
+                if (imports.Any(D3D10Dlls.Contains)) old = "D3D10";   // a DirectX 10 binary wins over a DirectX 9 one
+                else if (old == null && imports.Contains("d3d9.dll", StringComparer.OrdinalIgnoreCase)) old = "D3D9";
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or BadImageFormatException or InvalidOperationException) { }
+        if (old != null) return old;
+        foreach (var p in dlls.Where(p => Path.GetFileName(p).Contains("dx9", StringComparison.OrdinalIgnoreCase)).Prepend(game.ExePath))
+            if (ApiImports(p) != null && NamesApi(p, [.. D3D10Entry, .. D3D9Entry]) == false && NamesApi(p, D3DRuntimes) == null)
+                return NamesApi(p, D3D10Entry) == false ? "D3D10" : "D3D9";
+        return null;
+    }
+
+    /// <summary>What a DirectX 9/10 game (<see cref="OldApi"/>) runs on: DXVK beside the exe (d3d9.dll; DirectX 10's
+    /// d3d10core/d3d11/dxgi) makes it Vulkan, an exe that creates its device with D3D9On12 D3D12; DirectX 10 is <see cref="Dx10"/>.</summary>
+    static string Wrapped(Game game, string old)
+    {
+        var dir = Path.GetDirectoryName(game.ExePath)!;
+        string[] dxvk = old == "D3D9" ? ["d3d9.dll"] : ["d3d10core.dll", "d3d11.dll", "dxgi.dll"];
+        if (dxvk.Any(n => ReShade.IsDxvk(GameFiles.Find(dir, n)))) return "Vulkan (DXVK)";
+        if (old == "D3D9" && ApiImports(game.ExePath) != null && NamesApi(game.ExePath, D3D9On12Entry) == false) return "D3D12 (D3D9On12)";
+        return old == "D3D10" ? Dx10 : old;
+    }
+
+    /// <summary>The exe the API is read from: the game's own, or, when it's a native (not .NET) launcher that imports no
+    /// graphics API and names no D3D runtime or entry point, the one exe beside it that imports one (Fahrenheit: Indigo
+    /// Prophecy Remastered's DirectX 9 exe).</summary>
+    static Game ApiExe(Game game)
+    {
+        if (Path.GetDirectoryName(game.ExePath) is not { } dir || !Directory.Exists(dir)
+            || ImportsApi(game.ExePath) != false || PeImports(game.ExePath, out _).Contains("mscoree.dll", StringComparer.OrdinalIgnoreCase)) return game;
+        var builds = GameFiles.EnumerateFiles(dir, "*.exe").Where(p => !SameDir(p, game.ExePath) && ImportsApi(p) == true).Take(2).ToList();
+        return builds is [var one] && NamesApi(game.ExePath, [.. D3DNames, .. D3D10Entry, .. D3D9Entry]) == null ? game with { ExePath = one } : game;
+    }
+
+    /// <summary>The binary imports Direct3D 9 to 12 or Vulkan, or exports the Agility SDK; null when it can't be read.</summary>
+    static bool? ImportsApi(string path)
+    {
+        try
+        {
+            var imports = PeImports(path, out var agility);
+            return agility || imports.Any(d => ApiDlls.ContainsKey(d) || D3D10Dlls.Contains(d) || d.Equals("d3d9.dll", StringComparison.OrdinalIgnoreCase));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or BadImageFormatException or InvalidOperationException) { return null; }
     }
 
     /// <summary>A Godot export's renderer by its pack's Godot major version: 4 renders on Vulkan by default, 3 on OpenGL. The pack
@@ -490,6 +594,7 @@ public sealed class CarvedReader : IEngineReader
     /// <summary>D3D12 when the game ships DXIL (SM6 runs on DX12 only), the Agility SDK runtime (D3D12Core.dll) or its own
     /// binaries import d3d12.dll / export D3D12SDKVersion; "D3D11 or D3D12" when they import d3d11.dll too (and no DXIL);
     /// D3D11 / Vulkan when that's all they import (Vulkan also when the exe loads it at runtime, <see cref="LoadsVulkan"/>);
+    /// DirectX 9 / 10 by <see cref="OldApi"/> and <see cref="Wrapped"/> when none of those is imported;
     /// "D3D11 or D3D12" when nothing is readable. Middleware's own shaders and runtime (<see cref="InMiddleware"/>) don't count,
     /// nor a Wine prefix's in the game folder (<see cref="GameFiles.InWinePrefix"/>).</summary>
     static string GraphicsApi(Game game, bool dxil)
@@ -499,11 +604,14 @@ public sealed class CarvedReader : IEngineReader
         bool d3d12 = dxil || apis.Contains("D3D12") || GameFiles.EnumerateFiles(game.InstallDir, "D3D12Core.dll", core)
             .Any(p => !InMiddleware(game.InstallDir, p) && !GameFiles.InWinePrefix(game.InstallDir, game.ExePath, p));
         bool d3d11 = apis.Contains("D3D11");
-        return d3d12 ? (d3d11 && !dxil ? UnrealRhi.Ambiguous : "D3D12") : d3d11 ? "D3D11" : apis.Contains("Vulkan") ? "Vulkan" : UnrealRhi.Ambiguous;
+        return d3d12 ? (d3d11 && !dxil ? UnrealRhi.Ambiguous : "D3D12") : d3d11 ? "D3D11" : apis.Contains("Vulkan") ? "Vulkan"
+            // nothing newer imported (1.4.0-beta.1): DirectX 9 or 10 (1.4.1-alpha.2) as it runs, or what the runtime it ships renders with
+            : OldApi(game) is { } old ? Wrapped(game, old) : RuntimeApi(game) ?? UnrealRhi.Ambiguous;
     }
 
     static readonly Dictionary<string, string> ApiDlls = new(StringComparer.OrdinalIgnoreCase)
         { ["d3d12.dll"] = "D3D12", ["d3d11.dll"] = "D3D11", ["vulkan-1.dll"] = "Vulkan" };
+    static readonly HashSet<string> D3D10Dlls = new(["d3d10.dll", "d3d10_1.dll"], StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Middleware that imports a graphics API without being the renderer.</summary>
     static readonly string[] Middleware = ["eossdk", "libxess", "dstorage", "gfsdk", "nvngx", "sl.", "amd_", "ffx", "nvlowlatency", "galaxy",
@@ -524,8 +632,17 @@ public sealed class CarvedReader : IEngineReader
     /// exes are ACL-protected). Read in a game with anti-cheat too: only for its API, which a risk session's recorder follows.</summary>
     static HashSet<string> Imports(Game game)
     {
+        if (Path.GetDirectoryName(game.ExePath) is not { } dir || !Directory.Exists(dir)) return [];
+        var apis = ImportsBeside(game, dir);
+        // 1.4.0-beta.1: an exe that names no API may start its Vulkan renderer from a subfolder (VulkanBelow)
+        if (apis.Count == 0 && NamesApi(game.ExePath) is var named && (named == true || named == null && VulkanBelow(game, dir))) apis.Add("Vulkan");
+        return apis;
+    }
+
+    /// <summary>The APIs the exe and the non-middleware DLLs beside it import (+ "D3D12" for an exported D3D12SDKVersion).</summary>
+    static HashSet<string> ImportsBeside(Game game, string dir)
+    {
         var apis = new HashSet<string>();
-        if (Path.GetDirectoryName(game.ExePath) is not { } dir || !Directory.Exists(dir)) return apis;
         var bins = GameFiles.EnumerateFiles(dir, "*.dll").Where(p => !Middleware.Any(m => Path.GetFileName(p).StartsWith(m, StringComparison.OrdinalIgnoreCase)));
         foreach (var p in bins.Prepend(game.ExePath))
             try
@@ -535,21 +652,76 @@ public sealed class CarvedReader : IEngineReader
                 if (agility) apis.Add("D3D12");
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or BadImageFormatException or InvalidOperationException) { }
-        if (apis.Count == 0 && LoadsVulkan(game.ExePath)) apis.Add("Vulkan");
         return apis;
+    }
+
+    /// <summary>The game's launcher exe imports and names no graphics API and a renderer exe in a subfolder imports Vulkan
+    /// (SCSKiller 1.4.0-beta.1): the watcher follows that renderer (ScsKiller.FollowRenderer), where the Vulkan recorder goes.</summary>
+    internal static bool StartsVulkanRenderer(Game game) =>
+        Path.GetDirectoryName(game.ExePath) is { } dir && Directory.Exists(dir) && ImportsBeside(game, dir).Count == 0
+        && NamesApi(game.ExePath) == null && VulkanBelow(game, dir);
+
+    /// <summary>The binary imports vulkan-1.dll.</summary>
+    internal static bool ImportsVulkan(string path) => ApiImports(path)?.Contains("Vulkan") == true;
+
+    static readonly EnumerationOptions Below = new() { RecurseSubdirectories = true, MaxRecursionDepth = 3, IgnoreInaccessible = true, AttributesToSkip = FileAttributes.ReparsePoint };
+
+    /// <summary>Exes below the exe's folder (3 levels, the first 64 that aren't middleware or in a Wine prefix) import Vulkan,
+    /// none imports or names DirectX 11 or 12, and no DLL beside them imports those.</summary>
+    static bool VulkanBelow(Game game, string dir)
+    {
+        bool vulkan = false;
+        var folders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var exe in GameFiles.EnumerateFiles(dir, "*.exe", Below)
+                     .Where(p => !SameDir(Path.GetDirectoryName(p)!, dir) && !InMiddleware(dir, p)
+                         && !Middleware.Any(m => Path.GetFileName(p).StartsWith(m, StringComparison.OrdinalIgnoreCase))
+                         && !GameFiles.InWinePrefix(game.InstallDir, game.ExePath, p)).Take(64))
+        {
+            if (ApiImports(exe) is not { } apis) continue;
+            if (apis.Contains("D3D11") || apis.Contains("D3D12")) return false;
+            if (apis.Count == 0 && NamesApi(exe, D3DRuntimes) == false) return false;
+            vulkan |= apis.Contains("Vulkan");
+            folders.Add(Path.GetDirectoryName(exe)!);
+        }
+        return vulkan && folders.All(f => GameFiles.EnumerateFiles(f, "*.dll")
+            .Where(p => !Middleware.Any(m => Path.GetFileName(p).StartsWith(m, StringComparison.OrdinalIgnoreCase)))
+            .All(p => ApiImports(p) is not { } a || !a.Contains("D3D11") && !a.Contains("D3D12")));
+    }
+
+    static bool SameDir(string a, string b) =>
+        string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(a)), Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The APIs one binary imports; null when it can't be read.</summary>
+    static HashSet<string>? ApiImports(string path)
+    {
+        try
+        {
+            var apis = PeImports(path, out var agility).Select(d => ApiDlls.GetValueOrDefault(d)).OfType<string>().ToHashSet();
+            if (agility) apis.Add("D3D12");
+            return apis;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or BadImageFormatException or InvalidOperationException) { return null; }
     }
 
     // lowercase; a DLL name also in UTF-16, as LoadLibraryW takes it (GetProcAddress names are ASCII only)
     static readonly byte[][] VulkanLoader = [A("vulkan-1.dll"), W("vulkan-1.dll")], VulkanEntry = [A("vkcreateinstance"), A("vkgetinstanceprocaddr")],
-        D3DNames = [A("d3d12.dll"), W("d3d12.dll"), A("d3d11.dll"), W("d3d11.dll"), A("dxgi.dll"), W("dxgi.dll"), A("d3d12createdevice"), A("d3d11createdevice"), A("createdxgifactory")];
+        D3DNames = [A("d3d12.dll"), W("d3d12.dll"), A("d3d11.dll"), W("d3d11.dll"), A("dxgi.dll"), W("dxgi.dll"), A("d3d12createdevice"), A("d3d11createdevice"), A("createdxgifactory")],
+        // a renderer exe below that names one of these runs on D3D (DXGI alone, as a Vulkan swap chain's, doesn't count)
+        D3DRuntimes = [A("d3d12.dll"), W("d3d12.dll"), A("d3d11.dll"), W("d3d11.dll"), A("d3d12createdevice"), A("d3d11createdevice")],
+        D3D10Entry = [A("d3d10createdevice")], D3D9Entry = [A("direct3dcreate9")], D3D9On12Entry = [A("direct3dcreate9on12")];
     static byte[] A(string s) => Encoding.ASCII.GetBytes(s);
     static byte[] W(string s) => Encoding.Unicode.GetBytes(s);
 
     /// <summary>The exe names vulkan-1.dll and a Vulkan loader entry point, and no D3D or DXGI runtime (any case): it loads
     /// Vulkan at runtime (Enshrouded imports no graphics API). Read in blocks, exes run to hundreds of MB.</summary>
-    internal static bool LoadsVulkan(string exe)
+    internal static bool LoadsVulkan(string exe) => NamesApi(exe) == true;
+
+    /// <summary>What the exe's bytes name: false, a D3D runtime of <paramref name="d3d"/> (<see cref="D3DNames"/> by
+    /// default), or it can't be read; true, the Vulkan loader and an entry point and no D3D; null, neither.</summary>
+    static bool? NamesApi(string exe, byte[][]? d3d = null)
     {
         const int Overlap = 32;   // > the longest name, so one cut by a block end is seen whole next time
+        d3d ??= D3DNames;
         try
         {
             using var h = File.OpenHandle(exe, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, FileOptions.SequentialScan);
@@ -561,13 +733,13 @@ public sealed class CarvedReader : IEngineReader
                 var span = buf.AsSpan(0, kept + n);
                 foreach (ref var b in span[kept..])
                     if ((uint)(b - 'A') <= 'Z' - 'A') b |= 0x20;
-                if (Has(span, D3DNames)) return false;
+                if (Has(span, d3d)) return false;
                 loader |= Has(span, VulkanLoader);
                 entry |= Has(span, VulkanEntry);
                 kept = Math.Min(Overlap, span.Length);
                 span[^kept..].CopyTo(buf);
             }
-            return loader && entry;
+            return loader && entry ? true : null;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return false; }
 

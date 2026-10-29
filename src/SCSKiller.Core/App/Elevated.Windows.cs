@@ -9,11 +9,12 @@ public static partial class Elevated
     public static partial bool IsAdmin => new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
     public static partial string CurrentUserSid => WindowsIdentity.GetCurrent().User!.Value;
 
-    // An elevated process's token refuses a medium-integrity reader: access denied counts as elevated.
-    public static partial bool? OfProcess(SafeProcessHandle process)
+    // An elevated process's token refuses a medium-integrity reader: access denied counts as elevated, unless the caller
+    // can't tell an elevated process from one it may not read for another reason.
+    public static partial bool? OfProcess(SafeProcessHandle process, bool deniedIsElevated)
     {
         if (!OpenProcessToken(process, TokenQuery, out var token))
-            return Marshal.GetLastPInvokeError() == AccessDenied ? true : null;
+            return deniedIsElevated && Marshal.GetLastPInvokeError() == AccessDenied ? true : null;
         using (token)
             return GetTokenInformation(token, TokenElevation, out var elevated, sizeof(int), out _) ? elevated != 0 : null;
     }

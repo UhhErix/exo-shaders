@@ -113,6 +113,7 @@ static class Fmt
     public static ManualSource? Added => App.Core is ScsKiller k ? k.Manual : (App.Core as Design.FakeScsKiller)?.Manual;
     public static string? ScanProgress => App.Core is ScsKiller k ? k.ScanProgress : (App.Core as Design.FakeScsKiller)?.ScanProgress;
     public static string? AfterUpdateLine => App.Core is ScsKiller k ? k.AfterUpdateLine : (App.Core as Design.FakeScsKiller)?.AfterUpdateLine;
+    public static string? FoldLine(string gameId) => App.Core is ScsKiller k ? k.FoldLine(gameId) : (App.Core as Design.FakeScsKiller)?.FoldLine(gameId);
     public static void Rename(string gameId, string name)
     {
         if (App.Core is ScsKiller k) k.RenameManualGame(gameId, name);
@@ -762,7 +763,7 @@ public sealed class DetailVm(string id) : Bindable
     public string StatusReason => Running is { } r && Fmt.ProgressText(r) is { } p
         ? p + (r.Progress is { PerSecond: > 0 } && Fmt.Left(r, s) is { } t ? $" · {Format.Duration(t)} left" : "")
         : place.Item is { Stage: QueueStage.Waiting, Note: { } n } ? Sentence(n)
-        : GameReason;
+        : Fmt.FoldLine(id) ?? GameReason;
     string GameReason => Sentence(s.Status switch
     {
         _ when s.CompileUnreached => s.StatusReason + (s.WarmedAt != null ? ". " + Sentence(ScsKiller.ClearForGameNote) : ""),
@@ -782,7 +783,12 @@ public sealed class DetailVm(string id) : Bindable
     static string NoDbNote(string r) => r.Replace("; " + ScsKiller.InDbSupportersNote, "").Replace("; " + ScsKiller.InDbNote, "");
     public bool IsPartlyCompiled => ScsKiller.IsPartlyCompiled(s);
     public bool NeedsAesKey => ScsKiller.NeedsAesKey(s);
-    public const string PartlyCompiledWhy = "SCSKiller compiled this game, but the graphics driver refused a large part of it. This happens when the driver or Windows can't build pipelines the way the game does. The refused ones are built by the game the first time it needs them, which is when they can stutter. SCSKiller compiles them again after a driver update.";
+    public string PartlyCompiledWhy => s.LastWarmFailedBy switch
+    {
+        0 or 1 => "SCSKiller compiled this game, but the graphics driver refused a large part of it. This happens when the driver or Windows can't build pipelines the way the game does. The refused ones are built by the game the first time it needs them, which is when they can stutter. SCSKiller compiles them again after a driver update.",
+        2 => "SCSKiller compiled this game, but it couldn't build a large part of it from the game's files. The game builds those itself the first time it needs them, which is when they can stutter.",
+        _ => "SCSKiller compiled this game, but a large part of it couldn't be compiled. The game builds those itself the first time it needs them, which is when they can stutter. SCSKiller compiles them again after a driver update.",
+    };
 
     // The manifest is public: a PC without "db" sees that the community database covers the game, and where to get it.
     // Shown, it is the page's only mention of the database.
@@ -1204,7 +1210,8 @@ public sealed class DetailVm(string id) : Bindable
     // "Shipped with the shaders" is the carver's case.
     string RootSigSource(PlanStats p) =>
         p.RootSigRuleVerified ? "tested on this engine version"
-        : p.RootSignatures == 0 ? "not needed (DirectX 11)"
+        : ScsKiller.ApiKey(s.Engine?.GraphicsApi) == "11" ? "not needed (DirectX 11)"
+        : p is { RootSignatures: 0, Recorded: > 0 } ? "in the recorded pipelines"
         : s.Engine?.Family == "Unreal" ? (p.Recorded > 0 ? "learned from recording" : "not tested on this engine version yet")
         : p.Recorded > 0 ? "learned from recording" : "shipped with the shaders";
 
@@ -1215,6 +1222,8 @@ public sealed class DetailVm(string id) : Bindable
     long Skipped => s.LastWarmSkipped ?? 0;
     long Crashed => s.LastWarmCrashed ?? 0;
     long DriverSkipped => s.LastWarmDriverSkipped ?? 0;
+    long Known => Math.Min(DriverSkipped, s.LastWarmKnown ?? 0);   // of DriverSkipped
+    long CrashedBefore => Math.Min(Crashed, s.LastWarmCrashedBefore ?? 0);   // of Crashed
     long Unbuilt => s.LastWarmUnbuilt ?? 0;
     public string CompileText => s.WarmedAt is { } at
         ? $"Compiled {Fmt.When(at)}" + (s.LastWarmTime is { } t ? $" in {Format.Duration(t)}" : "") + $", for driver {s.WarmedDriverVersion}."
@@ -1234,8 +1243,9 @@ public sealed class DetailVm(string id) : Bindable
         : string.Join(" ", new[]
         {
             NotInGame > 0 ? $"{NotInGame:N0} {(NotInGame == 1 ? "was" : "were")} skipped: {(NotInGame == 1 ? "its shader isn't" : "their shaders aren't")} in this version of the game. Nothing to do." : null,
-            Crashed > 0 ? $"{Crashed:N0} {(Crashed == 1 ? "was" : "were")} skipped: {(Crashed == 1 ? "it crashes" : "they crash")} the GPU driver. If the game uses {(Crashed == 1 ? "it" : "them")}, it compiles {(Crashed == 1 ? "it" : "them")} itself." : null,
-            DriverSkipped > 0 ? $"{DriverSkipped:N0} {(DriverSkipped == 1 ? "was" : "were")} skipped: the GPU driver crashed or hung on {(DriverSkipped == 1 ? "it or on what it builds" : "them or on what they build")} on, or {(DriverSkipped == 1 ? "it wasn't" : "they weren't")} tried past a spot where it kept failing." : null,
+            Crashed - CrashedBefore is > 0 and var crashedNow ? $"{crashedNow:N0} {(crashedNow == 1 ? "was" : "were")} skipped: {(crashedNow == 1 ? "it crashes" : "they crash")} the GPU driver. If the game uses {(crashedNow == 1 ? "it" : "them")}, it compiles {(crashedNow == 1 ? "it" : "them")} itself." : null,
+            DriverSkipped - Known is > 0 and var now ? $"{now:N0} {(now == 1 ? "was" : "were")} skipped: the GPU driver crashed or hung on {(now == 1 ? "it or on what it builds" : "them or on what they build")} on, or {(now == 1 ? "it wasn't" : "they weren't")} tried past a spot where it kept failing." : null,
+            Known + CrashedBefore > 0 ? ScsKiller.KnownNote(Known + CrashedBefore) + "." : null,
             Unbuilt > 0 ? $"{Unbuilt:N0} {(Unbuilt == 1 ? "was" : "were")} skipped: SCSKiller can't build {(Unbuilt == 1 ? "it" : "them")} yet." : null,
             NeedsRecording > 0 ? $"{NeedsRecording:N0} need{(NeedsRecording == 1 ? "s" : "")} a recording on this PC: the game or a mod builds {(NeedsRecording == 1 ? "its shaders" : "their shaders")} while it runs, so they're in no game file. Play with \"Record while I play\" on to catch them." : null,
         }.OfType<string>());
@@ -1333,7 +1343,7 @@ public sealed class DetailVm(string id) : Bindable
     string Kept => ScsKiller.SessionKeptNote(s) is { } kept ? " " + kept : "";
     public string RecordNote => ScsKiller.CrashNote(s.Game) is { } crash ? crash
         : Risk
-        ? "Each session is confirmed before it starts." + Kept
+        ? (s.AlwaysRecord ? "Every launch is recorded." : "Each session is confirmed before it starts.") + Kept
         : ShowOffline
         ? $"{ScsKiller.AntiCheatName(s)} blocks the recorder, but you can enable it at your own risk with an offline session." + Kept
         : s.RiskNoLaunch ? ScsKiller.NoLaunchNote(Fmt.StoreName(s.Game))
@@ -1364,6 +1374,12 @@ public sealed class DetailVm(string id) : Bindable
     public bool ShowOfflineOn => ShowOffline && OfflineOn;
     public bool OfflineStarting { get; set; }
     public bool CanStartOffline => s.OfflineRecord && OfflinePending == null && !s.OfflineRunning && !s.Playing && !OfflineStarting;
+    // a game a session is offered for, with its switch on: every launch records without the per-launch confirmation
+    public bool ShowAlways => Risk && OfflineOn;
+    public bool? AlwaysPending { get; set; }
+    public bool AlwaysOn => AlwaysPending ?? s.AlwaysRecord;
+    public bool CanToggleAlways => AlwaysPending == null && OfflinePending == null && !OfflineStarting;
+    public bool ShowSessionButton => !(Risk && AlwaysOn) || s.OfflineRunning;
     public string OfflineButtonText => Risk
         ? s.OfflineRunning ? "Session running…" : "Record a session (at your own risk)"
         : s.OfflineRunning ? "Offline session running…" : "Record offline without EasyAntiCheat (at your own risk)";
@@ -1543,9 +1559,12 @@ public sealed class SettingsVm : Bindable
 {
     public static readonly (string Label, CacheLimit Limit)[] Sizes =
     [
-        ("16 GB (driver default)", new(16L << 30, true)), ("32 GB", new(32L << 30, false)),
-        ("100 GB", new(100L << 30, false)), ("Unlimited", new(null, false)),
+        ("512 MB", new(512L << 20, false)), ("1 GB", new(1L << 30, false)), ("4 GB", new(4L << 30, false)), ("5 GB", new(5L << 30, false)),
+        ("10 GB", new(10L << 30, false)), ("12 GB", new(12L << 30, false)), ("16 GB (driver default)", new(16L << 30, true)), ("24 GB", new(24L << 30, false)),
+        ("32 GB", new(32L << 30, false)), ("48 GB", new(48L << 30, false)), ("64 GB", new(64L << 30, false)), ("100 GB", new(100L << 30, false)),
+        ("Unlimited", new(null, false)),
     ];
+    static readonly int DefaultSize = Array.FindIndex(Sizes, s => s.Limit.Bytes == 100L << 30);
     public static readonly string[] SizeLabels = Sizes.Select(s => s.Label).ToArray();
 
     Settings S { get => App.Core.Settings; set { App.Core.Settings = value; Refresh(); } }
@@ -1568,7 +1587,7 @@ public sealed class SettingsVm : Bindable
         }, r =>
         {
             // Preselect the current custom limit, else 100 GB (the mockup's suggestion over the 16 GB default).
-            if (read == null) SizeIndex = Array.FindIndex(Sizes, s => !s.Limit.IsDriverDefault && s.Limit == r.Item1) is >= 0 and var i ? i : 2;
+            if (read == null) SizeIndex = Array.FindIndex(Sizes, s => !s.Limit.IsDriverDefault && s.Limit == r.Item1) is >= 0 and var i ? i : DefaultSize;
             // The checkbox and level show the driver's state after every read (an apply's re-read included); Medium when off.
             AutoOn = r.Item4 is { Level: not AutoShaderCompilation.Off };
             AutoLevelIndex = r.Item4 is { Level: not AutoShaderCompilation.Off and var l } ? (int)l - 1 : 1;
@@ -1634,7 +1653,7 @@ public sealed class SettingsVm : Bindable
     public string FreeLabel => $"Free on {(drive ?? DriveOf(null)).TrimEnd('\\')}";
     public string Free => read?.Free ?? Format.Dash;
 
-    public int SizeIndex { get; set; } = 2;
+    public int SizeIndex { get; set; } = DefaultSize;
     public string? ApplyMessage { get; set; }
     public Microsoft.UI.Xaml.Controls.InfoBarSeverity ApplySeverity { get; set; }
     public bool HasApplyMessage => ApplyMessage != null;

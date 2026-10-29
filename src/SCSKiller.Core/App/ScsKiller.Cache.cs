@@ -44,6 +44,44 @@ public sealed record CacheInventory(IReadOnlyList<CacheFolder> Folders, IReadOnl
         Groups.Where(g => withOthers || g.Kind != CacheGroupKind.Unattributed).SelectMany(g => g.Items).Where(i => !i.Kept).ToList();
 
     public long Bytes(CacheGroupKind kind) => Groups.Where(g => g.Kind == kind).Sum(g => g.Bytes);
+
+    /// <summary>The folders "Open folder" offers for an item (SCSKiller 1.4.0-beta.1): each listed cache folder that holds its
+    /// files, and for files outside them the narrowest folder over them that isn't a drive's root or above a listed folder.
+    /// Two or more: the page lets the user pick.</summary>
+    public IReadOnlyList<string> FoldersOf(CacheItem item)
+    {
+        var listed = Folders.Select(f => Games.GameFiles.DirKey(f.Path)).ToList();
+        List<string> outside = [], inside = [];
+        foreach (var dir in item.Files.Select(f => System.IO.Path.GetDirectoryName(f.Path)).OfType<string>().Where(d => d.Length > 0)
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (listed.FirstOrDefault(l => In(l, dir)) is { } folder)
+            {
+                if (!inside.Contains(folder, StringComparer.OrdinalIgnoreCase)) inside.Add(folder);
+            }
+            else if (!Broad(dir))
+            {
+                int at = outside.FindIndex(o => Common(o, dir) != null);
+                if (at < 0) outside.Add(dir);
+                else outside[at] = Common(outside[at], dir)!;
+            }
+        }
+        return [.. outside.Where(o => !outside.Any(p => Games.GameFiles.Inside(p, o))).Distinct(StringComparer.OrdinalIgnoreCase), .. inside];
+
+        // a drive's root, or a folder above a listed one: too wide to open for one item
+        bool Broad(string d) => System.IO.Path.GetPathRoot(d) is { Length: > 0 } root && In(d, root) || listed.Any(l => In(d, l));
+
+        // the narrowest folder over both that isn't too wide; null = none
+        string? Common(string a, string b)
+        {
+            for (string? d = a; d != null; d = System.IO.Path.GetDirectoryName(d))
+                if (In(d, b)) return Broad(d) ? null : d;
+            return null;
+        }
+
+        static bool In(string d, string path) =>
+            string.Equals(Games.GameFiles.DirKey(d), Games.GameFiles.DirKey(path), StringComparison.OrdinalIgnoreCase) || Games.GameFiles.Inside(d, path);
+    }
 }
 
 /// <summary>What a delete freed, and each unit of files it left with the reason.</summary>
@@ -60,6 +98,9 @@ public sealed partial class ScsKiller
     /// <summary>A compile or warm runs in any SCSKiller process: no cache is deleted meanwhile. Null = this process's queue
     /// or the session-wide compile mutex (<see cref="Busy"/>). Replaceable for tests: other tests hold that mutex.</summary>
     public Func<bool>? CompileRunning { get; set; }
+
+    /// <summary>This process's queue item runs and hasn't shown Done: a failed or stopped one still stops its warm and folds.</summary>
+    bool ItemRunning { get { lock (_lock) return _current is { } c && (_queue.FirstOrDefault(q => q.GameId == c) is not { } q || q.Stage != QueueStage.Done); } }
 
     /// <summary>Exists while a Cache page delete runs: no compile starts meanwhile (<see cref="HoldForCompile"/>).</summary>
     public static string DeletingName => @"Local\SCSKiller.CacheDelete" + Busy.Scope;
@@ -245,7 +286,7 @@ public sealed partial class ScsKiller
         void Claim(GameRecord rec, IEnumerable<string?> exeNames, CacheGroupKind kind, string name, string id)
         {
             // opened only by an earlier compile, neither by the game's own process nor by the last compile: the game doesn't read it
-            var unused = rec.GameKeys.Count > 0 && rec.WarmedKeys is { } warmed ? rec.CacheKeys.Except(rec.GameKeys).Except(warmed).ToHashSet() : [];
+            var unused = rec.CacheKeys.Except(LiveKeys(rec)).ToHashSet();
             var keys = rec.CacheKeys.Select(k => (k, unused.Contains(k) ? CacheGroupKind.OldBuild : kind)).ToList();
             if (own == GpuVendor.Amd)   // the name hash is the key of an exe without an app profile; a learned key's place stands
                 keys.AddRange(exeNames.OfType<string>().Select(AmdAppCache.HintKey).Where(h => !rec.CacheKeys.Contains(h)).Select(h => (h, kind)));
@@ -407,7 +448,8 @@ public sealed partial class ScsKiller
     {
         // held for the whole delete: a compile worker in any process checks it after taking its own hold, and this checks after
         using var deleting = Busy.Hold(DeletingName);
-        if ((CompileRunning ?? (() => Compiling || Busy.IsHeld()))())
+        // an item past Done still refreshes its game under our Busy hold, which isn't another process's compile
+        if ((CompileRunning ?? (() => ItemRunning || !Compiling && Busy.IsHeld()))())
             throw new InvalidOperationException("a compile is in progress: delete caches once it has finished");
         var skipped = new List<string>();
         long bytes = 0;

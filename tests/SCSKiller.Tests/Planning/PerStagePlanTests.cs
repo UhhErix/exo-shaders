@@ -116,9 +116,15 @@ public class PerStagePlanTests(ITestOutputHelper output)
             if (Sha(s, Stage.Pixel) == Ps3.Sha1) Assert.Equal(([41u, 41u], new byte[] { 0xF, 0 }), (s.RtFormats, s.RtWriteMasks));
             else Assert.Equal([R16G16B16A16Float], s.RtFormats);
 
-        // guesses last
-        var firstGuess = psos.FindIndex(p => Sha(p.State, Stage.Vertex) == Vs3.Sha1);
-        Assert.All(psos.Skip(firstGuess), p => Assert.Equal(Vs3.Sha1, Sha(p.State, Stage.Vertex)));
+        // guesses last within a rank (SCSKiller 1.4.0-beta.1): with a recording, the stages alone come before the pairings
+        // the planner makes up itself
+        var alone = psos.Where(p => p.State.Stages.Count == 1).ToList();
+        Assert.Equal(alone, psos.Take(alone.Count));
+        foreach (var rank in new[] { alone, pairs })
+        {
+            var firstGuess = rank.FindIndex(p => Sha(p.State, Stage.Vertex) == Vs3.Sha1);
+            Assert.All(rank.Skip(firstGuess), p => Assert.Equal(Vs3.Sha1, Sha(p.State, Stage.Vertex)));
+        }
 
         // stats: VS3's two units are the only guesses; 2 of 3 VSs resolved from the recording (L0 VS1, L1 VS2): a warning
         Assert.Equal((2L, psos.Count), (plan.Stats.Recorded, (int)plan.Stats.Generated));

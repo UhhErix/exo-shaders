@@ -137,6 +137,8 @@ the engine compile by itself: a compile starts only from a request (`game.compil
 | `hddMode` | `false` (the engine default) |
 | `onDriverUpdate` | `ask`: no automatic compile; the games a driver update cleared read "Needs rebuilding" and `driverStale` lists them (the scheduled re-warm task is never registered, see Process) |
 | `onNewShaders` | `notify` (no automatic compile) |
+| `driverRightAway`, `newShadersRightAway` (1.4.0-beta.1) | `false`: the "right away" variants of the automatic modes above, which the policy doesn't use |
+| `traversal`, `traversalAsked` (1.4.1-alpha.1) | not touched: off by default, the official app's choice (and its one-time question) where it made one, else `settings.setTraversal`, which also marks the question answered |
 | `compileNewGames` | `false`: a game never compiled waits for Compile like every other |
 | `scanAtStart`, `recordAllGames` | `true` |
 | `recordAntiCheatGames` | `false` |
@@ -147,7 +149,7 @@ the engine compile by itself: a compile starts only from a request (`game.compil
 | `activeCheck`, `activeCheckAsked` (beta.2) | `false`, `true`: the anonymous daily check stays off and is never asked about (its client isn't wired either) |
 | `beforeAfter*`, `theme`, `startWithWindows`, `shareDiagnostics` | not touched |
 
-Per game: API override cleared (Auto: a game that ships both DirectX 11 and 12 is planned for both), new-shaders mode
+Per game: the traversal fix's override isn't touched (`game.setTraversal`). API override cleared (Auto: a game that ships both DirectX 11 and 12 is planned for both), new-shaders mode
 and ray tracing back to the global values, "left out of compile all ready" off, a recorder turned off goes back to the
 default (anti-cheat games are never recorded), careful compile on whenever the engine offers it (AMD), Maximum on
 exactly for the games the engine's list suggests it for on this GPU vendor.
@@ -185,7 +187,9 @@ type App = {
   statusLine: string            // tray tooltip line: "Idle", "Compiling Cyberpunk 2077, 42%", "Paused: X", "Preparing X"
   scanning: boolean
   scanProgress?: string         // "Checking each game… 12 of 80"
-  afterUpdateLine?: string      // "Checking your games after the update. This can take a few minutes."
+  afterUpdateLine?: string      // work nobody started (1.3.4): "Checking your games after the update. This can take a few
+                                //   minutes.", "Updating plans: 2 of 5 games", "Handing the compile to X's cache: 40%",
+                                //   "Reading game shaders for the recorder: 3 left", "Checking games again after the update: 2 left"
   summary: string               // "80 games found in 4 stores · 12 ready to compile"
   readyCount: number            // "Add all ready (N)" (ready/stale, not queued, not left out of add-all)
   recommendedCount: number      // "Add all recommended (N)"
@@ -207,6 +211,8 @@ type App = {
     isDriverDefault: boolean,
     percent: number,            // 0..100 bar
     warn?: string,              // "Driver default limit may evict games" | "The cache is nearly full"
+    off?: string,               // 1.4.0-beta.1, NVIDIA: "The NVIDIA shader cache is turned off" (Shader Cache Size 0): compiles fail with
+                                // "the NVIDIA shader cache is turned off, set Shader Cache Size to a size in the NVIDIA Control Panel, then compile"
     configurable: boolean,      // driver.setCacheLimit available (NVIDIA)
     largest: boolean,           // the limit is already the largest there is (no limit)
     notConfigurableText?: string,
@@ -344,6 +350,16 @@ type Game = {
   dxvk?: {compiled: boolean, text: string}  // beta.2: DXVK (its d3d11.dll/dxgi.dll) runs the game on Vulkan; compiled = NVIDIA compiles
                                 // through DXVK's own d3d11.dll ("...the compile covers it on NVIDIA"), else "...the compile isn't used".
                                 // Not repeated in statusReason.
+  keptApisNote?: string         // 1.4.0-beta.1: "Also compiled for DirectX 11." (or "... on an older driver (617.42).") when the game
+                                // switched graphics API and its compile for the other one is kept (it comes back when the game does)
+  traversal?: {                 // 1.4.1-alpha.1's experimental traversal stutter fix; absent where it can't run (Vulkan, DirectX 11's
+                                // recorder, any anti-cheat incl. VAC, a recorder skip)
+    on: boolean,                // the recorder's scskiller.ini turns it on (it runs while the recorder is in the game)
+    override: "default" | "on" | "off",   // game.setTraversal
+    defaultOn: boolean,         // what "default" means now (settings.traversal "all")
+    note: string,               // "May reduce stutter when the game loads a new area. ... Recommended for GPUs with more than 8 GB of VRAM."
+    lowVram?: string            // "Your GPU reports 8 GB of VRAM or less. Games may crash with the fix enabled."
+  }
   cacheLimitWarning?: string    // beta.2, NVIDIA: this game's estimated cache is more than the driver's shader cache limit (engine text,
                                 // "...Raise the limit in Settings before you compile"); the queue's cacheWarning says the same for the queue
   error?: string                // last error of an action on this game (the app's red info bar on the game page); cleared by the next success
@@ -372,17 +388,19 @@ type QueueItem = {
   id: string, name: string, number: number,
   stage: "waiting" | "indexing" | "planning" | "materializing" | "warming" | "paused" | "done" | "failed" | "stopped"
   stageText: string             // "Reading shaders", "Building plan", "Preparing files", "Compiling", "Paused: ...", and after
-                                //   the compile (stage "warming", done/total/perSecond absent): "Copying the cache to the
-                                //   game's folder" (percent), "Saving the driver's cache", "Finishing up"
+                                //   the compile (stage "warming", done/total/perSecond absent): "Handing the compile to the
+                                //   game's cache" (percent), "Saving the driver's cache", "Finishing up"
   detail?: string               // "Compiling · 42.0% · 12,000 of 28,000 pipelines · 450/s"
   progressText?: string         // "42.0% · 12,000 of 28,000 pipelines · 450/s · 3 failed"
   percent?: number              // absent = indeterminate
   done?: number, total?: number, failed?: number, skipped?: number, perSecond?: number
   time: string                  // "12 min left" | "12 min" | "—" (finished: last compile time)
   timeLeftSeconds?: number
-  note: string                  // "starts when the PC is idle", "Failed: ...", "Stopped at x of y: add it again to continue", "Done · ..."
+  note: string                  // "starts when the PC is idle", "starts when no game is running" (1.4.0-beta.1's right-away items),
+                                // while the running item waits: "paused until the PC is idle", "paused while a game runs", "waiting for an
+                                // earlier compile to go into its game's shader cache"; "Failed: ...", "Stopped at x of y: add it again to continue", "Done · ..."
   cache: string                 // game's cache text
-  whenIdle: boolean
+  whenIdle: boolean             // waits to run by itself, for the PC to be idle or (right-away) for no game running
   error?: string
 }
 ```
@@ -412,6 +430,7 @@ type Settings = {
   theme: "system" | "light" | "dark"   // stored for the official app; the service ignores it
   startWithWindows: boolean     // stored only: starting the service with Windows is the host's job
   shareDiagnostics: boolean     // stored only: the service never uploads
+  traversal: "off" | "all"      // 1.4.1-alpha.1's traversal stutter fix for every game it applies to (settings.setTraversal)
   meta: {                       // read-only helpers for the settings UI
     processorCount: number, autoCompileMemoryGB: number, ramGB: number, maxCompileMemoryGB: number,
     maxCompileMemoryText: string, maxCompileMemoryNote: string, priorityNote: string,
@@ -496,6 +515,7 @@ to the settings policy; their setters are refused.
 |---|---|
 | `game.setAesKey` | `{id, key: string}` → `{ok: true}` or error `"That key didn't work: It doesn't open this game's files."` (the key is "0x followed by 64 hex digits"; verified, kept locally). The game is rescanned after a good key. |
 | `game.play` | `{id}` → `{ok: true}` or error: puts a kept-aside cache back, then starts the game through its store (or arms/launches the before/after run). Error e.g. `"Start X from its own launcher"`. |
+| `game.setTraversal` | `{id, value: "default" \| "on" \| "off"}` → `{ok: true}`: the traversal stutter fix for this game (1.4.1-alpha.1, experimental). Not the policy's. Error `"The traversal stutter fix doesn't apply to this game."` where `traversal` is absent (never an anti-cheat game). The recorder's ini is written again (when the game exits, if it runs). Refused in `--safe`. |
 
 ### Game caches
 
@@ -595,7 +615,8 @@ type Inventory = {
 
 | method | params | result |
 |---|---|---|
-| `settings.get` | – | `Settings` (read-only: the settings policy sets them) |
+| `settings.get` | – | `Settings` (read-only: the settings policy sets them, `traversal` aside) |
+| `settings.setTraversal` | `{mode: "off" \| "all"}` | `Settings`: the traversal stutter fix for every game it applies to, or none (games' own overrides stay). Every recorder's scskiller.ini is written again. Refused in `--safe`. |
 | `driver.setCacheLimit` | `{index}` (`settings.meta.cacheSizes`) | NVIDIA shader cache size. Runs the bundled CLI elevated (Windows asks for administrator permission), as the app does. `{ok: true, text}` / `{ok: false, text}` (`"Cancelled."` when UAC is declined). Confirm first with `CACHE_LIMIT_CONFIRM`. |
 | `driver.setCleanupGuard` | `{on: boolean}` | `on`: Windows' automatic cleanup (SilentCleanup, Storage Service) no longer runs the DirectX Shader Cache handler, which can empty D3DSCache, where NVIDIA from 621 keeps compiled pipelines; `off`: undo. Clears or sets bit 0 of that handler's `Autorun` value only. Runs the bundled CLI elevated (`cleanup-guard on\|off`). `{ok, text}` as `driver.setCacheLimit`. |
 

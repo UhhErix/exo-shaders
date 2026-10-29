@@ -389,8 +389,26 @@ public sealed partial class MainWindow : Window
             }
         }
 
+        // A D3DSCache fold after a game's exit: the Library's line and the game page's. SCSKILLER_SHOTS=folding takes only these.
+        async Task Folding()
+        {
+            var g = fake.Games[0].Game;
+            (fake.Folding, fake.AfterUpdateLine) = (g.Id, ScsKiller.FoldText(g.Name + "'s", 42));
+            foreach (var theme in themes)
+            {
+                Root.RequestedTheme = theme;
+                Navigate(typeof(LibraryPage));
+                await Shot("library-folding");
+                Navigate(typeof(DetailPage), g.Id);
+                await Shot("detail-folding");
+            }
+            (fake.Folding, fake.AfterUpdateLine) = (null, null);
+            Root.RequestedTheme = ElementTheme.Dark;
+        }
+
         switch (Environment.GetEnvironmentVariable("SCSKILLER_SHOTS"))
         {
+            case "folding": await Folding(); Application.Current.Exit(); return;
             case "dlss": await Dlss(); Application.Current.Exit(); return;
             case "asd": await Asd(); Application.Current.Exit(); return;
             case "amd-profiles": await AmdProfiles(); Application.Current.Exit(); return;
@@ -398,6 +416,7 @@ public sealed partial class MainWindow : Window
         }
         await AmdProfiles();
         await Problem();
+        await Folding();
 
         // A scan in progress: first run (nothing listed yet), its games listed before they're read, then a rescan.
         fake.HideGames = true;

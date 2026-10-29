@@ -27,6 +27,25 @@ public sealed class AmdAppCache(string dxcDir, string dxDir, string? vkDir = nul
 
     public static readonly string[] VulkanTypes = [".parc"];
 
+    static ReadOnlySpan<byte> ParcMagic => [0x23, 0xD8, 0xFA, 0xE7, 0x0F, 0x5F, 0x47, 0xBE, 0x8B, 0xD1, 0x48, 0xF5, 0xD8, 0xF0, 0xB4, 0xA7];
+
+    /// <summary>Whether a .parc holds entries: the tag at the offset its header's u32 at 24 names (28-60) is "NTRY" for an
+    /// entry, "FOTR" when its footer comes first (none). Null: not a .parc of this layout, or unread (SCSKiller 1.4.1-alpha.2).</summary>
+    public static bool? HasEntries(string path)
+    {
+        Span<byte> head = stackalloc byte[64];
+        try
+        {
+            using var f = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            f.ReadExactly(head);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }   // EndOfStreamException too: shorter than a header
+        var at = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(head[24..]);
+        if (!head[..16].SequenceEqual(ParcMagic) || at is < 28 or > 60) return null;
+        var tag = head.Slice((int)at, 4);
+        return tag.SequenceEqual("NTRY"u8) ? true : tag.SequenceEqual("FOTR"u8) ? false : null;
+    }
+
     /// <summary>"207c35a9.dfac411e.71efbc0e.2b1a674a.0.parc" in DxcCache -> "dxc:207c35a9"; null for anything else.</summary>
     public static string? Key(string fileName, bool d3d12)
     {

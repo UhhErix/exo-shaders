@@ -400,7 +400,7 @@ public partial class AppTests
         var s = k.Games.Single();
         Assert.Equal(skipped ? ScsKiller.SkipStreamline : null, s.RecorderSkip);
         Assert.Equal(!skipped, File.Exists(dll));
-        Assert.Equal(skipped ? GameStatus.Unsupported : GameStatus.NeedsRecording, s.Status);
+        Assert.Equal(GameStatus.NeedsRecording, s.Status);   // 1.3.4: the game files' plan stands, never Not supported for DLSS
         if (skipped) Assert.Contains(ScsKiller.StreamlineNoRecording, s.StatusReason);
         Assert.False(s.NotPlanned);   // no anti-cheat: "Not supported yet"
     }

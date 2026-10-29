@@ -60,6 +60,12 @@ internal sealed partial class Host
             CompileNewGames = false,
             OnDriverUpdate = DriverUpdateMode.Ask,
             OnNewShaders = NewShadersMode.Notify,
+            // 1.4.0-beta.1's "right away" variants of the two automatic modes: off with them
+            DriverRightAway = false,
+            NewShadersRightAway = false,
+            // Traversal and TraversalAsked (1.4.1-alpha.1's experimental fix and the official app's one-time question about
+            // it) aren't the policy's: off by default, the official app's choice where it made one, settings.setTraversal
+            // and game.setTraversal otherwise. Never in an anti-cheat game (TraversalFix.Applies).
             ScanAtStart = true,
             RecordAllGames = true,
             RecordAntiCheatGames = false,

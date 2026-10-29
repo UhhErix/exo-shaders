@@ -11,7 +11,7 @@ ENDM
 
 .code
 i = 0
-REPT 256
+REPT 1024
     STUB %i
     i = i + 1
 ENDM
