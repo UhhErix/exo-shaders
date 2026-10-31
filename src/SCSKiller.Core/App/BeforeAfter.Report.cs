@@ -58,6 +58,9 @@ public static partial class BeforeAfter
         return new(subtitle, tiles, rows, notes);
     }
 
+    /// <summary>The card's corner line: the app and, with the GPU shown, its driver (a driver version names the vendor).</summary>
+    public static string Versions(string? driver) => $"SCSKiller {AppVersion.Current}" + (driver == null ? "" : $"  ·  driver {driver}");
+
     /// <summary>The card's footer: the play, the swap chain's size (all SCSKiller knows of the settings) and, when shown, the GPU.</summary>
     public static string Footer(BeforeAfterResult r, string? gpu)
     {

@@ -28,17 +28,17 @@ sealed class PlanBuilder
     readonly IReadOnlyDictionary<string, ShaderInfo> bc;
     /// <summary>Shader maps; Global shaders pair across maps (one fullscreen VS serves pixel shaders from many global maps): pooled.</summary>
     readonly List<(string Platform, bool Pooled, IReadOnlyList<string> Shas, bool IsPipeline, string? Rs)> maps;
-    bool mapRoots;            // a map names its pipelines' root signature (ShaderMap.RootSignature), or the recording gave passes theirs
+    bool mapRoots;   // a map names its pipelines' root signature (ShaderMap.RootSignature)
+    IReadOnlyList<ShaderMap> indexMaps;   // the index's maps, with a library's copy the recording picks (PickCopies)
+    int passRoots;   // of those, the BlackSpace passes whose root the recording gave (LearnPassRoots)
     string? mapRs;            // ...the one StageSets is walking
-    int passRoots;            // BlackSpace render passes given their root signature from the recording (LearnPassRoots)
     readonly Dictionary<string, string> platOfSha = [];
+    /// <summary>The input layouts shipped pipelines are created with (<see cref="ShaderMap.Layout"/>), by <see cref="ShaderSet"/>.</summary>
+    readonly Dictionary<string, List<List<LayoutElem>>> shippedLayouts = [];
     readonly RulesFile rules;
     readonly PlanRule rule;
     readonly uint maxSrvs; // the game's MAX_SRVS when its shaders need more than the rule's (0 = the rule's)
     bool nvExtension; // RootSig.NvExtensionEverywhere, confirmed by the recording's own root signatures or, without them, by a rule naming the game
-    // the vertex declarations the game ships for whole pipelines (ShaderMap.Layout, Unreal's stable pipeline cache), by
-    // their shader set (ShaderSet): a per-stage plan takes them for a VS the recording has no layout of (1.4.0-beta.1)
-    readonly Dictionary<string, List<List<LayoutElem>>> shippedLayouts = [];
 
     // the recording
     readonly List<Rec> recs = [];   // PSO records ('G' / 'C' / 'S'): what plans are built from
@@ -57,15 +57,12 @@ sealed class PlanBuilder
     readonly Dictionary<string, byte[]> samplerSets = [];          // ...each by its hex
     List<string>? keptSets;   // the settings the plan compiles (Recording.Filtering), its own first; null: every one
     int builtOk, builtN, ownOk, ownN; // own: recorded PSOs whose shaders carry a root signature, and those created with it
-    // the rule rebuilt half or more of the recorded root signatures but not 99% (RuleFallback): a learned lookup, and the
-    // rule's own for the stage sets no recorded one covers, with the samplers of the first it rebuilt (1.4.0-beta.1)
-    bool ruleFallback;
-    long fallbackSets;      // ...the stage sets that took the rule's
-    byte[]? ruleSamplers;   // ...the static samplers of the first recorded root signature the rule rebuilt
-    bool rowsUnlinked;      // RootSigOf's last null: the stage set's PS reads rows its feeding stage doesn't write (Planner.PsRowsLink)
 
     // decided from the recording and the caps
     bool verified, build, synth, dx12;
+    bool ruleFallback;   // a learned lookup the rule rebuilt enough of: the rule plans the stage sets it has no root signature for
+    long fallbackSets;
+    byte[]? ruleSamplers;   // the static samplers of the first recorded root signature the rule rebuilt
     string plat = "";
     int embeddedRs;
     string? plat11;
@@ -93,6 +90,9 @@ sealed class PlanBuilder
     long? cacheLeftOut;   // per-stage plans on a cache whose state is in the key: cover PSOs left out for CacheBudget; pairing plans under a warm budget: generated ones
     int extrasRoom = int.MaxValue;   // ...and the PSOs left under it after the cover, per filtering setting: Maximum's pairings fit there
 
+    /// <summary>A step's count as it runs (<see cref="Planner.Steps"/>): what it counts, done, total (0 = not known yet).</summary>
+    public Action<string, long, long>? Steps { get; init; }
+
     /// <param name="maximum">with a per-stage cache: also every stage set whose units the cover already has, on its first
     /// resolved state (every pre-linked pair, as a whole-pipeline plan has them); the units stay the same</param>
     public PlanBuilder(Game game, EngineInfo engine, ShaderIndex index, Recording? recording, VendorCaps caps, string outDir,
@@ -103,43 +103,34 @@ sealed class PlanBuilder
         (this.game, this.engine, this.index, this.recording, this.caps, this.outDir, this.log, this.ct, this.maximum, this.packs, this.sharedPacks, this.rayTracing) =
             (game, engine, index, recording, caps, outDir, log, ct, maximum, packs, sharedPacks, rayTracing);
         this.budget = budget ?? new PlanBudget(long.MaxValue, TimeSpan.MaxValue);
-        budgetPsos = (cacheBudget ?? CacheBudgetOf(caps)) / PsoBytesOf(caps);
+        budgetPsos = (cacheBudget ?? TestCacheBudget(caps) ?? CacheBudgetOf(caps)) / PsoBytesOf(caps);
         this.budget.Progress = () => $"{seen.Count:N0} stage sets";
         this.rules = rules ?? RulesFile.Current;
         bc = index.Shaders;
-        maps = index.Maps.Select(m => (m.Platform, Pooled: false, Shas: m.Shaders, m.IsPipeline, Rs: m.RootSignature)).ToList();
-        maps.AddRange(index.Maps.Where(m => m.Library == "Global").GroupBy(m => m.Platform)
-            .Select(g => (g.Key, true, (IReadOnlyList<string>)g.SelectMany(m => m.Shaders).Distinct().ToList(), false, (string?)null)));
-        mapRoots = maps.Any(m => m.Rs != null);
+        indexMaps = index.Maps;
+        maps = [];
+        Plan(indexMaps);
         foreach (var m in index.Maps) foreach (var h in m.Shaders) platOfSha[h] = m.Platform;
+        foreach (var m in index.OtherCopies ?? []) foreach (var h in m.Shaders) platOfSha.TryAdd(h, m.Platform);
         foreach (var m in index.Maps)
-            if (m.Layout is { } layout && ExactLayouts.ValidSlots(layout))
-            {
-                var key = ShaderSet(m.Shaders);
-                if (!shippedLayouts.TryGetValue(key, out var known)) shippedLayouts[key] = known = [];
-                if (!known.Any(l => l.SequenceEqual(layout))) known.Add([.. layout]);
-            }
+        {
+            if (m.Layout is not { } layout || !ExactLayouts.ValidSlots(layout)) continue;
+            var k = ShaderSet(m.Shaders);
+            if (!shippedLayouts.TryGetValue(k, out var known)) shippedLayouts[k] = known = [];
+            if (!known.Any(l => l.SequenceEqual(layout))) known.Add([.. layout]);
+        }
         rule = this.rules.RuleFor(engine) ?? RulesFile.Embedded.Rules.Single(r => r.Id == "ue-ff7"); // no rule: FF7's is what a recording gets checked against
         maxSrvs = RootSig.MaxSrvsFor(rule, bc.Values);
-        viRule = this.rules.ViFor(engine)?.ViewInstancing;
         nvExtension = caps.Profile.StartsWith("nvidia") && RootSig.NvExtensionEverywhere(rule, bc.Values);
+        viRule = this.rules.ViFor(engine)?.ViewInstancing;
     }
-
-    /// <summary>The share of the recorded root signatures the rule must rebuild for a learned lookup to take the rule's for
-    /// the stage sets it has none for (below 99%, where the rule builds them all).</summary>
-    public const double RuleFallbackShare = 0.5;
-
-    /// <summary>The rule rebuilt <paramref name="ok"/> of <paramref name="n"/> recorded root signatures: at least half, not 99%.</summary>
-    public static bool RuleFallback(long ok, long n) => n > 0 && ok < 0.99 * n && ok >= RuleFallbackShare * n;
-
-    /// <summary>A stage set's shaders, in one order, as one key.</summary>
-    static string ShaderSet(IEnumerable<string> shas) => string.Join(',', shas.Order(StringComparer.Ordinal));
 
     public Plan Build()
     {
         using (recBlobs)
         {
             ReadRecording();
+            PickCopies();
             Decide();
             if (dx12) RuntimeBuilt();
             if (!pairs) log?.Report("Only the recorded pipelines planned: no shader pairings or ray tracing");
@@ -241,11 +232,56 @@ sealed class PlanBuilder
             + $"{shas.Count(recBlobs.ContainsKey)} of those shaders are in this PC's recording and replay from it; a shared recording flags those PSOs as needing a recording");
     }
 
+    void Plan(IReadOnlyList<ShaderMap> from)
+    {
+        maps.Clear();
+        maps.AddRange(from.Select(m => (m.Platform, Pooled: false, Shas: m.Shaders, m.IsPipeline, Rs: m.RootSignature)));
+        maps.AddRange(from.Where(m => m.Library == "Global").GroupBy(m => m.Platform)
+            .Select(g => (g.Key, true, (IReadOnlyList<string>)g.SelectMany(m => m.Shaders).Distinct().ToList(), false, (string?)null)));
+        mapRoots = maps.Any(m => m.Rs != null);
+    }
+
+    /// <summary>A library with copies at one path (<see cref="ShaderIndex.OtherCopies"/>) is planned from the copy that holds the
+    /// most recorded pipelines whole (their stages in that library), the mount order's pick on a tie: the recording is what the
+    /// game read (Marvel Rivals draws from an older patch's copy, not the newest one's). The other copies only name platforms.</summary>
+    void PickCopies()
+    {
+        static string Archive(string copy) => copy[..copy.IndexOf('|')];   // a container path may hold '|' on Linux, an archive path doesn't
+        if (index.OtherCopies is not { Count: > 0 } others || recs.Count == 0) return;
+        var stageSets = recs.Select(r => Parse(r).Stages.Values.ToList()).Where(st => st.All(bc.ContainsKey)).ToList();
+        var picked = new List<ShaderMap>(indexMaps);
+        var changed = false;
+        foreach (var lib in others.GroupBy(m => Archive(m.Copy!)))
+        {
+            var copies = new List<(string? Copy, List<ShaderMap> Maps)> { (null, indexMaps.Where(m => m.Copy != null && Archive(m.Copy) == lib.Key).ToList()) };
+            copies.AddRange(lib.GroupBy(m => m.Copy).Select(g => (g.Key, g.ToList())));
+            var sets = copies.Select(c => c.Maps.SelectMany(m => m.Shaders).ToHashSet()).ToList();
+            var any = sets.SelectMany(x => x).ToHashSet();
+            var whole = new int[copies.Count];
+            foreach (var st in stageSets)
+                if (st.Where(any.Contains).ToList() is { Count: > 0 } own)
+                    for (var i = 0; i < copies.Count; i++)
+                        if (own.All(sets[i].Contains)) whole[i]++;
+            var best = Array.IndexOf(whole, whole.Max());
+            if (best == 0) continue;
+            picked.RemoveAll(m => m.Copy != null && Archive(m.Copy) == lib.Key);
+            picked.AddRange(copies[best].Maps);
+            changed = true;
+            log?.Report($"{lib.Key}: planned from {copies[best].Copy![(lib.Key.Length + 1)..]}'s copy, {whole[best]:N0} recorded pipelines whole in it, {whole[0]:N0} in the copy the mount order picks");
+        }
+        if (!changed) return;
+        indexMaps = picked;
+        Plan(indexMaps);
+    }
+
     /// <summary>Templates by shape, platform in use, and a check that root signatures rebuild from shader counts.</summary>
     void ReadRecording()
     {
-        if (recording != null)
+        long read = 0;
+        if (recording != null && File.Exists(recording.DbPath))   // a Steam-only recording (VulkanSources) has no db
             foreach (var r in recBlobs.Read(recording.DbPath))   // every record but 'B', which recBlobs keeps
+            {
+                Steps?.Invoke("recording entries read", ++read, 0);
                 if (r.Tag is 'G' or 'C' or 'S') recs.Add(r);
                 else if (!rayTracing && Planner.LeftOutWithoutRt(r)) continue;
                 else if (IsStateObject(r.Tag)) stateObjects.Add(r);
@@ -254,6 +290,7 @@ sealed class PlanBuilder
                 else if (r.Tag == 'D')
                     try { draws11.Add(ParseDraw11(r.Payload)); }
                     catch (Exception e) when (e is InvalidDataException or ArgumentException or OverflowException or IndexOutOfRangeException) { }   // a record from a newer proxy
+            }
         // a root signature the readers can't follow (a shared recording's) goes with the records naming it, not the game
         var named = recs.Select(r => Parse(r).Rs).Concat(stateObjects.SelectMany(r => ParseStateObject(r).RootSignatures)).ToHashSet();
         var bad = named.Where(h => recBlobs.TryGetValue(h, out var b) && !Carved.Dxbc.RootSignatureValid(b)).ToHashSet();
@@ -270,8 +307,12 @@ sealed class PlanBuilder
                 ? 2 * recorded.Count(blob => RootSig.Parse(blob).Slots.Any(x => x is { Type: 1, Space: 1001 })) > recorded.Count
                 : rule.RootSignature?.Stock?.NvExtensionEverywhere == true;
         var unbuilt = 0;
+        long checkedRecs = 0;
+        // compiles run through a copy of the game's layer, whose add-on injects into the rule's root signatures as into the game's
+        var injecting = Games.ReShade.Detect(game, engine) is { Layered: true, ShaderMod.Kind: Games.AddonKind.LayoutInjecting };
         foreach (var r in recs)
         {
+            Steps?.Invoke("recorded pipelines checked", ++checkedRecs, recs.Count);
             var pso = Parse(r);
             // a layer's output (what the driver got, 'W'): replayed as recorded, never a template nor a rule check
             if (layered.Contains(r.Key) || !pso.Stages.Values.All(bc.ContainsKey)) { have.Add(pso.Tuple); continue; } // not a library shader (e.g. an overlay's): no template
@@ -281,7 +322,8 @@ sealed class PlanBuilder
                 ownN++;
                 if (own == pso.Rs) ownOk++;
             }
-            if (recBlobs.TryGetValue(pso.Rs, out var rsBlob))
+            // recorded through the add-on with no 'W' pair: ReShade re-serializes what it changes, so its bytes never match the rule
+            if (recBlobs.TryGetValue(pso.Rs, out var rsBlob) && !(injecting && Injected(rsBlob, st)))
             {
                 // the rule's rebuild with these samplers the runtime won't serialize (its ranges overlap them): the rule
                 // doesn't reproduce this one, which still replays as recorded
@@ -350,7 +392,7 @@ sealed class PlanBuilder
         if (stages.Values.FirstOrDefault(h => bc[h].ViewId) is not { } h) return null;
         if (recordedViews.TryGetValue(h, out var v)) { viewIdShaders[0].Add(h); return v; }
         if (!ruleViews.TryGetValue(h, out v))
-            ruleViews[h] = v = viRule != null && (viRule.Libraries == null || index.Maps.Any(m => viRule.Libraries.Contains(m.Library) && m.Shaders.Contains(h))) ? viRule.Bytes() : null;
+            ruleViews[h] = v = viRule != null && (viRule.Libraries == null || indexMaps.Any(m => viRule.Libraries.Contains(m.Library) && m.Shaders.Contains(h))) ? viRule.Bytes() : null;
         viewIdShaders[v != null ? 1 : 2].Add(h);
         return v;
     }
@@ -393,9 +435,8 @@ sealed class PlanBuilder
         verified = fromRecording ? builtOk >= 0.99 * builtN : RootSig.Verified(rules.RuleFor(engine), engine);
         build = fromRecording ? verified : rules.RuleFor(engine) != null;
         ruleFallback = RuleFallback(builtOk, builtN) && rules.RuleFor(engine) != null;
-        // the rule's root signatures need samplers it rebuilds with: the recorded ones it matched
-        if (ruleFallback) samplers = ruleSamplers ?? samplers;
-        else if (recording?.Filtering is (var order, var keep) && samplers is { } first)   // the recorded primary's sampler family only
+        if (ruleFallback) samplers = ruleSamplers ?? samplers;   // the first recorded one may be a root signature the rule doesn't make
+        if (!ruleFallback && recording?.Filtering is (var order, var keep) && samplers is { } first)   // the recorded primary's sampler family only
         {
             var family = SamplerVariants.OtherSettings(new HashSet<string> { Convert.ToHexStringLower(first) }, settings.Values);
             family.Add(Convert.ToHexStringLower(first));
@@ -412,23 +453,24 @@ sealed class PlanBuilder
             : new[] { "PCD3D_SM6", "PCD3D_SM5" }.FirstOrDefault(index.Platforms.Contains) ?? index.Platforms.FirstOrDefault() ?? "";
         embeddedRs = bc.Values.Count(s => s.RootSignature != null);
         LearnPassRoots();
-        // passes given a root signature by the recording still take the learned lookup where theirs doesn't cover a stage set
         if (!build && !ruleFallback && embeddedRs == 0 && (!mapRoots || passRoots > 0) && !maps.Any(m => m.Pooled)) Learned();
         rasterNv = RasterNv(caps, engine.Family, recs, nvRecs, nvExtension);
         // Gears of War: E-Day's recording sets the slot around 12,867 of its 12,883 compute creates and no graphics one
         nvComputeOnly = rasterNv != null && nvExtension && LearnedRasterNv(recs, nvRecs) == null;
         if (rasterNv is { } nvs) log?.Report($"NVAPI: synthesized {(nvComputeOnly ? "compute " : "")}PSOs get shader-extension slot {nvs.Slot} space {nvs.Space} (options {nvs.Options})");
         var ownOnly = embeddedRs > 0 && ownN == builtN; // every recorded PSO the rule was checked on carries its own: the rule plans nothing
-        if (dx12) log?.Report($"recorded: {recs.Count} PSOs{(stateObjects.Count > 0 ? $" + {stateObjects.Count} ray tracing state objects (replayed as recorded)" : "")}, platform {plat}; "
+        if (dx12) log?.Report($"{game.Name}: recorded: {recs.Count} PSOs{(stateObjects.Count > 0 ? $" + {stateObjects.Count} ray tracing state objects (replayed as recorded)" : "")}, platform {plat}; "
             + (ownOnly ? "" : $"root sigs rebuilt from shader counts: {builtOk}/{builtN} exact -> " + (build ? "building" : ruleFallback ? "learned lookup, the rule for the rest" : "learned lookup")) + (maxSrvs > 0 ? $" (SRV tables of {maxSrvs}, not Unreal {engine.Version}'s {rule.RootSignature!.Stock?.MaxSrvs}: {(maxSrvs == 128 ? "the bindless fork's" : "its shaders bind more")})" : "")
             + (embeddedRs > 0 ? $"{(ownOnly ? "" : "; ")}{embeddedRs} shaders carry their own root signature{(ownN > 0 ? $", {ownOk}/{ownN} recorded PSOs created with it" : "")}" : "") + (synth ? ", synthesized templates allowed" : "")
             + (nvExtension ? "; NVIDIA extension table (u0 space 1001) in every root signature: its shaders bind it without Unreal's extension flag" : ""));
 
-        // D3D11: every shader of the game's SM5 platform once (Unreal PCD3D_SM5; the carver's DXBC containers), no pairing;
+        // D3D11: every shader of the game's DXBC platforms once (Unreal PCD3D_SM5, and PCD3D_ES3_1, the feature level a D3D11
+        // game may run instead, as Fortnite's Performance mode does; the carver's DXBC containers), no pairing;
         // hull and domain shaders as HS+DS pairs of one map (the warm needs both to draw), every one in at least one pair
-        plat11 = index.Platforms.Contains("PCD3D_SM5") ? "PCD3D_SM5" : null;
+        string[] plats11 = [.. new[] { "PCD3D_SM5", "PCD3D_ES3_1" }.Where(index.Platforms.Contains)];
+        plat11 = plats11.Length > 0 ? string.Join('/', plats11) : null;
         if (!engine.GraphicsApi.StartsWith("D3D11") || Planner.D3D11Stages(caps) is not { } stages11) return;
-        var maps11 = index.Maps.Where(m => m.Platform == (plat11 ?? m.Platform)).Select(m => m.Shaders.Where(h => bc.TryGetValue(h, out var s) && Planner.IsD3D11(s)).Select(h => bc[h]).ToList()).ToList();
+        var maps11 = indexMaps.Where(m => plats11.Length == 0 || plats11.Contains(m.Platform)).Select(m => m.Shaders.Where(h => bc.TryGetValue(h, out var s) && Planner.IsD3D11(s)).Select(h => bc[h]).ToList()).ToList();
         // a VS without vertex input needs no layout: its '1' item draws it as the game does (a triangle list behind a PS)
         d3d11 = maps11.SelectMany(m => m).Where(s => s.Stage is not (Stage.Hull or Stage.Domain)
             && (stages11.Contains(s.Stage) || s.Stage == Stage.Vertex && s.Inputs.All(i => i.SysValue != 0))).Select(s => s.Sha1).Distinct().ToList();
@@ -459,23 +501,18 @@ sealed class PlanBuilder
     string? RootSigOf(SortedDictionary<int, string> stages)
     {
         unbuildable = rowsUnlinked = false;
-        // a pass's root signature the recording gave (LearnPassRoots) only where it covers the stages
+        // a learned pass root that misses a shader's ranges: another of the pass's roots, which the learned lookup may know
         if (mapRs != null && (passRoots == 0 || Uncovered(mapRs, stages) == null)) return mapRs;
         // carved shaders carrying their root signature (RTS0): exact, served by the reader at materialize time
         if (stages.Values.Select(h => bc[h].RootSignature).FirstOrDefault(r => r != null) is { } embedded) return embedded;
         if (!RootSig.InStageSets(rule, stages.Keys.Select(k => (Stage)k))) return null; // not a stage set the rule was confirmed on
         if (!build)
         {
-            // a rule fallback builds only pipelines that can exist: a PS reading rows its feeding stage doesn't write is refused
-            if (ruleFallback && !Planner.PsRowsLink(Infos(stages)))
-            {
-                rowsUnlinked = true;
-                return null;
-            }
+            if (ruleFallback && !Planner.PsRowsLink(Infos(stages))) { rowsUnlinked = true; return null; }   // a learned root signature doesn't make it link
             var learned = rsByCounts.GetValueOrDefault(Planner.CountsKey(Infos(stages)));
             if (learned?.FirstOrDefault(r => Uncovered(r, stages) == null) is { } fits) return fits;
             if (!ruleFallback) return learned?[0];
-            fallbackSets++;   // none recorded covers it: the rule's
+            fallbackSets++;
         }
         RootSig.Desc desc;
         try { desc = RootSig.Build(rule, Infos(stages), MeshTier(stages), maxSrvs, nvExtension, Nvidia); }
@@ -493,8 +530,7 @@ sealed class PlanBuilder
                 rsCache[desc.Key] = h = Hex(SHA1.HashData(b));
                 rsBlobs[h] = b;
                 rsDescs[h] = desc;
-                // Uncovered may have looked it up before it had a blob: read it again
-                if (ruleFallback && rsRanges.TryGetValue(h, out var ranges) && ranges == null) rsRanges.Remove(h);
+                if (ruleFallback && rsRanges.TryGetValue(h, out var r) && r == null) rsRanges.Remove(h);   // a recorded name without bytes until now
             }
             catch (RootSig.SerializeException e)
             {
@@ -509,13 +545,16 @@ sealed class PlanBuilder
     string? unserializable;   // the first serializer error
     string? unbuilt;          // the first reason the rule built none
     bool unbuildable;         // RootSigOf's last null: the runtime won't serialize it (a pipeline that can't exist, not a gap)
+    bool rowsUnlinked;        // ...or, in a rule-fallback plan, a stage set whose PS reads its inputs from other rows (Planner.PsRowsLink)
 
     /// <summary>A view-instanced stage set the driver rejects (<see cref="Planner.ShadingRateUnread"/>): a pipeline that can't
     /// exist, not a gap.</summary>
     const string ViShadingRate = "vi_shading_rate_unread";
 
-    /// <summary>A stage set a rule fallback refused (<see cref="Planner.PsRowsLink"/>): a pipeline that can't exist, not a gap.</summary>
+    /// <summary>A stage set of a rule-fallback plan whose PS reads its inputs from other rows (<see cref="Planner.PsRowsLink"/>): a pipeline that
+    /// can't exist, not a gap.</summary>
     const string PsRowsUnlinked = "ps_rows_unlinked";
+
     /// <summary>A stage set whose PS writes SV_StencilRef on a GPU without it (<see cref="Planner.StencilRefUnsupported"/>): a
     /// pipeline that can't exist, not a gap.</summary>
     const string PsStencilRef = "ps_stencil_ref";
@@ -533,6 +572,27 @@ sealed class PlanBuilder
     /// 1,923 pairs a recording drew). Same-signature VS x PS pairs per shader of a pool, measured: Ghost of Tsushima at
     /// most 35, every other installed DirectX 12 game at most 25, R&amp;C's 67 and 329.</summary>
     const int CrossProductRatio = 50;
+
+    /// <summary>The root signature ends with a root descriptor or constants at a register none of the stages declares: an
+    /// add-on's injection (RenoDX appends its own after the game's parameters).</summary>
+    internal static bool Injected(byte[] rs, IReadOnlyDictionary<Stage, ShaderInfo> stages)
+    {
+        try
+        {
+            return RootSig.LastRootValue(rs) is var (cls, reg, space) && !stages.Values.SelectMany(s => s.Bindings).Any(b =>
+                b.Class == cls && (uint)b.Space == space && (uint)b.Lower <= reg && (b.Count < 0 || reg < (ulong)(uint)b.Lower + (uint)b.Count));
+        }
+        catch (Exception e) when (e is ArgumentException or InvalidDataException) { return false; }
+    }
+
+    /// <summary>The share of a recording's root signatures the rule must rebuild exactly to plan, in a learned lookup, the stage
+    /// sets the recording has none for: a guess that is right that often beats leaving them out. 0.5 until measured.</summary>
+    public const double RuleFallbackShare = 0.5;
+
+    /// <summary>A learned lookup (<paramref name="ok"/> of <paramref name="n"/> recorded root signatures rebuilt, under 99%) whose rule
+    /// rebuilt at least <see cref="RuleFallbackShare"/>: a plan (<see cref="PlanStats.RuleFallback"/>) without the fallback is built again.</summary>
+    public static bool RuleFallback(long ok, long n) => n > 0 && ok < 0.99 * n && ok >= RuleFallbackShare * n;
+
     (long Pairs, int Vs, int Ps)? crossPool;   // the pool StageSets is pairing, when it is one of those
     readonly List<(long Pairs, int Vs, int Ps)> crossPools = [];
     readonly HashSet<string> crossLeftOut = [];   // whole-pipeline: a cross-product pool's stage sets that bring no shader a kept PSO lacks
@@ -556,34 +616,28 @@ sealed class PlanBuilder
 
     static string Part(ShaderInfo s) => $"{(int)s.Stage}:{s.Counts}";
 
-    /// <summary>A BlackSpace game whose pass root signatures can't be read from its files (Crimson Desert before its key is
-    /// added, SCSKiller 1.4.1-alpha.2): each render pass whose recorded graphics PSOs (their stages all in that one pass) use
-    /// one root signature the recording holds gets it, as the reader would have given it (Crimson Desert: about 98% of the
-    /// combinations found instead of 87%).</summary>
+    /// <summary>A learned lookup resolves a stage set only by its counts key, so StageSets pairs only what a recorded key has:
+    /// each shader's part, and a VS->PS pair's two (RE Engine: 13.5M of PRAGMATA's 13.6M stage sets had no root signature,
+    /// 46 s and 5.7 GB to enumerate). Not with a pooled library: whether a PS is fed in its own map counts every VS there.</summary>
+    /// <summary>BlackSpace without the game's key (no map names a root): a pass gets the root signature every recorded graphics
+    /// PSO whose shaders are in no other pass was created with, when that is one with bytes (Crimson Desert: 97 of 97 recorded passes,
+    /// 24,662 of 29,983 graphics shaders). Every other pass keeps the learned lookup.</summary>
     void LearnPassRoots()
     {
         if (mapRoots || engine.Family != BlackSpace.BlackSpaceReader.Family || recs.Count == 0) return;
-        var passesOf = new Dictionary<string, List<int>>();   // shader -> the passes (non-pipeline maps) holding it
-        for (var i = 0; i < index.Maps.Count; i++)
-            if (!maps[i].IsPipeline)
-                foreach (var h in maps[i].Shas) (passesOf.TryGetValue(h, out var l) ? l : passesOf[h] = []).Add(i);
-        var rootsOf = new Dictionary<int, HashSet<string>>();
-        foreach (var pso in recs.Select(Parse).Where(p => p.Stages.Count > 0 && !p.Stages.ContainsKey((int)Stage.Compute)))
-            if (pso.Stages.Values.Select(h => (IEnumerable<int>)passesOf.GetValueOrDefault(h, [])).Aggregate((a, b) => a.Intersect(b)).ToList() is [var pass])
-                (rootsOf.TryGetValue(pass, out var r) ? r : rootsOf[pass] = []).Add(pso.Rs);
-        foreach (var (pass, roots) in rootsOf)
-            if (roots.Count == 1 && recBlobs.ContainsKey(roots.First()))
-            {
-                maps[pass] = maps[pass] with { Rs = roots.First() };
-                passRoots++;
-            }
+        var passesOf = new Dictionary<string, List<int>>();
+        for (var i = 0; i < indexMaps.Count; i++)
+            if (!maps[i].IsPipeline) foreach (var h in maps[i].Shas) (passesOf.TryGetValue(h, out var l) ? l : passesOf[h] = []).Add(i);
+        var roots = new Dictionary<int, HashSet<string>>();
+        foreach (var p in recs.Select(Parse).Where(p => p.Stages.Count > 0 && !p.Stages.ContainsKey((int)Stage.Compute)))
+            if (p.Stages.Values.Select(h => (IEnumerable<int>)(passesOf.GetValueOrDefault(h) ?? [])).Aggregate((a, b) => a.Intersect(b)).ToList() is [var i])
+                (roots.TryGetValue(i, out var s) ? s : roots[i] = []).Add(p.Rs);   // one drawn in two passes tells neither's
+        foreach (var (i, s) in roots)
+            if (s.Count == 1 && recBlobs.ContainsKey(s.First())) { maps[i] = maps[i] with { Rs = s.First() }; passRoots++; }
         mapRoots = passRoots > 0;
         if (mapRoots) log?.Report($"root signatures of {passRoots} of {maps.Count(m => !m.IsPipeline)} render passes from the recording");
     }
 
-    /// <summary>A learned lookup resolves a stage set only by its counts key, so StageSets pairs only what a recorded key has:
-    /// each shader's part, and a VS->PS pair's two (RE Engine: 13.5M of PRAGMATA's 13.6M stage sets had no root signature,
-    /// 46 s and 5.7 GB to enumerate). Not with a pooled library: whether a PS is fed in its own map counts every VS there.</summary>
     void Learned()
     {
         learnedParts = [];
@@ -683,13 +737,13 @@ sealed class PlanBuilder
             cands = cands.Where(c => SameViews(TemplateViews(c.Key), views)).ToList() is { Count: > 0 } same ? same : null;
         if (rs == null || (cands == null && (!synth || topo == 0))) { Count(rs == null ? NoRs : gs != null ? "no_gs_template" : "no_template"); return; }
         if (have.Contains(Tuple(rs, stages))) { Count("already_recorded"); return; }
+        if (Planner.StencilRefUnsupported(caps, Infos(stages))) { Count(PsStencilRef); return; }
         if (Planner.ShadingRateUnread(Infos(stages)))   // a recorded template keeps its own view instancing
         {
             var plain = cands?.Where(c => TemplateViews(c.Key) == null).ToList();
             if (plain != null ? plain.Count == 0 : views != null) { Count(ViShadingRate); return; }
             cands = plain;
         }
-        if (Planner.StencilRefUnsupported(caps, Infos(stages))) { Count(PsStencilRef); return; }
         if (Uncovered(rs, stages) is { } left) { Count(left); return; }
         usedRs.Add(rs);
         Count("generated");
@@ -725,13 +779,16 @@ sealed class PlanBuilder
         }
     }
 
+    static string ShaderSet(IEnumerable<string> shas) => string.Join(',', shas.Order(StringComparer.Ordinal));
+
     /// <summary>A per-stage cache (<see cref="VendorCaps.PerStageCache"/>, AMD today) needs each stage unit compiled once, not
     /// every VS x PS pair, and (AMD) with the state its stage is keyed on (<see cref="UnitPolicy"/>): what the recording says
     /// about each shader (<see cref="ExactLayouts"/>, resolved per shader, not per pair), the units of every stage set of the
     /// library, one greedy cover (<see cref="UnitCover.CoverAll"/>) seeded with the recording's own units (it replays as it
     /// is), each pick a synthesized 'S' stream with its exact read layout, topology, RT formats / write masks / logic op of its
-    /// export shape. A VS alone (depth pass) is its own unit. Stage sets whose state is exact or inferred come first, guesses
-    /// last, so a stopped warm has done the likely ones.</summary>
+    /// export shape. A VS alone (depth pass) is its own unit. The game's own pairings (recorded, or shipped whole as a pipeline
+    /// cache's PSOs) come first, then compute and single stages, then the pairings the plan makes up, each by state: exact or
+    /// inferred first, guesses last, so a stopped warm or a compile size limit has the likely ones.</summary>
     void PerStage(UnitPolicy policy)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -742,11 +799,9 @@ sealed class PlanBuilder
         var layouts = new Dictionary<string, Resolved<List<List<LayoutElem>>>>();
         var shapes = new Dictionary<string, Resolved<List<string>>>();
         var topos = new Dictionary<string, List<uint>>();
-        // Rank (1.4.0-beta.1): the pairings the game ships (a pipeline map) or the recording has come first (0), a stage alone
-        // next (1), the ones the planner pairs up itself last (2); a game that ships and records none ranks them all 0
         var cands = new List<(UnitCover.Candidate C, Provenance Vs, Provenance Ps, bool Cross, int Rank)>();
         var shipped = maps.Where(m => m.IsPipeline && OnPlatform(m.Platform) && m.Shas.All(bc.ContainsKey)).Select(m => ShaderSet(m.Shas)).ToHashSet();
-        var known = shipped.Count > 0 || have.Count > 0;
+        var known = shipped.Count > 0 || have.Count > 0;   // without a pairing the game is known to use, the order stays
         int pairs = 0, fromCache = 0;
         Resolved<List<List<LayoutElem>>> none = new([], Provenance.Exact);
         var pairedElsewhere = new HashSet<string>();   // stage sets an ordinary pool pairs too, seen first in a cross-product one
@@ -775,15 +830,16 @@ sealed class PlanBuilder
                 var tk = $"{vs}|{stages.GetValueOrDefault((int)Stage.Geometry)}|{stages.ContainsKey((int)Stage.Hull)}";
                 if (!topos.TryGetValue(tk, out t!)) topos[tk] = t = facts.Topologies(stages).Value;
             }
-            // a VS the recording has no layout of: the declaration the game ships for this pipeline, read as the VS reads it
-            if (policy.ReadLayout && vs != null && !facts.ReadLayouts.ContainsKey(vs) && shippedLayouts.TryGetValue(ShaderSet(stages.Values), out var decls)
-                && decls.Select(x => ExactLayouts.ReadLayout(x, bc[vs])).Where(x => x.Count == bc[vs].Inputs.Count(i => i.SysValue == 0))
-                    .DistinctBy(x => string.Join(';', x)).ToList() is { Count: > 0 } read)
+            // a vendor keying the VS on its layout (AMD: Darwin's Paradox, 777 of 2,000 shipped stage sets compiled again for it)
+            // gets the shipped one, unless the recording has the VS
+            if (policy.ReadLayout && vs != null && !facts.ReadLayouts.ContainsKey(vs) && shippedLayouts.TryGetValue(ShaderSet(stages.Values), out var sl)
+                && sl.Select(x => ExactLayouts.ReadLayout(x, bc[vs])).Where(x => x.Count == bc[vs].Inputs.Count(i => i.SysValue == 0)).DistinctBy(x => string.Join(';', x)).ToList() is { Count: > 0 } exact)
             {
-                l = new(read, Provenance.Exact);
+                l = new(exact, Provenance.Exact);   // only declarations feeding every input the VS reads
                 fromCache++;
             }
             if (ps != null && (vs != null || stages.ContainsKey((int)Stage.Mesh))) pairs++;
+            // Gears of War: E-Day: its pipeline cache's pairings are 89.5% NVIDIA-exact against its Advanced Shader Delivery db, made-up ones 0 of 92
             var rank = !known ? 0 : stages.Count == 1 ? 1 : shipped.Contains(ShaderSet(stages.Values)) || have.Contains(Tuple(rs, stages)) ? 0 : 2;
             cands.Add((new UnitCover.Candidate(stages, rs, l.Value, t, s.Value, views), l.Provenance, s.Provenance, crossPool != null, rank));
             kept.UnionWith(stages.Values);
@@ -791,17 +847,14 @@ sealed class PlanBuilder
         if (pairedElsewhere.Count > 0)
             for (var i = 0; i < cands.Count; i++)
                 if (cands[i].Cross && pairedElsewhere.Contains(Tuple(mapRoots ? cands[i].C.Rs : "", cands[i].C.Stages))) cands[i] = cands[i] with { Cross = false };
-        var ordered = cands.OrderBy(c => c.Rank).ThenBy(c => (int)(c.Vs > c.Ps ? c.Vs : c.Ps)).ToList(); // stable: by rank, then exact, inferred, guessed
+        var ordered = cands.OrderBy(c => c.Rank).ThenBy(c => (int)(c.Vs > c.Ps ? c.Vs : c.Ps)).ToList(); // stable: exact, inferred, then guessed
         var prov = new Dictionary<UnitCover.Candidate, (Provenance Vs, Provenance Ps)>(ReferenceEqualityComparer.Instance);
         var ranks = new Dictionary<UnitCover.Candidate, int>(ReferenceEqualityComparer.Instance);
         foreach (var c in ordered) (prov[c.C], ranks[c.C]) = ((c.Vs, c.Ps), c.Rank);
-        // the shipped and recorded pairings are covered before the planner's own pair up what's left. Single stages and the
-        // planner's pairs share one cover (1.4.1-alpha.2): apart, a shader got a pipeline of its own where a pair covers it
-        // too (ELDEN RING on NVIDIA: 39,814 pipelines to 31,773, the same coverage)
+        // the game's pairings covered whole (both of CoverAll's passes) first: a made-up pair never takes a unit one has. Single stages share
+        // the made-up pairs' cover: covered first, a lone VS takes its unit (NVIDIA's has no next stage) and leaves each pair one new unit
         var picks = ordered.GroupBy(c => c.Rank == 0).SelectMany(g => cover.CoverAll(g.Select(c => c.C).ToList(), budget.Tick)).ToList();
-        // NVIDIA's cache is state-independent, but a game's compile size limit (VendorCaps.WarmCacheBudget) still holds: it
-        // was ignored there before 1.4.0-beta.1
-        if (!caps.StateIndependentCache || caps.WarmCacheBudget != null) picks = WithinBudget(picks, facts, recorded, prov, ranks);
+        if (!caps.StateIndependentCache || caps.WarmCacheBudget != null) picks = WithinBudget(picks, facts, recorded, prov, ranks);   // NVIDIA: only the game's compile size limit
         var coverSize = picks.Count;
         int extrasLeftOut = 0, crossLeftOut = 0, extrasLimit = Math.Min(MaximumExtras(caps, coverSize + have.Count), extrasRoom);
         if (maximum && cacheLeftOut is not > 0) // at its cache budget a plan has no room for more. Else every stage set once more, on its first candidates (their units are covered: nothing new to compile)
@@ -819,15 +872,16 @@ sealed class PlanBuilder
                 else extrasLeftOut++;
             }
             picks = all;
-            // under a compile size limit, Maximum's pairings past its room count as left out by the limit
-            if (caps.WarmCacheBudget != null && Math.Min(extras, MaximumExtras(caps, coverSize + have.Count)) - extrasLimit is var over and > 0)
-                cacheLeftOut = cacheLeftOut.GetValueOrDefault() + over;
+            // the pairings the compile size limit's room left out: a limit raised later rebuilds the plan (BudgetGrew)
+            if (caps.WarmCacheBudget != null && Math.Min(extras, MaximumExtras(caps, coverSize + have.Count)) - extrasLimit is > 0 and var over) cacheLeftOut = (cacheLeftOut ?? 0) + over;
         }
 
         var counted = recorded.ToHashSet();
         var newByStage = new SortedDictionary<Stage, int>();
+        long planned = 0;
         foreach (var (c, p) in picks)
         {
+            Steps?.Invoke("pipelines planned", ++planned, picks.Count);
             budget.Tick();
             var (pv, pp) = prov[c];
             foreach (var u in UnitCover.Units(facts, c.Stages, c.Rs, p.Layout, p.Topology, p.Shape, c.Views))
@@ -857,7 +911,7 @@ sealed class PlanBuilder
         var l0b = libVs.Count(v => !facts.ReadLayouts.ContainsKey(v.Sha1) && v.Inputs.All(i => i.SysValue != 0));
         var l1 = libVs.Count(v => !facts.ReadLayouts.ContainsKey(v.Sha1) && v.Inputs.Any(i => i.SysValue == 0) && facts.LayoutsBySig.ContainsKey(ExactLayouts.SigKey(v)));
         layoutCoverage = libVs.Count == 0 ? 1 : (double)(l0 + l0b + l1) / libVs.Count;
-        log?.Report($"per-stage ({policy.Name}): {cands.Count} stage sets ({pairs} with a PS), units {recorded.Count} recorded + {counted.Count - recorded.Count} new "
+        log?.Report($"{game.Name}: per-stage ({policy.Name}): {cands.Count} stage sets ({pairs} with a PS), units {recorded.Count} recorded + {counted.Count - recorded.Count} new "
             + $"({string.Join(", ", newByStage.Select(s => $"{s.Key} {s.Value}"))}; exact/inferred/guessed {string.Join('/', unitsBy)}), "
             + $"cover {coverSize} PSOs{(maximum ? $" + {picks.Count - coverSize} for stage sets it doesn't need (maximum{(extrasLeftOut > 0 ? $"; {extrasLeftOut} more left out, at most {extrasLimit} for this game" : "")}{(crossLeftOut > 0 ? $"; {crossLeftOut} more left out from {crossPools.Count} pools whose signatures pair nearly every VS with every PS (largest {crossPools.Max().Pairs} pairs of {crossPools.Max().Vs} VS and {crossPools.Max().Ps} PS): only a recording says which the game draws" : "")})" : "")}; VS layouts resolved from the recording: {layoutCoverage:P0} of {libVs.Count} (L0 {l0}, L0' no vertex input {l0b}, L1 {l1})"
             + (fromCache > 0 ? $"; VS layouts from the game's pipeline cache: {fromCache} stage sets" : "") + $" ({sw.Elapsed.TotalSeconds:F1}s)"
@@ -868,9 +922,10 @@ sealed class PlanBuilder
     }
 
     /// <summary>The cover PSOs that fit <see cref="CacheBudget"/> with the recorded ones (always kept), each compiled once
-    /// per texture filtering setting (<see cref="SettingsVariants"/>), most likely first: those compiling a shader the plan
-    /// has no unit of yet, then by provenance, then by how many stage sets their new units serve (a VS unit keyed on a PS
-    /// read key many pixel shaders share is drawn more often than a rare one's).</summary>
+    /// per texture filtering setting (<see cref="SettingsVariants"/>), most likely first: by <paramref name="ranks"/> (the game's
+    /// own pairings, compute and single stages, made-up pairings), then those compiling a shader the plan has no unit of yet,
+    /// then by provenance, then by how many stage sets their new units serve (a VS unit keyed on a PS read key many pixel shaders
+    /// share is drawn more often than a rare one's).</summary>
     List<(UnitCover.Candidate Candidate, UnitPick Pick)> WithinBudget(List<(UnitCover.Candidate Candidate, UnitPick Pick)> picks, ExactLayouts facts,
         HashSet<Unit> recorded, Dictionary<UnitCover.Candidate, (Provenance Vs, Provenance Ps)> prov, IReadOnlyDictionary<UnitCover.Candidate, int> ranks)
     {
@@ -879,6 +934,7 @@ sealed class PlanBuilder
         cacheLeftOut = Math.Max(0, picks.Count - room);
         extrasRoom = Math.Max(0, room - picks.Count);
         if (cacheLeftOut == 0) return picks;
+        if (room == 0) return Kept([], 0);   // the recorded PSOs fill the budget: nothing to rank
         var served = new Dictionary<Unit, int>();
         var units = new HashSet<Unit>();
         foreach (var c in prov.Keys)   // each unit once per stage set, at every state candidate
@@ -904,12 +960,16 @@ sealed class PlanBuilder
             return (p, Rank: ranks[p.Candidate], First: first, Prov: v > s ? v : s, Served: fresh.Sum(u => (long)served.GetValueOrDefault(u)), At: i);
         }).OrderBy(r => r.Rank).ThenBy(r => !r.First).ThenBy(r => r.Prov).ThenByDescending(r => r.Served).ThenBy(r => r.At).ToList();
         var kept = ranked.Take(room).ToList();
-        stats["cache_budget"] = (int)cacheLeftOut;
-        log?.Report($"cache budget ({caps.Profile}): {kept.Count} of {picks.Count} cover PSOs kept ({kept.Count(r => r.First)} compile a shader the first time)"
-            + (filtering > 1 ? $" at {filtering} texture filtering settings" : "") + $" beside the recorded ones, {cacheLeftOut} left out: "
-            + $"at {PsoBytesOf(caps) >> 10} KiB a PSO the plan stays under the {App.Format.Bytes(budgetPsos * PsoBytesOf(caps))} "
-            + (caps.WarmCacheBudget != null ? "the game's compile size limit allows" : caps.PerGameCacheCap != null ? "the driver keeps for one game" : "the driver's whole cache holds"));
-        return kept.Select(r => r.p).ToList();
+        return Kept(kept.Select(r => r.p).ToList(), kept.Count(r => r.First));
+
+        List<(UnitCover.Candidate Candidate, UnitPick Pick)> Kept(List<(UnitCover.Candidate Candidate, UnitPick Pick)> kept, int first)
+        {
+            stats["cache_budget"] = (int)cacheLeftOut;
+            log?.Report($"cache budget ({caps.Profile}): {kept.Count} of {picks.Count} cover PSOs kept ({first} compile a shader the first time)"
+                + (filtering > 1 ? $" at {filtering} texture filtering settings" : "") + $" beside the recorded ones, {cacheLeftOut} left out: "
+                + $"at {PsoBytesOf(caps) >> 10} KiB a PSO the plan stays under the {App.Format.Bytes(budgetPsos * PsoBytesOf(caps))} {(caps.WarmCacheBudget != null ? "the game's compile size limit allows" : caps.PerGameCacheCap != null ? "the driver keeps for one game" : "the driver's whole cache holds")}");
+            return kept;
+        }
     }
 
     /// <summary>A pairing plan on a cache with a warm budget (<see cref="VendorCaps.WarmCacheBudget"/>, NVIDIA on Linux): the
@@ -957,6 +1017,14 @@ sealed class PlanBuilder
     /// else the driver's per-game cap (Intel), else <see cref="CacheBudget"/>.</summary>
     public static long CacheBudgetOf(VendorCaps caps) => caps.WarmCacheBudget ?? caps.PerGameCacheCap ?? CacheBudget;
 
+#if SCSK_TEST_HOOKS
+    // SCSKILLER_TEST_AMD_CACHE_BUDGET_GB=N (tests): an AMD plan's budget in GiB, past the driver's cap to see what it evicts
+    static long? TestCacheBudget(VendorCaps caps) => caps is { WarmCacheBudget: null, PerGameCacheCap: null }
+        && long.TryParse(Environment.GetEnvironmentVariable("SCSKILLER_TEST_AMD_CACHE_BUDGET_GB"), out var gb) && gb > 0 ? gb << 30 : null;
+#else
+    static long? TestCacheBudget(VendorCaps caps) => null;
+#endif
+
     /// <summary>What a PSO takes of <see cref="CacheBudgetOf"/>: the game's measured bytes (<see cref="VendorCaps.PsoBytes"/>), else <see cref="PsoBytes"/>.</summary>
     public static long PsoBytesOf(VendorCaps caps) => caps.PsoBytes is { } b && b > 0 ? b : PsoBytes;
 
@@ -995,9 +1063,7 @@ sealed class PlanBuilder
         // signature has that slot (E_INVALIDARG): left out on other vendors, counted once per shader ("vendor_extension")
         var ags = new HashSet<string>();
         var unpairedShaders = new HashSet<string>();
-        // the root signature of the map being walked: a map with its own (a BlackSpace pass's) skips the learned lookup's filter
-        // (1.4.1-alpha.2). Kept past the walk, as alpha.2 does
-        string? walking = null;
+        string? walking = null;   // a pass's root (LearnPassRoots): its shaders pair whatever the learned lookup's counts
         bool Usable(string h)
         {
             if (!bc.TryGetValue(h, out var s)) return false;
@@ -1013,8 +1079,10 @@ sealed class PlanBuilder
         var fed = new HashSet<string>();
         var unfed = new List<ShaderInfo>();
         var lanes = new HashSet<string>();   // shaders whose [WaveSize] this GPU doesn't run (the runtime: E_INVALIDARG)
+        long paired = 0;
         foreach (var (mapPlat, pooled, shas, isPipeline, root) in maps)
         {
+            Steps?.Invoke("shader groups paired", paired++, maps.Count);
             walking = root;
             ct.ThrowIfCancellationRequested();
             if (!OnPlatform(mapPlat))
@@ -1309,8 +1377,10 @@ sealed class PlanBuilder
             : "NVAPI state unknown without a recording of ray tracing (a game setting NVIDIA's shader-extension slot misses them all)";
         var recordedLibs = LocalStateObjects.SelectMany(r => ParseStateObject(r).Libraries).ToHashSet();
         var global =rsBlobs.TryGetValue(rule.GlobalRs, out var gb) || recBlobs.TryGetValue(rule.GlobalRs, out gb) ? RootSig.Parse(gb) : null;
+        long rtDone = 0;
         foreach (var h in libs)
         {
+            Steps?.Invoke("ray tracing libraries planned", ++rtDone, libs.Count);
             if (recordedLibs.Contains(h)) { Count("rt_recorded"); continue; }
             if ((guessedLocal != null ? (guessedLocal, guessedLocal) : (LocalRs(bc[h], true), LocalRs(bc[h], false))) is not ({ } lg, { } lo))
             {
@@ -1346,7 +1416,7 @@ sealed class PlanBuilder
         }
         var global = RootSig.Parse(gb);
         var nv = RtCollections.WithOptions(rasterNv, RtOptions);
-        foreach (var m in index.Maps.Where(m => m.Library == RedEngine.RedEngineReader.HitGroups && m.Shaders.All(bc.ContainsKey)))
+        foreach (var m in indexMaps.Where(m => m.Library == RedEngine.RedEngineReader.HitGroups && m.Shaders.All(bc.ContainsKey)))
         {
             var group = m.Shaders.Select(h => bc[h]).ToList();
             if (RedEngine.RedRayTracing.Local(group, global) is not { } desc)
@@ -1385,7 +1455,7 @@ sealed class PlanBuilder
         var ranges = new RootSig.Ranges(0, [.. RootSig.Parse(global.Blob).Slots, .. RootSig.Parse(local.Blob).Slots]);
         var recordedLibs = LocalStateObjects.SelectMany(r => ParseStateObject(r).Libraries).ToHashSet();
         var pairs = new HashSet<string>();
-        foreach (var m in index.Maps.Where(m => m.Platform == plat && FromSoft.SoulsRayTracing.IsPair(m) && m.Shaders.All(h => bc.TryGetValue(h, out var s) && s.Stage == Stage.Library)))
+        foreach (var m in indexMaps.Where(m => m.Platform == plat && FromSoft.SoulsRayTracing.IsPair(m) && m.Shaders.All(h => bc.TryGetValue(h, out var s) && s.Stage == Stage.Library)))
         {
             pairs.Add(string.Join('|', m.Shaders.Order()));
             if (m.Shaders.All(recordedLibs.Contains)) { Count("rt_recorded"); continue; }
@@ -1569,11 +1639,11 @@ sealed class PlanBuilder
                 StageSets: seen.Count + stats.GetValueOrDefault("cross_product") + unpaired - stats.GetValueOrDefault("rs_unserializable") - stats.GetValueOrDefault(ViShadingRate) - stats.GetValueOrDefault(PsRowsUnlinked) - stats.GetValueOrDefault(PsStencilRef), LeftOut: new[] { "no_rs", "no_template", "no_gs_template", "rs_uncovered", "own_rs_uncovered", "rs_unknown", "stream_output" }.Sum(stats.GetValueOrDefault),
                 MiddlewareSharedItems: packShared, RtStateObjects: replayable.Count, RtInline: rtInline,
                 RsRule: RootSig.RuleFor(engine)?.Id, BuiltOk: builtOk, BuiltN: builtN, D3D11Draws: items11.Count, Variants: synthCopies.Count + itemCopies.Count + replays.Count - pipelines,
-                CacheBudgetLeftOut: cacheLeftOut, RecordedOnly: !pairs, MaxShaderModel: maxSm?.ToString(),
-                RuleFallback: RuleFallback(builtOk, builtN) ? ruleFallback ? fallbackSets : 0 : null),
+                CacheBudgetLeftOut: cacheLeftOut, RecordedOnly: !pairs, MaxShaderModel: maxSm?.ToString(), RuleFallback: RuleFallback(builtOk, builtN) ? ruleFallback ? fallbackSets : 0 : null),
             Path.Combine(outDir, "plan.bin"));
         budget.Check();
-        PlanFile.Write(plan, body.Select(r => { budget.Tick(); return r; }));
+        long written = 0;
+        PlanFile.Write(plan, body.Select(r => { budget.Tick(); Steps?.Invoke("plan entries written", ++written, body.Count); return r; }));
         log?.Report($"plan: {items.Count + synthesized.Count} PSOs{(synthCopies.Count + itemCopies.Count > 0 ? $" + {synthCopies.Count + itemCopies.Count} again at other texture filtering settings" : "")}{(rtItems.Count + hitGroupItems.Count > 0 ? $" + {rtItems.Count + hitGroupItems.Count} ray tracing collections" : "")} ({string.Join(", ", stats.Select(s => $"{s.Key} {s.Value}"))}), "
             + $"{synthesized.Count} synthesized templates, {usedRs.Count} root signatures, {n11} DirectX 11 items"
             + (packEntries.Count > 0 ? $", {packEntries.Count} middleware pack PSOs ({packNew} not in the recording)" : "")

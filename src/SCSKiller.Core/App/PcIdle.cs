@@ -24,7 +24,11 @@ public static class PcIdle
 {
     public static readonly TimeSpan Away = TimeSpan.FromMinutes(10), AwayLocked = TimeSpan.FromMinutes(1);
     public static readonly TimeSpan SoundWindow = TimeSpan.FromSeconds(10), CpuWindow = TimeSpan.FromMinutes(1);
-    public const double CpuShare = 0.15;
+    /// <summary>About one and a half busy threads' worth of the processor, between 5% and 40%, so the rule means the same on
+    /// 4 threads as on 32 (Exo Launcher's PcIdle keeps the same rule).</summary>
+    public static double CpuShareFor(int threads) => Math.Clamp(1.5 / Math.Max(1, threads), 0.05, 0.40);
+
+    public static readonly double CpuShare = CpuShareFor(Environment.ProcessorCount);
     /// <summary>A peak above this (about -60 dB) is sound.</summary>
     public const float Silence = 0.001f;
     static readonly TimeSpan SampleEvery = TimeSpan.FromSeconds(2), StopAfter = TimeSpan.FromMinutes(2);

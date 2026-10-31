@@ -72,7 +72,7 @@ public static partial class Codecs
             catch (Exception e) when (e is not OutOfMemoryException)
             {
                 Failed.Add(path);
-                log?.Report($"codec {name} not loaded, decoding in managed code: {e}");
+                log?.Report($"codec {name} not loaded, decoding in managed code: {e.Message}");
                 return false;
             }
         }

@@ -11,9 +11,6 @@ public static partial class BeforeAfter
     /// <summary>With fewer shader stutters than this in the before run, the game was already smooth.</summary>
     public const int SmoothStutters = 3;
 
-    /// <summary>The report image's corner (SCSKiller 1.4.0-beta.1): "SCSKiller 1.4.1  ·  driver 621.01".</summary>
-    public static string Versions(string? driver) => $"SCSKiller {AppVersion.Current}" + (driver == null ? "" : "  ·  driver " + driver);
-
     // Every user-facing line of the report and the share text
     const string NoFrames = "The {0} run has no frame times";
     const string NoCreates = "The {0} run has no pipeline log";

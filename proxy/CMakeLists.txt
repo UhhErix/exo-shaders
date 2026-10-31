@@ -27,6 +27,21 @@ configure_file(version.h.in version.h @ONLY)
 
 if(WIN32)
 
+# d3d9.dll: the DirectX 9 recorder, x64 and x86 (most DirectX 9 games are 32-bit). A Win32 build (-A Win32) makes only it.
+if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+  add_library(scskiller_d3d9 SHARED d3d9rec.cpp vtslots9.cpp d3d9.def version.rc)
+else()
+  add_library(scskiller_d3d9 SHARED d3d9rec.cpp vtslots9.cpp d3d9stubs.asm d3d9.def version.rc)
+endif()
+set_target_properties(scskiller_d3d9 PROPERTIES OUTPUT_NAME d3d9)
+target_compile_definitions(scskiller_d3d9 PRIVATE SCSK_RC_D3D9)
+target_include_directories(scskiller_d3d9 PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+target_link_options(scskiller_d3d9 PRIVATE /MAP /DELAYLOAD:shell32.dll /DELAYLOAD:ole32.dll)  # only admission at the first device uses them
+target_link_libraries(scskiller_d3d9 delayimp)
+if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+  return()
+endif()
+
 add_library(scskiller SHARED proxy.cpp warm11.cpp vtslots.cpp stubs.asm d3d12.def version.rc)
 set_target_properties(scskiller PROPERTIES OUTPUT_NAME d3d12)
 # /MAP: function RVAs for reading crash stacks. Delay-load what only the D3D11 warm uses (in a game it is never loaded) and

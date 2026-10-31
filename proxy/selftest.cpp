@@ -39,7 +39,7 @@
 #include <d3d12.h>
 #include <d3d11.h>
 #include <d3d12shader.h>
-#include <dxgi1_4.h>
+#include <dxgi1_6.h>
 #include <tlhelp32.h>
 #include <psapi.h>
 #include <winternl.h>
@@ -4667,12 +4667,13 @@ static int amwarm_parent(const std::wstring& a, const std::wstring& dir, int n) 
     return r;
 }
 
-// `selftest burst <n> <threads> <rec|plain> [shaders] [compute]`: a game's startup compile on WARP: n graphics PSOs (or compute
+// `selftest burst <n> <threads> <rec|plain> [shaders] [compute|late]`: a game's startup compile on WARP: n graphics PSOs (or compute
 // PSOs of <shaders> shaders, mostly repeats) created by <threads> threads at once, each released right away, every fourth
-// the desc of an earlier one; through the proxy beside it recording (rec)
+// the desc of an earlier one (late: each shader's PSOs in a run of their own, in shader order, as a session that reaches
+// new areas: max_db_bytes in the scskiller.ini beside the proxy shows what its limit keeps); through the proxy beside it recording (rec)
 // or the system d3d12.dll (plain). Prints creates/s, the process's private bytes at the start, at their peak and at the end,
 // and its file writes during the burst.
-static int burst_rows(const std::wstring& dir, long n, unsigned threads, bool rec, int shaders, bool cs) {
+static int burst_rows(const std::wstring& dir, long n, unsigned threads, bool rec, int shaders, bool cs, bool late) {
     auto priv = [] {
         PROCESS_MEMORY_COUNTERS_EX m{sizeof m};
         return K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&m, sizeof m) ? m.PrivateUsage / 1048576.0 : 0;
@@ -4737,9 +4738,10 @@ static int burst_rows(const std::wstring& dir, long n, unsigned threads, bool re
                 D3D12_GRAPHICS_PIPELINE_STATE_DESC g = {};
                 g.pRootSignature = rs, g.InputLayout = {&ie, 1};
                 g.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
-                g.PS = {ps[j % shaders]->GetBufferPointer(), ps[j % shaders]->GetBufferSize()};
+                long per = std::max(1L, n / shaders), p = late ? std::min<long>(j / per, shaders - 1) : j % shaders;
+                g.PS = {ps[p]->GetBufferPointer(), ps[p]->GetBufferSize()};
                 g.SampleMask = UINT_MAX, g.RasterizerState = {D3D12_FILL_MODE_SOLID, D3D12_CULL_MODE_NONE}, g.RasterizerState.DepthClipEnable = TRUE;
-                g.RasterizerState.DepthBias = (INT)(j / shaders);  // n distinct descs over a few shaders
+                g.RasterizerState.DepthBias = (INT)(late ? j - p * per : j / shaders);  // n distinct descs over a few shaders
                 g.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, g.NumRenderTargets = 1, g.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
                 g.SampleDesc = {1, 0};
                 if (SUCCEEDED(dev->CreateGraphicsPipelineState(&g, IID_PPV_ARGS(&pso)))) pso->Release();
@@ -5218,14 +5220,144 @@ static int frames_storm_rows(const std::wstring& dir) {
     return 0;
 }
 
+// Two hookers of dxgi's Present entry, before the proxy loads, each through a relay page near the entry to a stub in this
+// exe (the prologue RivaTuner's detours start with, then its body). RivaTuner's (rt_*) puts the bytes it saved at install
+// back for its own call and its jmp after, over whatever is there (rtsskeep: the bytes it found). Ubisoft Connect's
+// overlay's (uc_*) runs the entry's first instruction moved into its trampoline, or where a jmp there led.
+#pragma section(".rtss", read, execute)
+__declspec(allocate(".rtss")) __declspec(align(16)) static uint8_t rt_entry[32] = {
+    0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18,  // mov [rsp+8..18h], rbx/rbp/rsi
+    0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xE0};                                           // mov rax, body / jmp rax
+__declspec(allocate(".rtss")) __declspec(align(16)) static uint8_t uc_entry[2][32] = {
+    {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xE0},
+    {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xE0}};
+static uint8_t *g_rt_at, g_rt_orig[5], g_rt_jmp[5];
+static SRWLOCK g_rt_lock = SRWLOCK_INIT;
+static long g_rt_calls, g_uc_calls[2];
+static bool g_rt_keep;
+static uint8_t* g_uc_tramp[2];
+static void rt_write(uint8_t* at, const void* b, size_t n) {
+    DWORD old;
+    VirtualProtect(at, n, PAGE_EXECUTE_READWRITE, &old);
+    memcpy(at, b, n);
+    VirtualProtect(at, n, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), at, n);
+}
+static HRESULT STDMETHODCALLTYPE rt_body(IDXGISwapChain* sc, UINT sync, UINT flags) {
+    AcquireSRWLockExclusive(&g_rt_lock);
+    uint8_t found[5];
+    memcpy(found, g_rt_at, 5);
+    rt_write(g_rt_at, g_rt_orig, 5);
+    HRESULT hr = ((PFN_Pr)g_rt_at)(sc, sync, flags);
+    rt_write(g_rt_at, g_rt_keep ? found : g_rt_jmp, 5);
+    ++g_rt_calls;
+    ReleaseSRWLockExclusive(&g_rt_lock);
+    return hr;
+}
+template <int K> static HRESULT STDMETHODCALLTYPE uc_body(IDXGISwapChain* sc, UINT sync, UINT flags) {
+    InterlockedIncrement(&g_uc_calls[K]);
+    return ((PFN_Pr)g_uc_tramp[K])(sc, sync, flags);
+}
+// a page within a rel32 jmp of at
+static uint8_t* near_page(uint8_t* at) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    uint8_t* p = nullptr;
+    for (uintptr_t g = si.dwAllocationGranularity, base = (uintptr_t)at & ~(g - 1), k = g; !p && k < 0x70000000; k += g)
+        for (uintptr_t a : {base - k, base + k})
+            if (!p) p = (uint8_t*)VirtualAlloc((void*)a, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    return p;
+}
+static void abs_jmp(uint8_t* at, const void* to) { at[0] = 0xFF, at[1] = 0x25, memset(at + 2, 0, 4), memcpy(at + 6, &to, 8); }
+// the relays stand_in writes: 0 jmp [rip+0], 1 jmp [rip+disp] to a slot further on, 2 mov rax, imm64 / jmp rax,
+// 3 push lo32 / mov dword [rsp+4], hi32 / ret
+static int g_relay_form;
+// the stub's body set, and in jmp the entry's e9 to a relay to the stub
+static bool stand_in(uint8_t* stub, void* body, uint8_t* jmp) {
+    uint8_t s[32];
+    memcpy(s, stub, sizeof s), memcpy(s + 17, &body, 8);
+    rt_write(stub, s, sizeof s);
+    uint8_t* relay = near_page(g_rt_at);
+    if (!relay) return false;
+    if (g_relay_form == 1) {
+        const int32_t slot = 64 - 6;
+        relay[0] = 0xFF, relay[1] = 0x25, memcpy(relay + 2, &slot, 4), memcpy(relay + 64, &stub, 8);
+    } else if (g_relay_form == 2) relay[0] = 0x48, relay[1] = 0xB8, memcpy(relay + 2, &stub, 8), relay[10] = 0xFF, relay[11] = 0xE0;
+    else if (g_relay_form == 3) {
+        const uint64_t a = (uint64_t)stub;
+        const uint8_t mov[4] = {0xC7, 0x44, 0x24, 0x04};
+        relay[0] = 0x68, memcpy(relay + 1, &a, 4), memcpy(relay + 5, mov, 4), memcpy(relay + 9, (const uint8_t*)&a + 4, 4), relay[13] = 0xC3;
+    }
+    else abs_jmp(relay, stub);
+    FlushInstructionCache(GetCurrentProcess(), relay, 72);
+    int32_t rel = (int32_t)(relay - (g_rt_at + 5));
+    jmp[0] = 0xE9, memcpy(jmp + 1, &rel, 4);
+    return true;
+}
+static bool rt_hook() {
+    memcpy(g_rt_orig, g_rt_at, 5);
+    if (!stand_in(rt_entry, (void*)rt_body, g_rt_jmp)) return false;
+    rt_write(g_rt_at, g_rt_jmp, 5);
+    return true;
+}
+template <int K> static bool uc_hook() {
+    uint8_t *at = g_rt_at, jmp[5], *tramp = (uint8_t*)VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!tramp) return false;
+    if (at[0] == 0xE9) {  // another hooker's jmp: its target
+        int32_t r;
+        memcpy(&r, at + 1, 4);
+        abs_jmp(tramp, at + 5 + r);
+    } else {  // dxgi's own Present: a 5-byte mov [rsp+10h], rbx first
+        if (memcmp(at, "\x48\x89\x5C\x24", 4)) return false;
+        memcpy(tramp, at, 5), abs_jmp(tramp + 5, at + 5);
+    }
+    FlushInstructionCache(GetCurrentProcess(), tramp, 19);
+    g_uc_tramp[K] = tramp;
+    if (!stand_in(uc_entry[K], (void*)uc_body<K>, jmp)) return false;
+    rt_write(at, jmp, 5);
+    return true;
+}
+// dxgi's Present, from a swap chain made before the proxy loads
+static bool find_present() {
+    wchar_t sys[MAX_PATH];
+    GetSystemDirectoryW(sys, MAX_PATH);
+    HMODULE d12 = LoadLibraryW((std::wstring(sys) + L"\\d3d12.dll").c_str());
+    auto create = d12 ? (decltype(&D3D12CreateDevice))GetProcAddress(d12, "D3D12CreateDevice") : nullptr;
+    IDXGIFactory4* f = nullptr;
+    IDXGIAdapter* warp = nullptr;
+    ID3D12Device* dev = nullptr;
+    ID3D12CommandQueue* q = nullptr;
+    IDXGISwapChain1* sc = nullptr;
+    D3D12_COMMAND_QUEUE_DESC qd = {};
+    DXGI_SWAP_CHAIN_DESC1 d = {64, 64, DXGI_FORMAT_R8G8B8A8_UNORM, FALSE, {1, 0}, DXGI_USAGE_RENDER_TARGET_OUTPUT, 2};
+    d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    HWND w = CreateWindowExW(0, L"STATIC", L"scskiller rtss", WS_POPUP, 0, 0, 8, 8, nullptr, nullptr, nullptr, nullptr);
+    bool ok = create && SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&f))) && SUCCEEDED(f->EnumWarpAdapter(IID_PPV_ARGS(&warp))) &&
+              SUCCEEDED(create(warp, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev))) && SUCCEEDED(dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&q))) &&
+              SUCCEEDED(f->CreateSwapChainForHwnd(q, w, &d, nullptr, nullptr, &sc));
+    if (ok) g_rt_at = (uint8_t*)(*(void***)sc)[8];
+    for (IUnknown* u : {(IUnknown*)sc, (IUnknown*)q, (IUnknown*)dev, (IUnknown*)warp, (IUnknown*)f})
+        if (u) u->Release();
+    DestroyWindow(w);
+    return ok;
+}
+
 // `selftest framesfg ffx [late]`: fakenext.dll loaded as amd_fidelityfx_loader_dx12.dll before the first device (late:
 // after it), a swap chain presented 3 times, then frame generation's swap chain from its ffxCreateContext (FOR_HWND) presented 3 times, each
 // presenting its real swap chain once on this thread and twice from another. Prints "chains <frames of each>" and "game
 // <index>". play: a compute PSO first, and frame generation's swap chain presents until the log says the in-game panel's
-// play time is done or dxgi's Present went back (60 s at most).
+// play time is done, its swap chain isn't drawn on, or with no panel, dxgi's Present went back (60 s at most).
+// play rtss|rtsskeep|ucrtss|rtssuc: RivaTuner's Present hook goes in first (rtsskeep: putting back the bytes it found), or
+// with Ubisoft Connect's overlay's, in the order named. uconly: Ubisoft Connect's overlay's alone; uclate: then a second
+// hooker like it over ours after 50 presents of frame generation's swap chain; ucdisp, ucrax, ucpush: alone, through a
+// jmp [rip+disp], a mov rax / jmp rax or a push / mov / ret relay. Then "rtss calls <n>", "uc calls <first> <second>" and "fg presents <n>".
 static HRESULT compute_pso(ID3D12Device* dev, ID3D12RootSignature* rs, int k);
-static int frames_ffx_rows(const std::wstring& dir, bool play, bool late) {
+static int frames_ffx_rows(const std::wstring& dir, bool play, bool late, int rtss) {
     SetEnvironmentVariableW(L"SCSKILLER_MODE", L"record");
+    g_rt_keep = rtss == 2;
+    g_relay_form = rtss == 7 ? 1 : rtss == 8 ? 2 : rtss == 9 ? 3 : 0;
+    CHECK(!rtss || (find_present() && (rtss != 3 && rtss < 5 || uc_hook<0>()) && (rtss >= 5 || rt_hook()) && (rtss != 4 || uc_hook<0>())));
+    long fg_presents = 0;
     auto load_ffx = [&] { return LoadLibraryW((dir + L"amd_fidelityfx_loader_dx12.dll").c_str()); };
     HMODULE ffx = late ? nullptr : load_ffx();
     HMODULE m = LoadLibraryW((dir + L"d3d12.dll").c_str());
@@ -5261,9 +5393,14 @@ static int frames_ffx_rows(const std::wstring& dir, bool play, bool late) {
         CHECK(ser && SUCCEEDED(ser(&rd, D3D_ROOT_SIGNATURE_VERSION_1, &rb, &err)) &&
               SUCCEEDED(dev->CreateRootSignature(0, rb->GetBufferPointer(), rb->GetBufferSize(), IID_PPV_ARGS(&rs))) && SUCCEEDED(compute_pso(dev, rs, (int)GetTickCount())));
         for (ULONGLONG until = GetTickCount64() + 60000; GetTickCount64() < until;) {
-            for (int i = 0; i < 10; ++i) fg->Present(0, 0), Sleep(15);
+            for (int i = 0; i < 10; ++i, ++fg_presents) {
+                if (rtss == 5 && fg_presents == 50) CHECK(uc_hook<1>());  // over ours, calling it as its original
+                fg->Present(0, 0), Sleep(15);
+            }
             std::string log = read_all(dir + L"scskiller.log");
-            if (log.find("s of play counted, done") != std::string::npos || log.find("dxgi's Present unhooked") != std::string::npos) break;
+            if (log.find("s of play counted, done") != std::string::npos || log.find("overlay: frame generation swap chain") != std::string::npos ||
+                (log.find("dxgi's Present unhooked") != std::string::npos && log.find("overlay: on") == std::string::npos))
+                break;
         }
     }
     std::vector<long> chains;
@@ -5274,6 +5411,139 @@ static int frames_ffx_rows(const std::wstring& dir, bool play, bool late) {
     printf("\ngame %ld\n", game);
     // SCSKILLER_SELFTEST_FG_UNNAMED: its present queue unnamed, recognised by its ffxCreateContext all the same
     printf("unhooked %d\n", read_all(dir + L"scskiller.log").find("dxgi's Present unhooked") != std::string::npos);
+    if (rtss) printf("rtss calls %ld\nuc calls %ld %ld\nfg presents %ld\n", g_rt_calls, g_uc_calls[0], g_uc_calls[1], fg_presents);
+    return 0;
+}
+
+// FSR 3.0 built into the game (this exe), as FidelityFX SDK 1.x's frame interpolation swap chain: it makes the real swap
+// chain on a queue named "AMD FSR PresentQueue" through the factory, registers itself in that one's private data under
+// FSR's IID (a raw pointer), and the game presents it. Its Present signals the game's queue, then presents the real swap
+// chain on the game's thread (nothing generated) or twice from another thread (FSR's presenter: a generated and a real frame).
+static const GUID kFfxFi = {0xbeed74b2, 0x282e, 0x4aa3, {0xbb, 0xf7, 0x53, 0x45, 0x60, 0x50, 0x7a, 0x45}};
+struct Fs30Chain : IDXGISwapChain4 {
+    IDXGISwapChain4* real = nullptr;
+    ID3D12CommandQueue* game = nullptr;
+    ID3D12Fence* fence = nullptr;
+    UINT64 value = 0;
+    LONG refs = 1;
+    int presents = 0;
+    virtual ~Fs30Chain() {
+        if (real) real->Release();
+        if (fence) fence->Release();
+    }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** pp) override {
+        const IID* mine[] = {&__uuidof(IUnknown), &__uuidof(IDXGIObject), &__uuidof(IDXGIDeviceSubObject), &__uuidof(IDXGISwapChain),
+                             &__uuidof(IDXGISwapChain1), &__uuidof(IDXGISwapChain2), &__uuidof(IDXGISwapChain3), &__uuidof(IDXGISwapChain4), &kFfxFi};
+        for (const IID* i : mine)
+            if (riid == *i) return AddRef(), *pp = this, S_OK;
+        return *pp = nullptr, E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const LONG n = InterlockedDecrement(&refs);
+        if (!n) delete this;
+        return n;
+    }
+    HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID g, UINT n, const void* d) override { return real->SetPrivateData(g, n, d); }
+    HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID g, const IUnknown* u) override { return real->SetPrivateDataInterface(g, u); }
+    HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID g, UINT* n, void* d) override { return real->GetPrivateData(g, n, d); }
+    HRESULT STDMETHODCALLTYPE GetParent(REFIID r, void** pp) override { return real->GetParent(r, pp); }
+    HRESULT STDMETHODCALLTYPE GetDevice(REFIID r, void** pp) override { return real->GetDevice(r, pp); }
+    HRESULT STDMETHODCALLTYPE Present(UINT sync, UINT flags) override {
+        if (flags & DXGI_PRESENT_TEST) return real->Present(sync, flags);
+        HRESULT hr = game->Signal(fence, ++value);
+        if (FAILED(hr)) return hr;
+        if (++presents <= 3) return real->Present(sync, flags);
+        std::thread([&] { for (int i = 0; i < 2 && SUCCEEDED(hr); ++i) hr = real->Present(sync, flags); }).join();
+        return hr;
+    }
+    HRESULT STDMETHODCALLTYPE GetBuffer(UINT i, REFIID r, void** pp) override { return real->GetBuffer(i, r, pp); }
+    HRESULT STDMETHODCALLTYPE SetFullscreenState(BOOL f, IDXGIOutput* o) override { return real->SetFullscreenState(f, o); }
+    HRESULT STDMETHODCALLTYPE GetFullscreenState(BOOL* f, IDXGIOutput** o) override { return real->GetFullscreenState(f, o); }
+    HRESULT STDMETHODCALLTYPE GetDesc(DXGI_SWAP_CHAIN_DESC* d) override { return real->GetDesc(d); }
+    HRESULT STDMETHODCALLTYPE ResizeBuffers(UINT n, UINT w, UINT h, DXGI_FORMAT f, UINT fl) override { return real->ResizeBuffers(n, w, h, f, fl); }
+    HRESULT STDMETHODCALLTYPE ResizeTarget(const DXGI_MODE_DESC* d) override { return real->ResizeTarget(d); }
+    HRESULT STDMETHODCALLTYPE GetContainingOutput(IDXGIOutput** o) override { return real->GetContainingOutput(o); }
+    HRESULT STDMETHODCALLTYPE GetFrameStatistics(DXGI_FRAME_STATISTICS* s) override { return real->GetFrameStatistics(s); }
+    HRESULT STDMETHODCALLTYPE GetLastPresentCount(UINT* n) override { return real->GetLastPresentCount(n); }
+    HRESULT STDMETHODCALLTYPE GetDesc1(DXGI_SWAP_CHAIN_DESC1* d) override { return real->GetDesc1(d); }
+    HRESULT STDMETHODCALLTYPE GetFullscreenDesc(DXGI_SWAP_CHAIN_FULLSCREEN_DESC* d) override { return real->GetFullscreenDesc(d); }
+    HRESULT STDMETHODCALLTYPE GetHwnd(HWND* w) override { return real->GetHwnd(w); }
+    HRESULT STDMETHODCALLTYPE GetCoreWindow(REFIID r, void** pp) override { return real->GetCoreWindow(r, pp); }
+    HRESULT STDMETHODCALLTYPE Present1(UINT sync, UINT flags, const DXGI_PRESENT_PARAMETERS*) override { return Present(sync, flags); }
+    BOOL STDMETHODCALLTYPE IsTemporaryMonoSupported() override { return real->IsTemporaryMonoSupported(); }
+    HRESULT STDMETHODCALLTYPE GetRestrictToOutput(IDXGIOutput** o) override { return real->GetRestrictToOutput(o); }
+    HRESULT STDMETHODCALLTYPE SetBackgroundColor(const DXGI_RGBA* c) override { return real->SetBackgroundColor(c); }
+    HRESULT STDMETHODCALLTYPE GetBackgroundColor(DXGI_RGBA* c) override { return real->GetBackgroundColor(c); }
+    HRESULT STDMETHODCALLTYPE SetRotation(DXGI_MODE_ROTATION r) override { return real->SetRotation(r); }
+    HRESULT STDMETHODCALLTYPE GetRotation(DXGI_MODE_ROTATION* r) override { return real->GetRotation(r); }
+    HRESULT STDMETHODCALLTYPE SetSourceSize(UINT w, UINT h) override { return real->SetSourceSize(w, h); }
+    HRESULT STDMETHODCALLTYPE GetSourceSize(UINT* w, UINT* h) override { return real->GetSourceSize(w, h); }
+    HRESULT STDMETHODCALLTYPE SetMaximumFrameLatency(UINT n) override { return real->SetMaximumFrameLatency(n); }
+    HRESULT STDMETHODCALLTYPE GetMaximumFrameLatency(UINT* n) override { return real->GetMaximumFrameLatency(n); }
+    HANDLE STDMETHODCALLTYPE GetFrameLatencyWaitableObject() override { return real->GetFrameLatencyWaitableObject(); }
+    HRESULT STDMETHODCALLTYPE SetMatrixTransform(const DXGI_MATRIX_3X2_F* m) override { return real->SetMatrixTransform(m); }
+    HRESULT STDMETHODCALLTYPE GetMatrixTransform(DXGI_MATRIX_3X2_F* m) override { return real->GetMatrixTransform(m); }
+    UINT STDMETHODCALLTYPE GetCurrentBackBufferIndex() override { return real->GetCurrentBackBufferIndex(); }
+    HRESULT STDMETHODCALLTYPE CheckColorSpaceSupport(DXGI_COLOR_SPACE_TYPE c, UINT* s) override { return real->CheckColorSpaceSupport(c, s); }
+    HRESULT STDMETHODCALLTYPE SetColorSpace1(DXGI_COLOR_SPACE_TYPE c) override { return real->SetColorSpace1(c); }
+    HRESULT STDMETHODCALLTYPE ResizeBuffers1(UINT n, UINT w, UINT h, DXGI_FORMAT f, UINT fl, const UINT* m, IUnknown* const* q) override {
+        return real->ResizeBuffers1(n, w, h, f, fl, m, q);
+    }
+    HRESULT STDMETHODCALLTYPE SetHDRMetaData(DXGI_HDR_METADATA_TYPE t, UINT n, void* d) override { return real->SetHDRMetaData(t, n, d); }
+};
+
+// `selftest framesfg fs30 [noreg|alien|obj]`: a swap chain presented 3 times, then FSR 3.0's built in (Fs30Chain) presented
+// until the log says the panel's play time is done or its lookup ended (60 s at most). noreg: it registers nothing on its
+// real swap chain; alien: it registers the real swap chain, an object of dxgi's; obj: its address instead of its vtable. Prints "chains <frames of each>", "game <index>",
+// "fs30 timed <0|1>" and "done <0|1>".
+static int frames_fs30_rows(const std::wstring& dir, const wchar_t* how) {
+    SetEnvironmentVariableW(L"SCSKILLER_MODE", L"record");
+    HMODULE m = LoadLibraryW((dir + L"d3d12.dll").c_str());
+    auto proxy_create = m ? (decltype(&D3D12CreateDevice))GetProcAddress(m, "D3D12CreateDevice") : nullptr;
+    IDXGIFactory4* f = nullptr;
+    IDXGIAdapter* warp = nullptr;
+    ID3D12Device* dev = nullptr;
+    CHECK(proxy_create && SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&f))) && SUCCEEDED(f->EnumWarpAdapter(IID_PPV_ARGS(&warp))) &&
+          SUCCEEDED(proxy_create(warp, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev))));
+    D3D12_COMMAND_QUEUE_DESC qd = {};
+    ID3D12CommandQueue *q = nullptr, *pq = nullptr;
+    DXGI_SWAP_CHAIN_DESC1 d = {64, 64, DXGI_FORMAT_R8G8B8A8_UNORM, FALSE, {1, 0}, DXGI_USAGE_RENDER_TARGET_OUTPUT, 2};
+    d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    auto wnd = [] { return CreateWindowExW(0, L"STATIC", L"scskiller framesfg", WS_OVERLAPPEDWINDOW, 0, 0, 64, 64, nullptr, nullptr, nullptr, nullptr); };
+    IDXGISwapChain1* sc = nullptr;
+    CHECK(SUCCEEDED(dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&q))) && SUCCEEDED(f->CreateSwapChainForHwnd(q, wnd(), &d, nullptr, nullptr, &sc)));
+    for (int i = 0; i < 3; ++i) sc->Present(0, 0);
+    auto fi = new Fs30Chain;
+    fi->game = q;
+    IDXGISwapChain1* real1 = nullptr;
+    CHECK(SUCCEEDED(dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fi->fence))) && SUCCEEDED(dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&pq))) &&
+          SUCCEEDED(pq->SetName(L"AMD FSR PresentQueue")) && SUCCEEDED(f->CreateSwapChainForHwnd(pq, wnd(), &d, nullptr, nullptr, &real1)) &&
+          SUCCEEDED(real1->QueryInterface(IID_PPV_ARGS(&fi->real))));
+    real1->Release();
+    if (!how || wcscmp(how, L"noreg")) {
+        // as the SDK does: `this` as the data, so its first 8 bytes (the vtable pointer) are stored; obj: its address
+        const void* self = how && !wcscmp(how, L"alien") ? (const void*)fi->real : (const void*)fi;
+        CHECK(SUCCEEDED(fi->real->SetPrivateData(kFfxFi, sizeof(void*), how && !wcscmp(how, L"obj") ? (const void*)&self : self)));
+    }
+    IDXGISwapChain* game = fi;
+    bool done = false, ended = false;
+    for (ULONGLONG until = GetTickCount64() + 60000; !done && GetTickCount64() < until;) {
+        for (int i = 0; i < 10; ++i) game->Present(0, 0), Sleep(15);
+        std::string log = read_all(dir + L"scskiller.log");
+        done = log.find("s of play counted, done") != std::string::npos;
+        // refused: nothing more to wait for once the lookup ended and the panel can't count
+        ended = log.find("frames: FSR 3 frame generation built into") != std::string::npos;
+        if (ended && log.find("registered on it timed") == std::string::npos) break;
+    }
+    std::string log = read_all(dir + L"scskiller.log");
+    std::vector<long> chains;
+    long g;
+    frames_after(dir, 3, &chains, &g);
+    printf("chains");
+    for (long n : chains) if (n) printf(" %ld", n);
+    printf("\ngame %ld\nfs30 timed %d\ndone %d\n", g, log.find("registered on it timed") != std::string::npos, done);
+    game->Release();
     return 0;
 }
 
@@ -5742,6 +6012,15 @@ static int frames_fg_rows(const std::wstring& dir, const wchar_t* queue, bool ov
     int failed = 0;
     for (int i = 0; i < 3; ++i) failed += FAILED(sc->Present(0, 0)) + FAILED(sc->Present1(0, 0, &p));
     printf("presents failed %d\nframes %ld\n", failed, frames_after(dir, ours(sc) ? (queue ? 9 : 6) : -1));
+    if (queue && read_all(dir + L"scskiller.log").find("overlay: on") != std::string::npos) {
+        // the panel's play time runs out on the frames presented after frame generation took the slots back
+        bool done = false;
+        for (ULONGLONG until = GetTickCount64() + 60000; !done && GetTickCount64() < until;) {
+            for (int i = 0; i < 10; ++i) sc->Present(0, 0), Sleep(15);
+            done = read_all(dir + L"scskiller.log").find("s of play counted, done") != std::string::npos;
+        }
+        printf("done %d\n", done);
+    }
     return 0;
 }
 
@@ -7209,6 +7488,40 @@ static int nvopts_parent(const std::wstring& a, const std::wstring& bin, const s
     return bad ? 1 : 0;
 }
 
+// D3D11 warm: under Wine (SCSKILLER_TEST_WINE) a worker recreates its device every SCSKILLER_TEST_RECYCLE11 items and
+// still counts every item ok once, natively it never does. One thread: 64 items are 4 batches, a recreation after each
+// but the last.
+static int recycle11_rows(const std::wstring& d) {
+    ID3DBlob* cs = compile("RWBuffer<uint> b : register(u0); [numthreads(1,1,1)] void main() { b[0] = 1; }", "cs_5_0");
+    if (!cs) return printf("FAIL: recycle11: the CS didn't compile\n"), 1;
+    const std::string bytes((const char*)cs->GetBufferPointer(), cs->GetBufferSize()), h(20, '\x11');
+    auto rec = [](char tag, const std::string& p) { const uint32_t n = (uint32_t)p.size(); return tag + std::string((const char*)&n, 4) + p; };
+    std::string gen = rec('B', h + bytes);
+    for (int i = 0; i < 64; ++i) gen += rec('1', std::string("\x06\0\0\0", 4) + h);  // stage 6: CS
+    for (bool wine : {true, false}) {
+        if (!wine && GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version")) { printf("recycle11 native: skipped, this is Wine\n"); continue; }
+        const std::wstring sub = d + (wine ? L"recycle11wine\\" : L"recycle11native\\");
+        CreateDirectoryW(sub.c_str(), nullptr);
+        if (!CopyFileW((d + L"selftest.exe").c_str(), (sub + L"selftest.exe").c_str(), FALSE) || !CopyFileW((d + L"d3d12.dll").c_str(), (sub + L"d3d12.dll").c_str(), FALSE))
+            return printf("FAIL: recycle11: its folder couldn't be made\n"), 1;
+        FILE* f = _wfopen((sub + L"scskiller_gen.db").c_str(), L"wb");
+        if (!f) return 1;
+        fwrite(gen.data(), 1, gen.size(), f), fclose(f);
+        SetEnvironmentVariableW(L"SCSKILLER_TEST_RECYCLE11", L"16"), SetEnvironmentVariableW(L"SCSKILLER_THREADS", L"1");
+        if (wine) SetEnvironmentVariableW(L"SCSKILLER_TEST_WINE", L"1");
+        const int rc = run(sub + L"selftest.exe", L"warmonly 1");
+        SetEnvironmentVariableW(L"SCSKILLER_TEST_RECYCLE11", nullptr), SetEnvironmentVariableW(L"SCSKILLER_THREADS", nullptr), SetEnvironmentVariableW(L"SCSKILLER_TEST_WINE", nullptr);
+        if (rc) return rc;
+        const std::string log = read_all(sub + L"scskiller.log");
+        size_t made = 0;
+        for (size_t at = 0; (at = log.find("warm11: device recreated after 16 items", at)) != std::string::npos; ++at) ++made;
+        if (made != (wine ? 3u : 0u) || log.find("warm11: CS ok x64") == std::string::npos || log.find("failed:") != std::string::npos)
+            return printf("FAIL: recycle11 %s: %zu recreations, or not every item ok:\n%s\n", wine ? "wine" : "native", made, log.c_str()), 1;
+        printf("recycle11 %s: %zu recreations, 64 items ok\n", wine ? "wine" : "native", made);
+    }
+    return 0;
+}
+
 int wmain(int argc, wchar_t** argv) {
     std::wstring a(32768, L'\0');  // a run from a path past MAX_PATH (\\?\) loads the proxy beside it
     a.resize(GetModuleFileNameW(nullptr, a.data(), (DWORD)a.size()));
@@ -7231,7 +7544,7 @@ int wmain(int argc, wchar_t** argv) {
     if (argc > 2 && !wcscmp(argv[1], L"so")) return so_rows(dir, (unsigned)_wtoi(argv[2]));
     if (argc > 4 && !wcscmp(argv[1], L"burst"))
         return burst_rows(dir, _wtol(argv[2]), std::max(1, _wtoi(argv[3])), !wcscmp(argv[4], L"rec"), argc > 5 ? std::max(1, _wtoi(argv[5])) : 256,
-                          argc > 6 && !wcscmp(argv[6], L"compute"));
+                          argc > 6 && !wcscmp(argv[6], L"compute"), argc > 6 && !wcscmp(argv[6], L"late"));
     if (argc > 2 && !wcscmp(argv[1], L"frames")) return frames_rows(dir, _wtoi(argv[2]));
     if (argc > 1 && !wcscmp(argv[1], L"unload")) return unload_rows(dir);
     if (argc > 2 && !wcscmp(argv[1], L"preload")) return preload_rows(dir, argv[2]);
@@ -7242,8 +7555,9 @@ int wmain(int argc, wchar_t** argv) {
     if (argc > 2 && !wcscmp(argv[1], L"framesfg") && !wcscmp(argv[2], L"slm")) return frames_slm_rows(dir, argc > 3 ? argv[3] : L"");
     if (argc > 3 && !wcscmp(argv[1], L"framesfg") && !wcscmp(argv[2], L"sl"))
         return frames_sl_rows(dir, wcscmp(argv[3], L"new") != 0, !wcscmp(argv[3], L"shim"), !wcscmp(argv[3], L"many") ? 20 : 0);
+    if (argc > 2 && !wcscmp(argv[1], L"framesfg") && !wcscmp(argv[2], L"fs30")) return frames_fs30_rows(dir, argc > 3 ? argv[3] : nullptr);
     if (argc > 2 && !wcscmp(argv[1], L"framesfg") && !wcscmp(argv[2], L"ffx"))
-        return frames_ffx_rows(dir, argc > 3 && !wcscmp(argv[3], L"play"), argc > 3 && !wcscmp(argv[3], L"late"));
+        return frames_ffx_rows(dir, argc > 3 && !wcscmp(argv[3], L"play"), argc > 3 && !wcscmp(argv[3], L"late"), argc <= 4 ? 0 : !wcscmp(argv[4], L"rtss") ? 1 : !wcscmp(argv[4], L"rtsskeep") ? 2 : !wcscmp(argv[4], L"ucrtss") ? 3 : !wcscmp(argv[4], L"rtssuc") ? 4 : !wcscmp(argv[4], L"uclate") ? 5 : !wcscmp(argv[4], L"uconly") ? 6 : !wcscmp(argv[4], L"ucdisp") ? 7 : !wcscmp(argv[4], L"ucrax") ? 8 : !wcscmp(argv[4], L"ucpush") ? 9 : 0);
     if (argc > 1 && !wcscmp(argv[1], L"framescapture")) return frames_capture_rows(dir);
     if (argc > 1 && !wcscmp(argv[1], L"framesstorm")) return frames_storm_rows(dir);
     if (argc > 1 && !wcscmp(argv[1], L"framesdummy")) return frames_dummy_rows(dir);
@@ -7390,6 +7704,7 @@ int wmain(int argc, wchar_t** argv) {
             }
         }
         if (!rc) rc = run(d + L"selftest.exe", L"warm" + seed);
+        if (!rc) rc = recycle11_rows(d);
         if (rc) return rc;
         // every item created: the warm's list of what it didn't create is there and empty
         if (GetFileAttributesW((d + L"scskiller_failed.keys").c_str()) == INVALID_FILE_ATTRIBUTES || !read_all(d + L"scskiller_failed.keys").empty())

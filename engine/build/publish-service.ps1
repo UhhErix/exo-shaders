@@ -5,6 +5,7 @@
 #   ExoShaders.Service.exe (+ .NET runtime)
 #   zlib-ng2.dll                    Codecs seed it from AppContext.BaseDirectory into <data>\codecs
 #   native\d3d12.dll                the recorder (NativeTools.Find: <exe dir>\native\<file>)
+#   native\d3d9.dll, x86\d3d9.dll   the DirectX 9 recorder, for 64- and 32-bit games
 #   native\amd_ags_x64.dll          AGS app-name registration for AMD compiles
 #   native\scskiller_ags.dll        the recorder for games whose D3D12 device AGS creates (AMD)
 #   native\scskiller_warm.exe       the compile process
@@ -15,13 +16,13 @@
 #   scskiller.exe, scskillerw.exe   beside the service, sharing its one .NET runtime: ScheduledTask.TaskExe (the
 #                                   "re-warm after a driver update" task) and Elevated.CliExe (cache size / Auto
 #                                   Shader Compilation, run as administrator)
-# The native binaries are taken from SCSKiller 1.4.1-alpha.2 (prebuilt\SOURCE.md); proxy\ holds the 1.3.x source only.
+# The native binaries are SCSKiller 1.4.2's release builds (prebuilt\SOURCE.md) of the source in proxy\.
 #
 #   pwsh build\publish-service.ps1 [-NativeFrom <SCSKiller.App\current>] [-Out <dir>] [-SkipCli]
 
 [CmdletBinding()]
 param(
-    # SCSKiller 1.4.1-alpha.2's own native files, kept in prebuilt\.
+    # SCSKiller 1.4.2's own native files, kept in prebuilt\.
     [string]$NativeFrom = (Join-Path $PSScriptRoot '..\prebuilt'),
     [string]$Out,
     [switch]$SkipCli
@@ -35,6 +36,8 @@ $Out = [IO.Path]::GetFullPath($Out)
 
 $natives = @(
     'native\d3d12.dll',
+    'native\d3d9.dll',
+    'native\x86\d3d9.dll',
     'native\amd_ags_x64.dll',
     'native\scskiller_ags.dll',
     'native\scskiller_warm.exe',

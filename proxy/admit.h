@@ -8,6 +8,7 @@
 #include <share.h>
 #include <io.h>
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -62,7 +63,7 @@ static std::wstring module_path(HMODULE m) {
 // the marker, Riot, client and VAC checks still run but refuse on nothing they find, and the log names it all once, as it
 // opens. Nothing is hidden from the anti-cheat. risk= without pid= or with another value is refused ("risk= malformed").
 // What a check couldn't inspect (a folder that can't be listed, Steam files that can't be read) refuses as without risk.
-// The D3D12 proxy's: decided early at D3D12GetInterface, the same verdict runs again at the first device, and every device waits for it: a run
+// Decided early at D3D12GetInterface, the same verdict runs again at the first device, and every device waits for it: a run
 // it refuses becomes a pass-through there, before any device hook, with the SDK configuration's and the factories' slots
 // put back (one another hook took meanwhile stays, forwarding through ours, and the refused line says so). Such a run has
 // already opened scskiller.log, which then ends with that refusal and records nothing after it. A thread already in one of
@@ -208,7 +209,7 @@ static void refused(const char* why) {
     CreateDirectoryW(dir.substr(0, dir.find_last_of(L'\\')).c_str(), nullptr), CreateDirectoryW(dir.c_str(), nullptr);
     HANDLE h = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
     if (h == INVALID_HANDLE_VALUE) return;
-    char b[320];
+    char b[1024];
     int n = snprintf(b, sizeof b, "%lld %s", unix_ms(), why);
     DWORD w;
     WriteFile(h, b, (DWORD)std::clamp(n, 0, (int)sizeof b - 1), &w, nullptr);
@@ -219,7 +220,8 @@ static void refused(const char* why) {
 // added VAC): an exe in a Steam library is the app whose appmanifest names its folder, and it records only when that app
 // isn't one of Valve's VAC titles and appinfo.vdf has its info without the "Valve Anti-Cheat enabled" category (category_8).
 // Anything that can't be read or found refuses. An exe outside every Steam library isn't Steam's: no VAC, unless a
-// steam_appid.txt between it and the install root names a Steam app (Steamworks starts the game as that app).
+// steam_appid.txt between it and the install root names a Steam app (Steamworks starts the game as that app). One naming an
+// app Steam has no info about (named_vac) refuses only outside a risk session.
 static std::string read_all(const std::wstring& path, size_t cap = 1 << 20) {
     std::string s;
     if (FILE* f = _wfsopen(path.c_str(), L"rb", _SH_DENYNO)) {
@@ -526,13 +528,14 @@ static bool steam_root(std::wstring& steam) {
 // folder is unknown). nullptr: no VAC.
 static const char* vac_of(uint32_t app, const std::wstring& steam) {
     if (std::find(std::begin(kValveVac), std::end(kValveVac), app) != std::end(kValveVac)) return "VAC (a Valve game)";
-    if (steam.empty()) return "VAC: Steam's folder is unknown";
+    if (steam.empty()) return kVacNoSteam;
     // appinfo.vdf: u32 magic (v28 0x07564428, v29 0x07564429), u32 universe, [v29: i64 offset of the key string table],
     // then entries {u32 app, u32 size, u32 info state (2: Steam has the info), 56 more bytes, binary KeyValues} until app 0
-    FILE* f = _wfsopen(appinfo_path(steam).c_str(), L"rb", _SH_DENYNO);
-    if (!f) return "VAC: Steam's appinfo.vdf can't be read";
+    const std::wstring path = appinfo_path(steam);
+    FILE* f = path.empty() ? nullptr : _wfsopen(path.c_str(), L"rb", _SH_DENYNO);
+    if (!f) return !path.empty() && errno == ENOENT ? kVacNoAppinfo : "VAC: Steam's appinfo.vdf can't be read";
     const int64_t flen = _filelengthi64(_fileno(f));
-    const char* why = "VAC: the game isn't in Steam's appinfo.vdf";
+    const char* why = "VAC: Steam's appinfo.vdf can't be read";
     uint32_t hd[2] = {};
     int64_t table = 0;
     std::string entry;
@@ -540,7 +543,10 @@ static const char* vac_of(uint32_t app, const std::wstring& steam) {
     if (fread(hd, 4, 2, f) != 2 || (hd[0] != 0x07564428 && hd[0] != 0x07564429) || (hd[0] == 0x07564429 && (fread(&table, 8, 1, f) != 1 || table < 16 || table >= flen)))
         why = "VAC: Steam's appinfo.vdf isn't understood";
     else
-        for (uint32_t a[2]; fread(a, 4, 2, f) == 2 && a[0];) {
+        for (uint32_t a[2]; fread(a, 4, 1, f) == 1;) {
+            // only a list read to its end, its app 0 before v29's string table, says the app isn't in it
+            if (!a[0]) { if (hd[0] != 0x07564429 || _ftelli64(f) <= table) why = kVacNotListed; break; }
+            if (fread(a + 1, 4, 1, f) != 1) break;
             const int64_t left = (hd[0] == 0x07564429 ? table : flen) - _ftelli64(f);
             if (a[1] > left) { why = "VAC: Steam's appinfo.vdf is damaged"; break; }
             if (a[0] != app) { if (_fseeki64(f, a[1], SEEK_CUR)) break; continue; }
@@ -570,9 +576,9 @@ static const char* vac_of(uint32_t app, const std::wstring& steam) {
     memcpy(&state, entry.data(), 4);
     Kv kv{entry, 60, hd[0] == 0x07564429 ? &names : nullptr};
     if (!kv.object(0, 0)) return "VAC: the game's entry in appinfo.vdf is damaged";
-    if (!kv.common) return "VAC: Steam has no info about the game";
+    if (!kv.common) return kVacNoInfo;
     if (kv.vac) return "VAC (Steam marks the game)";
-    if (!kv.category && state != 2) return "VAC: Steam has no info about the game";
+    if (!kv.category && state != 2) return kVacNoInfo;
     return nullptr;
 }
 
@@ -584,7 +590,7 @@ static uint32_t app_id(const std::string& s) {
 }
 
 // The VAC of the app each steam_appid.txt in dirs names, by any case of its name: a case-sensitive folder can hold several.
-// A folder that can't be listed, or a file that can't be read or holds no app id, refuses.
+// A folder that can't be listed, or a file that can't be read, refuses, and so does one whose leading digits are no app id. One without them names none.
 static const char* vac_named(const std::vector<std::wstring>& dirs) {
     const char* vac = nullptr;
     for (auto& d : dirs) {
@@ -610,11 +616,15 @@ static const char* vac_named(const std::vector<std::wstring>& dirs) {
             if (ok) text.resize((size_t)size.QuadPart), ok = text.empty() || (ReadFile(h, text.data(), (DWORD)text.size(), &got, nullptr) && got == text.size());
             CloseHandle(h);
             if (!ok) return "VAC: a steam_appid.txt can't be read";
-            const size_t a = text.find_first_not_of(" \t\r\n"), b = text.find_last_not_of(" \t\r\n");
-            const uint32_t app = a == std::string::npos ? 0 : app_id(text.substr(a, b - a + 1));
+            if (!text.rfind("\xEF\xBB\xBF", 0)) text.erase(0, 3);
+            // Steamworks takes the leading digits: a file without them names no app
+            const size_t a = text.find_first_not_of(" \t\r\n\v\f+");
+            const std::string digits = a == std::string::npos ? "" : text.substr(a, text.find_first_not_of("0123456789", a) - a);
+            if (digits.empty()) continue;
+            const uint32_t app = app_id(digits);
             if (!app) return "VAC: a steam_appid.txt is malformed";
             std::wstring steam;
-            const char* why = vac_of(app, steam_root(steam) ? steam : L"");
+            const char* why = named_vac(vac_of(app, steam_root(steam) ? steam : L""));
             if (why && !strncmp(why, "VAC:", 4)) return why;
             if (why) vac = why;
         }
@@ -723,12 +733,12 @@ static const char* vac_now_unguarded() {
             if (n.size() < 16 || !same_name(n.substr(0, 12), L"appmanifest_") || !same_name(n.substr(n.size() - 4), L".acf")) continue;
             Vdf app;
             std::string a, d;
-            if (read_whole(dir + n, text)) return "VAC: a Steam manifest can't be read";
-            if (!vdf_root(text, "appstate", app)) return "VAC: a Steam manifest is malformed";
+            if (read_whole(dir + n, text)) return with_path("VAC: a Steam manifest can't be read", utf8(dir + n));
+            if (!vdf_root(text, "appstate", app)) return with_path("VAC: a Steam manifest is malformed", utf8(dir + n));
             const uint32_t id = vdf_one(app, "appid", a) ? app_id(a) : 0;
             const std::wstring w = vdf_one(app, "installdir", d) ? widen(d) : L"";
             if (!id || w.empty() || w == L"." || w == L".." || w.find_first_of(L"\\/:") != std::wstring::npos)
-                return "VAC: a Steam manifest names no single folder and app";
+                return with_path("VAC: a Steam manifest names no single folder and app", utf8(dir + n));
             const std::wstring folder = dir + L"common\\" + w;
             const DWORD e = real_of(folder, there);
             if (e == ERROR_CANT_RESOLVE_FILENAME) return "VAC: a Steam game folder's links loop";
@@ -806,7 +816,7 @@ static bool signed_by_app(const std::wstring& root) {
     const std::string key = read_all(dir + L"\\recorder.key", 256);
     if (key.size() < 32 || key.size() > 128) return false;
     const std::wstring stamp = signed_stamp(ini_string(L"exe_size"), ini_string(L"exe_time"), pid, ini_string(L"pid_time"), ini_string(L"risk"), ini_string(L"vendor"),
-                                            ini_string(L"overlay"), ini_string(L"ab_play_s"), ini_string(L"ab_tag"));
+                                            ini_string(L"overlay"), ini_string(L"ab_play_s"), ini_string(L"ab_tag"), traversal_lines(ini_string));
     const auto no_slash = [](const std::wstring& d) { return d.substr(0, d.size() > 3 ? d.size() - 1 : d.size()); };
     const std::wstring exe_key = file_key(exe), want = recorder_sig(key, exe_key, folder_file_key(no_slash(admit_dir())), stamp, ini_string(L"root"),
                                                                       folder_file_key(no_slash(root)));

@@ -94,6 +94,29 @@ public static partial class UpdateChannels
         return All[Math.Max(at, 0)];
     }
 
+    /// <summary>The channel <see cref="Effective"/> checks in place of the wanted one the account doesn't get; null: the wanted
+    /// one, or not known yet (signed in, no token read).</summary>
+    public static string? SteppedDown(string? chosen, string buildChannel, IReadOnlyCollection<string>? ent, bool signedIn)
+    {
+        var wanted = chosen ?? buildChannel;
+        if (signedIn && ent == null || !All.Contains(wanted)) return null;
+        var e = Effective(chosen, buildChannel, ent);
+        return e == wanted ? null : e;
+    }
+
+    /// <summary>About's channel: the running build's, or the one checked and why.</summary>
+    public static string Shown(string? chosen, string buildChannel, IReadOnlyCollection<string>? ent, bool signedIn) =>
+        SteppedDown(chosen, buildChannel, ent, signedIn) is { } c
+            ? $"{Shown(c)} ({(signedIn ? "your Patreon membership doesn't include" : "sign in with Patreon for")} {chosen ?? buildChannel} builds)"
+            : Shown(buildChannel);
+
+    public static string Shown(string channel) => char.ToUpperInvariant(channel[0]) + channel[1..] + " channel";
+
+    /// <summary>The note after a check of <paramref name="checkedChannel"/> found nothing newer: it names that channel when it
+    /// isn't the wanted one.</summary>
+    public static string UpToDate(string checkedChannel, string? chosen, string buildChannel) =>
+        checkedChannel == (chosen ?? buildChannel) ? "SCSKiller is up to date." : $"SCSKiller is up to date on the {checkedChannel} channel.";
+
     /// <summary>A download from the <paramref name="staged"/> channel's feed still installs: it is the feed <see cref="Effective"/>
     /// picks. With the entitlements unknown (null: signed in, but no token read since the start, as at a logon without
     /// network) any channel from stable up to the chosen one does: it was downloaded while that channel was allowed.</summary>

@@ -242,8 +242,8 @@ public class NewsTests : IDisposable
     [Fact]
     public void WhatsNew_ReadsTheVersionsSection()
     {
-        Assert.Equal(["One line.", "Two lines with `code`.", "A fix."], WhatsNew.Section(Changelog, "1.3.0")!.Bullets);
-        Assert.Equal(["Older."], WhatsNew.Section(Changelog, "1.2.3")!.Bullets);
+        Assert.Equal(["One line.", "Two lines with `code`.", "A fix."], WhatsNew.Section(Changelog, "1.3.0")!.Lines.Where(l => !l.Heading && !l.Group).Select(l => l.Text));
+        Assert.Equal(["Older."], WhatsNew.Section(Changelog, "1.2.3")!.Lines.Where(l => !l.Heading && !l.Group).Select(l => l.Text));
         Assert.Null(WhatsNew.Section(Changelog, "1.4.0"));
         Assert.NotNull(WhatsNew.Section(WhatsNew.Changelog, "1.3.0"));   // embedded at build
         Assert.NotNull(WhatsNew.ForAbout(new(0, 0, 0, "internal.0")));   // a dev build: the newest released section

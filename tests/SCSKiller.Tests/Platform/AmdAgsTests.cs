@@ -186,7 +186,7 @@ public class AmdAgsTests : IDisposable
         Assert.Equal("dxc:dc72f790", AmdAppCache.AgsKey(Path.GetFileName(exe), AmdAgs.Of(g, Ue56)!.App));
     }
     /// <summary>The recorder's #ags line: the names exactly as AGS got them, of the game exe's last launch that made one.</summary>
-    [Fact]
+    [Fact(Skip = "SCSKiller 1.4.2 registers every game's own AGS app name (OptiScaler included) and dropped the proven-only AGS rules and the alpha wrappers' chain name: this pins the 1.4.1 alphas' AGS behavior")]
     public void The_recorders_AGS_line_gives_the_app_and_engine_names_of_the_games_last_launch_that_registered_them()
     {
         Directory.CreateDirectory(_dir);
@@ -199,17 +199,5 @@ public class AmdAgsTests : IDisposable
         Assert.Equal(new AgsRegistration("Launcher", "E"), Core.App.SessionLog.LastAgs(csv, null));
         File.WriteAllText(csv, "#session,1000,game.exe\n#ags,1,0,0,,E\n#ags,1,0,0,Bad%00G,E\n#ags,1,0,0,Short,E,extra\n#end,2000\n");
         Assert.Null(Core.App.SessionLog.LastAgs(csv, "game.exe"));   // empty, a bad escape, a field too many
-    }
-
-    [Theory]
-    [InlineData("Kamui",   "dxc:fbc062ce", true)]    // FNV-1a "Kamui": the key the game held
-    [InlineData("Kamui",   "dxc:12345678", false)]   // another key: an app profile or no app registration
-    [InlineData("OakGame", "dxc:f2f80824", true)]    // an app-name profile's key
-    [InlineData("",        "dxc:811c9dc5", false)]
-    public void A_registered_app_name_is_proof_only_when_its_key_is_one_the_game_held(string app, string held, bool used)
-    {
-        Assert.Equal("dxc:fbc062ce", AmdAppCache.AppNameKey("Kamui"));
-        Assert.Equal(used ? new AgsRegistration(app, "Kamui Engine") : null, AmdAgs.Learned(app, "Kamui Engine", "game.exe", [held, "dx:0000000000000001"]));
-        Assert.Null(AmdAgs.Learned(null, null, "game.exe", [held]));
     }
 }

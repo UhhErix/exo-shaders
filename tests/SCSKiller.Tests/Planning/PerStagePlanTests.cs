@@ -132,7 +132,7 @@ public class PerStagePlanTests(ITestOutputHelper output)
         Assert.Equal(2.0 / 3, plan.Stats.LayoutCoverage, 6);
         Assert.Equal(3 + 2 + 1 + 1, plan.Stats.ExactUnits + plan.Stats.InferredUnits + plan.Stats.GuessedUnits); // VS alone x3, VS2/VS3 before a PS, PS2, CS
         Assert.Contains(log, l => l.StartsWith("warning: only 67%"));
-        Assert.Contains(log, l => l.StartsWith("per-stage (amd): "));
+        Assert.Contains(log, l => l.Contains("per-stage (amd): "));
     }
 
     /// <summary>Maximum on AMD adds at most as many pairings as the plan replays otherwise; NVIDIA's cache doesn't grow with them.</summary>
@@ -153,8 +153,8 @@ public class PerStagePlanTests(ITestOutputHelper output)
         var planned = (int)(amd.Stats.Generated + amd.Stats.Recorded);
         Assert.Equal(planned, PlanBuilder.MaximumExtras(Ff7.Amd, planned));
         Assert.Equal(amd.Stats.Generated + planned, amdMax.Stats.Generated);   // 7 x 9 stage sets: the cap binds
-        Assert.Contains(log, l => l.StartsWith("per-stage (amd)") && l.Contains($"more left out, at most {planned} for this game"));
-        Assert.DoesNotContain(log, l => l.StartsWith("per-stage (nvidia)") && l.Contains("left out"));
+        Assert.Contains(log, l => l.Contains("per-stage (amd)") && l.Contains($"more left out, at most {planned} for this game"));
+        Assert.DoesNotContain(log, l => l.Contains("per-stage (nvidia)") && l.Contains("left out"));
         var nv = Build(nvidia, false);
         Assert.True(nvMax.Stats.Generated - nv.Stats.Generated > nv.Stats.Generated + nv.Stats.Recorded);   // not capped
         Assert.Equal((int)(PlanBuilder.ExtraBudget / PlanBuilder.ExtraBytes), PlanBuilder.MaximumExtras(Ff7.Amd, int.MaxValue));

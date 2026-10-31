@@ -68,6 +68,7 @@ public sealed class SteamShortcutSource(string? steamRoot = null) : IGameSource
         }
         catch (ArgumentException e) { why = e.Message; }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or NotSupportedException) { why = e.Message; }
+        catch (Exception e) when (e is not OperationCanceledException) { why = $"{e.GetType().Name}: {e.Message}"; }
         return null;
     }
 

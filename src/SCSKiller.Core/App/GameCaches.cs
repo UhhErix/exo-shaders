@@ -117,6 +117,7 @@ public static partial class D3DSCache
         return paths.Count > 0 ? paths : null;
     }
 
+    // read in windows that overlap by SQLite's biggest page: a killed merge leaves a WAL of many GB, past an array's size
     static void ReadWal(string file, HashSet<string> paths)
     {
         using var s = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan);
@@ -305,11 +306,11 @@ public static partial class D3DSCache
     /// game started) ends it early: the game's db is rolled back and released, the rest left as it is. <paramref name="refused"/>
     /// gets why each db stayed out. The adapter dbs take the identity <see cref="Decide"/> gives (an Xbox game's
     /// <paramref name="package"/> family), which <paramref name="stamped"/> gets when an adapter db went in or all stayed out for it.
-    /// <paramref name="added"/> gets the keys each db added. <paramref name="progress"/> gets the units of <see cref="MergeWork"/> done
-    /// as they go. <paramref name="checkedDbs"/>: the game's dbs by path as <see cref="CheckStamp"/> read them after the last check
-    /// or write of ours; one still the same skips its check.</summary>
+    /// <paramref name="progress"/> gets the units of <see cref="MergeWork"/> done as they go. <paramref name="checkedDbs"/>: the game's
+    /// dbs by path as <see cref="CheckStamp"/> read them after the last check or write of ours; one still the same skips its check.</summary>
     public static bool MergeInto(string from, string to, string exe, Action<long>? added = null, Func<bool>? stop = null, Action<string>? refused = null,
-        string? package = null, Action<IdentityStamp>? stamped = null, Action<long>? progress = null, IDictionary<string, string>? checkedDbs = null)
+        string? package = null, Action<IdentityStamp>? stamped = null, Action<long>? progress = null, IDictionary<string, string>? checkedDbs = null,
+        Action<bool>? past = null)
     {
         var ok = true;
         Lookup(exe, out var read);
@@ -325,7 +326,7 @@ public static partial class D3DSCache
         {
             string? why;
             try { why = stop?.Invoke() == true ? GameStarted : MergeDb(f, Path.Combine(to, Path.GetFileName(f)), exe, added, stop, decided.Stamped,
-                decided.Source == IdentityStamp.ByRule, progress, checkedDbs); }
+                decided.Source == IdentityStamp.ByRule, progress, checkedDbs, past); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { why = e.Message; }
             into |= why == null && Path.GetFileName(f).Contains("_VEN_", StringComparison.OrdinalIgnoreCase);
             if (why == null) continue;
@@ -430,13 +431,56 @@ public static partial class D3DSCache
     public static bool OwnDbRefusal(string why) => why.StartsWith("the compile's db", StringComparison.Ordinal) && why != "the compile's db is open in another process"
         || why == "the rows couldn't be written";
 
+    /// <summary>Free space a fold or a warm leaves on a volume: below it a fold stops and a warm pauses. Windows and the
+    /// driver's cache write at a warm's exit need room.</summary>
+    public const long DiskFloor = 10L << 30;
+
+    const string NoRoomWhy = "not enough free disk space";
+
+    /// <summary>A <see cref="MergeInto"/> refusal for free space: the dbs stay where they are, nothing was written.</summary>
+    public static bool NoRoom(string why) => why.StartsWith(NoRoomWhy, StringComparison.Ordinal);
+
+    /// <summary>What a merge of the staged folder <paramref name="dir"/> needs free: its biggest db twice (the game db's WAL,
+    /// then the checkpoint into the db) and <see cref="DiskFloor"/>.</summary>
+    public static long RoomFor(string dir) => 2 * CacheFiles(dir).Select(f => f.Length).DefaultIfEmpty().Max() + DiskFloor;
+
+    // the insert's WAL and then its checkpoint each take about the staged db again, a copy to another volume takes it once
+    static string? Room(string from, string to, bool copy, long size)
+    {
+        var need = !copy ? 2 * size + DiskFloor : SameVolume(from, to) ? 0 : size + DiskFloor;
+        return need > 0 && FreeBytes(to) is { } free && free < need ? $"{NoRoomWhy}: it needs {Format.Bytes(need)} free on {Drive(to)}" : null;
+    }
+
+    public static string Drive(string path) => Volume(path)?.TrimEnd('\\') ?? path;
+
+    // a Unix path's root is always "/": Linux asks the mount (links followed), macOS has no statx
+    static string? Volume(string path) => OperatingSystem.IsWindows() ? Path.GetPathRoot(Path.GetFullPath(path))
+        : OperatingSystem.IsLinux() ? Games.GameFiles.VolumeOf(Path.GetFullPath(path)) : null;
+
+    /// <summary>Free bytes on <paramref name="path"/>'s volume, null when unknown. SCSKILLER_TEST_DISK_FREE names a file whose
+    /// number stands for every volume's, read at each call (E2E).</summary>
+    public static long? FreeBytes(string path)
+    {
+        try
+        {
+            if (Environment.GetEnvironmentVariable("SCSKILLER_TEST_DISK_FREE") is { Length: > 0 } test)
+                return long.TryParse(File.ReadAllText(test).Trim(), out var n) ? n : null;
+            if (OperatingSystem.IsWindows()) return new DriveInfo(Path.GetPathRoot(Path.GetFullPath(path))!).AvailableFreeSpace;
+            // statvfs of the nearest folder that exists, links followed
+            var dir = Path.GetFullPath(path);
+            while (!Directory.Exists(dir) && Path.GetDirectoryName(dir) is { } up) dir = up;
+            return new DriveInfo(dir).AvailableFreeSpace;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { return null; }
+    }
+
     /// <summary>A <see cref="MergeInto"/> refusal read from the dbs' content alone, under their locks: it stands until a db changes.
     /// One of a lock, an open, an identity or a write may pass without any.</summary>
     public static bool Lasting(string why) => why is "the game's db has another schema" or "the game's db names another compiler" or "the game's db names another exe";
 
     /// <summary>Null when merged, else why not.</summary>
     static string? MergeDb(string from, string to, string exe, Action<long>? added, Func<bool>? stop, AppIdentity? asd = null, bool byRule = false,
-        Action<long>? progress = null, IDictionary<string, string>? checkedDbs = null)
+        Action<long>? progress = null, IDictionary<string, string>? checkedDbs = null, Action<bool>? past = null)
     {
         // the runtime stamps a registered exe's identity into its adapter db only, and empties an adapter db without it
         var adapter = Path.GetFileName(from).Contains("_VEN_", StringComparison.OrdinalIgnoreCase);
@@ -463,9 +507,29 @@ public static partial class D3DSCache
         T Step<T>(long bytes, Func<T> run)
         {
             var (at, start) = (reported, ReadBytes());
+            var (ended, over) = (false, false);
             T result;
-            using (progress == null ? null : new Timer(_ => Advance(at + Math.Clamp(ReadBytes() - start, 0, bytes)), null, 1000, 1000))
-                result = run();
+            using (progress == null ? null : new Timer(_ =>
+            {
+                lock (gate)
+                {
+                    if (ended) return;
+                    var read = ReadBytes() - start;
+                    Advance(at + Math.Clamp(read, 0, bytes));
+                    // past its estimate the step's share can't be told: shown as writing until it ends
+                    if (read >= bytes && !over) try { past?.Invoke(over = true); } catch (Exception) { }   // a timer thread's throw would end the app
+                }
+            }, null, 1000, 1000))
+                try { result = run(); }
+                finally
+                {
+                    lock (gate)
+                    {
+                        ended = true;
+                        // a display callback that throws never changes the merge's path
+                        if (over) try { past?.Invoke(false); } catch (Exception) { }
+                    }
+                }
             Advance(at + bytes);
             return result;
         }
@@ -477,10 +541,11 @@ public static partial class D3DSCache
             try { return (stopped |= stop()) ? 1 : 0; }
             catch (Exception) { return 0; }
         };
+        Func<bool>? halt = check == null ? null : () => check(0) != 0;
         if (!Open(from, out var src, uri: true)) return "the compile's db can't be opened";
         if (check != null) sqlite3_progress_handler(src, 10000, check, 0);
-        (long Keys, long Vals)? lacking = null;
         long rows = 0;
+        (long Keys, long Vals)? lacking = null;
         try
         {
             long busy = -1;
@@ -490,8 +555,10 @@ public static partial class D3DSCache
                 || !schema.Contains("keys:") || !schema.Contains("vals:") || !schema.Contains("app_id:")) return "the compile's db fails SQLite's check";
             // read without the game's db lock, which a check of a big db would hold for minutes
             if (!copy) lacking = Exec(src, $"attach database {Quote(Immutable(to))} as g") ? Lacking(src, "main", "g") : null;
-            if (lacking is not (0, 0) && Step(size, () => Text(src, "pragma main.quick_check")) != "ok") return stop?.Invoke() == true ? GameStarted : "the compile's db fails SQLite's check";
-            if (copy) Rows(src, "select count(*) from keys", st => rows = sqlite3_column_int64(st, 0));
+            // the db as it is now, its WAL's rows included: a copy checkpointed them into it above
+            if (lacking is not (0, 0) && Room(from, to, copy, new FileInfo(from).Length + (File.Exists(from + "-wal") ? new FileInfo(from + "-wal").Length : 0)) is { } room) return room;
+            if (lacking is not (0, 0) && Step(size, () => QuickCheck(src, "main", from, halt)) != "ok") return stop?.Invoke() == true ? GameStarted : "the compile's db fails SQLite's check";
+            Rows(src, "select count(*) from keys", st => rows = sqlite3_column_int64(st, 0));
         }
         finally
         {
@@ -595,7 +662,7 @@ public static partial class D3DSCache
             }
             var write = now is not (0, 0);
             string? refused = null;
-            if (write && lacking is (0, 0) && Step(size, () => Text(t, "pragma s.quick_check")) != "ok") refused = "the compile's db fails SQLite's check";   // unchecked before: nothing was missing then
+            if (write && lacking is (0, 0) && Step(size, () => QuickCheck(t, "s", from, halt)) != "ok") refused = "the compile's db fails SQLite's check";   // unchecked before: nothing was missing then
             // a full check reads 1.2x the db, every page cold: between full checks (FullDue) only its size and the keys' b-trees,
             // which the insert searches, and the rows it writes are read back in full before the commit. A db with free pages or
             // auto-vacuum gets the full check: an insert reuses those pages or writes pointer maps, and only it knows none is in use.
@@ -603,7 +670,7 @@ public static partial class D3DSCache
             var full = FullDue(checkedDbs, to) || FreePages(t) != 0 || Text(t, "pragma main.auto_vacuum") != "0";
             if (write && refused == null && (full || !known))
             {
-                if (full && Step(g, () => Text(t, "pragma main.quick_check")) == "ok")
+                if (full && Step(g, () => QuickCheck(t, "main", to, halt)) == "ok")
                 {
                     if (checkedDbs != null && FullStamp(to, DateTime.UtcNow) is { } at) checkedDbs[to + FullKey] = at;
                 }
@@ -630,20 +697,27 @@ public static partial class D3DSCache
                 return refused;
             }
             var fresh = Fresh("s", "main");
+            rows = 0;
             long last = 0;
+            if (write) Rows(t, $"select count(*) from {fresh}", st => rows = sqlite3_column_int64(st, 0));
+            long key = 0;
             if (write) Rows(t, "select coalesce(max(rowid), 0) from main.vals", st => last = sqlite3_column_int64(st, 0));
-            // groups stay out: no driver writes them yet
+            if (write) Rows(t, "select coalesce(max(keyid), 0) from main.keys", st => key = sqlite3_column_int64(st, 0));
+            // groups stay out: no driver writes them yet. An insert whose select reads main.vals copies its rows to a temp file
+            // first: the new keys' values, the bulk, go in without that read
             var wrote = !write || Step(size, () => Exec(t, $"insert into main.keys(key, last_accessed) select k.key, k.last_accessed from {fresh}")
+                && Exec(t, "insert into main.vals(keyid, type, value) select m.keyid, v.type, v.value from main.keys m join s.keys k on k.key = m.key "
+                    + $"join s.vals v on v.keyid = k.keyid where m.keyid > {key}")
                 && Exec(t, "insert into main.vals(keyid, type, value) select m.keyid, v.type, v.value from s.keys k join s.vals v on v.keyid = k.keyid "
-                    + "join main.keys m on m.key = k.key where not exists (select 1 from main.vals x where x.keyid = m.keyid and x.type = v.type)")
+                    + $"join main.keys m on m.key = k.key where m.keyid <= {key} and not exists (select 1 from main.vals x where x.keyid = m.keyid and x.type = v.type)")
                 && Text(t, string.Format(ReadBackSql, last)) is { } back && back == Text(t, StagedRowsSql));
             var halted = wrote && stop?.Invoke() == true;
-            if (wrote && !halted && Exec(t, "commit"))
+            if (wrote && !halted && Step(0, () => Exec(t, "commit")))
             {
                 // checked (or skipped as unchanged) and written by us alone: the stamp after the checkpoint stands for that state
-                if (checkedDbs != null && (write || known) && Rows(t, "pragma main.wal_checkpoint(TRUNCATE)", st => { }) && CheckStamp(to) is { } after)
+                if (checkedDbs != null && (write || known) && Step(0, () => Rows(t, "pragma main.wal_checkpoint(TRUNCATE)", st => { })) && CheckStamp(to) is { } after)
                     checkedDbs[to] = after;
-                added?.Invoke(now?.Keys ?? 0);
+                added?.Invoke(rows);
                 Advance(work);
                 return null;
             }
@@ -653,7 +727,7 @@ public static partial class D3DSCache
             if (stop?.Invoke() == true) return GameStarted;
             // the verdict of the check it skipped
             if (check != null) sqlite3_progress_handler(t, 10000, check, 0);
-            var verdict = Step(g, () => Text(t, "pragma main.quick_check"));
+            var verdict = Step(g, () => QuickCheck(t, "main", to, halt));
             return stop?.Invoke() == true ? GameStarted : verdict != "ok" ? "the game's db fails SQLite's check" : "the rows couldn't be written";
         }
         finally
@@ -666,6 +740,27 @@ public static partial class D3DSCache
     }
 
     const string FromBefore = "the game's db is from before its shader delivery";
+
+    /// <summary>SQLite's check of <paramref name="file"/>, attached as <paramref name="schema"/>, after one sequential read of it.</summary>
+    // measured: SQLite reads a cold db a page at a time, about 60 MB/s on NVMe, a sequential read fills the file cache at disk speed
+    // ponytail: a db bigger than free memory keeps little of it, the read then costs one pass
+    static string? QuickCheck(nint db, string schema, string file, Func<bool>? stop)
+    {
+        try
+        {
+            using var s = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan);
+            var buffer = new byte[4 << 20];
+            while (stop?.Invoke() != true)
+                try
+                {
+                    if (s.Read(buffer) == 0) break;
+                }
+                catch (IOException) { s.Position += buffer.Length; }   // SQLite's lock bytes at 1 GB, under this merge's own lock
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }   // SQLite's own read decides
+        // its check of a cold db sees a stop only every 10,000 pages
+        return stop?.Invoke() == true ? null : Text(db, $"pragma {schema}.quick_check");
+    }
 
     static long FreePages(nint t) => long.TryParse(Text(t, "pragma main.freelist_count"), out var n) ? n : -1;
 
@@ -737,8 +832,8 @@ public static partial class D3DSCache
     /// bytes to another volume.</summary>
     static long Work(long size, long? game, bool sameVolume, bool full) => game is { } g ? 2 * size + (full ? g : 0) : sameVolume ? size : 2 * size;
 
-    static bool SameVolume(string a, string b) =>
-        string.Equals(Path.GetPathRoot(Path.GetFullPath(a)), Path.GetPathRoot(Path.GetFullPath(b)), StringComparison.OrdinalIgnoreCase);
+    internal static bool SameVolume(string a, string b) => Volume(a) is { } v
+        && string.Equals(v, Volume(b), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
     /// <summary>The progress units <see cref="MergeInto"/> reports for the staged folder <paramref name="from"/> going into
     /// <paramref name="to"/> (null: no folder of the game's yet), with the full checks due by <paramref name="checkedDbs"/>.</summary>
@@ -837,6 +932,72 @@ public static partial class D3DSCache
                 && (key?.GetValue(WarmOwner) is not long started || p.StartTime.ToFileTimeUtc() == started);
         }
         catch (Exception e) when (e is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { return false; }
+    }
+
+    /// <summary>Windows' automatic disk cleanup empties D3DSCache: its "D3D Shader Cache" handler has Autorun 1 and Storage
+    /// Sense is on (its policy, else the user's switch). Only read, never written. SCSKILLER_TEST_D3DSCACHE_CLEANUP: a test
+    /// run's stand-in, 1 on, anything else off.</summary>
+    public static bool CleanedAutomatically()
+    {
+        if (Environment.GetEnvironmentVariable("SCSKILLER_TEST_D3DSCACHE_CLEANUP") is { Length: > 0 } test) return test == "1";
+        if (!OperatingSystem.IsWindows()) return false;
+        try
+        {
+            using var handler = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(CleanupHandler);
+            using var policy = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Policies\Microsoft\Windows\StorageSense");
+            using var sense = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy");
+            // the SilentCleanup maintenance task runs cleanmgr /autocleanstoragesense: Autorun puts the handler in it, Storage Sense runs it (the task's state needs admin)
+            return handler?.GetValue("Autorun") is 1 && (policy?.GetValue("AllowStorageSenseGlobal") ?? sense?.GetValue("01")) is 1;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException) { return false; }
+    }
+
+    // the only cleanup handler that empties D3DSCache (its subfolders), NVIDIA's and AMD's folders have none
+    const string CleanupHandler = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches\D3D Shader Cache";
+    const string KeptAutorun = "SCSKillerAutorun";   // Autorun before KeepFromCleanup(true), -1 = none
+
+    /// <summary>Windows' automatic cleanup leaves D3DSCache alone: its handler's Autorun is 0 (a manual Disk Cleanup still
+    /// offers it). Null: no handler, unreadable, or not Windows.</summary>
+    public static bool? CleanupKept()
+    {
+        if (!OperatingSystem.IsWindows()) return null;
+        try
+        {
+            using var handler = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(CleanupHandler);
+            return handler == null ? null : handler.GetValue("Autorun") is 0;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException) { return null; }
+    }
+
+    /// <summary>Keeps Windows' automatic cleanup (Storage Sense, the maintenance task) from emptying D3DSCache: Autorun 0, the
+    /// value before it kept beside it. False puts that value back (1, Windows' default, when none was kept). Needs admin.
+    /// Returns the outcome line, throws when the value read back differs.</summary>
+    public static string KeepFromCleanup(bool keep)
+    {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Windows' disk cleanup is Windows only");
+        using var handler = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(CleanupHandler, true)
+            ?? throw new InvalidOperationException("Windows' disk cleanup has no shader cache entry on this PC");
+        var now = handler.GetValue("Autorun");
+        int? want = 0;
+        if (keep)
+        {
+            if (now is not 0)
+            {
+                if (now is not (null or int) || Equals(now, -1)) throw new InvalidOperationException($"Windows' disk cleanup setting holds an unexpected value ({now}), left as it is");
+                if (handler.GetValue(KeptAutorun) is not int) handler.SetValue(KeptAutorun, now is int n ? n : -1, Microsoft.Win32.RegistryValueKind.DWord);
+                handler.SetValue("Autorun", 0, Microsoft.Win32.RegistryValueKind.DWord);
+            }
+        }
+        else
+        {
+            want = handler.GetValue(KeptAutorun) switch { -1 => null, int n => n, _ => 1 };
+            if (want is { } w) handler.SetValue("Autorun", w, Microsoft.Win32.RegistryValueKind.DWord);
+            else handler.DeleteValue("Autorun", false);
+        }
+        if (handler.GetValue("Autorun") is var after && (after as int?) != want)
+            throw new InvalidOperationException($"Windows' disk cleanup setting reads {after ?? "nothing"} after the change, not {want?.ToString() ?? "nothing"}");
+        if (!keep) handler.DeleteValue(KeptAutorun, false);
+        return keep ? "Windows' automatic disk cleanup no longer clears compiled shaders." : "Windows' automatic disk cleanup can clear compiled shaders again.";
     }
 
     /// <summary>The registration the runtime applies to <paramref name="exe"/> (HKLM and HKCU): its ExePath is the exe's final
@@ -1004,8 +1165,8 @@ public static partial class D3DSCache
     [DllImport(Sqlite)] internal static extern nint sqlite3_column_text(nint stmt, int col);
     [DllImport(Sqlite)] internal static extern long sqlite3_column_int64(nint stmt, int col);
     [DllImport(Sqlite)] static extern int sqlite3_finalize(nint stmt);
-    [DllImport(Sqlite)] static extern void sqlite3_progress_handler(nint db, int ops, Progress? check, nint arg);
     [DllImport(Sqlite)] static extern nint sqlite3_errstr(int rc);
+    [DllImport(Sqlite)] static extern void sqlite3_progress_handler(nint db, int ops, Progress? check, nint arg);
 }
 
 /// <summary>Unreal's user pipeline cache, <c>&lt;Saved&gt;\&lt;Project&gt;_&lt;ShaderPlatform&gt;.upipelinecache</c>. Saved's place varies
@@ -1049,14 +1210,17 @@ public static class UnrealUserCache
             .Distinct(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The <c>*.ushaderprecache</c> files (a shader and pipeline cache some Unreal games write themselves, and rebuild
-    /// at their next start) in <c>&lt;root&gt;\&lt;folder&gt;</c> and two levels below (its Saved folder); never inside the install.</summary>
-    public static IReadOnlyList<string> PrecacheFilesOf(Game g, IEnumerable<string> roots, IEnumerable<string> folders)
+    /// at their next start), or those of <paramref name="pattern"/>, in <c>&lt;root&gt;\&lt;folder&gt;</c> and two levels below
+    /// (its Saved folder); never inside the install.</summary>
+    /// <param name="noLinks">no folder or file that is a link (junction, symlink): what is read stays the game's own</param>
+    public static IReadOnlyList<string> PrecacheFilesOf(Game g, IEnumerable<string> roots, IEnumerable<string> folders, string pattern = "*.ushaderprecache", bool noLinks = false)
     {
         var install = Path.TrimEndingDirectorySeparator(Path.GetFullPath(g.InstallDir)) + Path.DirectorySeparatorChar;
-        var options = new EnumerationOptions { IgnoreInaccessible = true, AttributesToSkip = 0, RecurseSubdirectories = true, MaxRecursionDepth = 2 };
+        var options = new EnumerationOptions { IgnoreInaccessible = true, AttributesToSkip = noLinks ? FileAttributes.ReparsePoint : 0, RecurseSubdirectories = true, MaxRecursionDepth = 2 };
         var names = folders.ToList();
         return roots.Where(Directory.Exists).SelectMany(r => names.Select(n => Path.Combine(r, n))).Where(Directory.Exists)
-            .SelectMany(d => Directory.EnumerateFiles(d, "*.ushaderprecache", options))
+            .Where(d => !noLinks || !new DirectoryInfo(d).Attributes.HasFlag(FileAttributes.ReparsePoint))
+            .SelectMany(d => Directory.EnumerateFiles(d, pattern, options))
             .Where(f => !Path.GetFullPath(f).StartsWith(install, StringComparison.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }

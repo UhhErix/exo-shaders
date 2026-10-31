@@ -65,7 +65,7 @@ public sealed partial class ScsKiller
             : s.RecorderRefused is { } refused && refused != GameChangedNote && !refused.StartsWith(RanOtherExe) ? refused
             : s.Status is not (GameStatus.Ready or GameStatus.Warmed or GameStatus.Stale or GameStatus.NeedsRecording) ? s.StatusReason
             : s.Playing || GameRunning(s.Game) ? $"{s.Game.Name} is running"
-            : compiling ? "Wait for the compile to finish"
+            : compiling ? "Wait for the compile to finish" + (QueueItemOf(gameId)?.StartedAt is { } at ? $" (started {at.LocalDateTime:t})" : "")
             : rec.BeforeAfter is { Stage: not Done } ? "A before and after recording is already in progress"
             // Clear cache would refuse
             : AppCache != null && DriverKeys(s.Game, rec).Keys is { Count: > 0 } keys && SharedWith(gameId, keys) is { Count: > 0 } shared
@@ -86,7 +86,7 @@ public sealed partial class ScsKiller
             var rec = Store.LoadGame(gameId);
             string? note = null;
             NotColdNote(gameId, ref note);
-            rec.BeforeAfter = new BeforeAfterRecord { Stage = BeforeArmed, Minutes = minutes, ArmedAt = Clock(), DriverId = DriverId, Build = BuildNow(g), Overlay = overlay && CountdownDraws(Find(gameId)), Max = max && MaxCompileAdds(Vendor.Caps, Find(gameId).Engine),
+            rec.BeforeAfter = new BeforeAfterRecord { Stage = BeforeArmed, Minutes = minutes, ArmedAt = Clock(), DriverId = DriverId, Build = BuildNow(g), Overlay = overlay, Max = max && MaxCompileAdds(Vendor.Caps, Find(gameId).Engine),
                 Survivors = survivors, ClearGap = gap, Problem = note };
             _played.TryRemove(gameId, out _);
             Changed(g, rec);
@@ -649,11 +649,6 @@ public sealed partial class ScsKiller
     static bool Dx11Only(GameState s) => s.Engine is { } e && Dx11Only(e);
     internal static bool Dx11Only(EngineInfo e) => e.GraphicsApi.StartsWith("D3D11") && !e.GraphicsApi.Contains("D3D12");
 
-    /// <summary>The recorder can draw the in-game countdown: not in a DirectX 12 game beside Ubisoft Connect's loader on Windows,
-    /// where it hooks no dxgi slot and System32's swap chain doesn't name its queue.</summary>
-    public static bool CountdownDraws(GameState s) => !OperatingSystem.IsWindows() || Dx11Only(s) || s.Engine is { } e && Vulkan.VulkanPlan.IsVulkan(e)
-        || !File.Exists(Path.Combine(Path.GetDirectoryName(s.Game.ExePath)!, "upc_r2_loader64.dll"));
-
     static string F(string format, params object[] args) => string.Format(System.Globalization.CultureInfo.InvariantCulture, format, args);
 
     /// <summary>The before run's end: its GLCache set-aside goes back (one still waiting holds the compile: AsideHeldNote, and
@@ -708,6 +703,7 @@ public sealed partial class ScsKiller
                     if (learn && own.Count == 1)
                     {
                         (rec.CacheKeys, rec.GameKeys) = ([.. rec.CacheKeys, own[0]], [.. rec.GameKeys, own[0]]);
+                        StampDriver(rec, own);
                         Store.SaveGame(g.Id, rec);
                         learned = own[0];
                         Log?.Report($"{g.Name}: its DirectX 11 cache key {learned} learned from the before run");

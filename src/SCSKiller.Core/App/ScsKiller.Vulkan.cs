@@ -1,4 +1,3 @@
-using SCSKiller.Core.Carved;
 using SCSKiller.Core.Games;
 using SCSKiller.Core.Unity;
 using SCSKiller.Core.Vulkan;
@@ -57,6 +56,13 @@ public sealed partial class ScsKiller
 
     /// <summary>A game on Vulkan with a layer key (<see cref="VulkanLayer.Key"/>), on a vendor with a Vulkan warm: its recorder is the layer.</summary>
     bool VulkanRoute(Game g, EngineInfo? e) => VulkanLayer.Key(g) != null && e != null && VulkanPlan.IsVulkan(e) && Vendor.Caps.VulkanKey != null;
+
+    /// <summary>A DirectX game whose exe loads vulkan-1.dll too (the carver's <see cref="EngineInfo.OffersVulkan"/>), with no
+    /// API picked: it runs either, so the layer goes in beside the DirectX recorder (<see cref="ReconcileLayerBeside"/>) and
+    /// a recording tells which it ran (<see cref="WithApiChoice"/>).</summary>
+    bool BothApis(GameState s, GameRecord rec) => OperatingSystem.IsWindows() && rec.ApiOverride == null && s.Engine is { OffersVulkan: true } e
+        && Carved.CarvedReader.Carved(e) && ApiKey(s.ApiDetected ?? e.GraphicsApi) is { } detected && detected != "vk"
+        && VulkanLayer.Key(s.Game) != null && Vendor.Caps.VulkanKey != null;
 
     /// <summary>Why this copy's layer can't be registered for the game: another copy's registration for it, another
     /// program's loader settings file, or a loader too old for one. Null: it can.</summary>
@@ -237,7 +243,7 @@ public sealed partial class ScsKiller
                     }
                     else Uninstall(g, rec);
                     _recorderSkips.TryRemove(id, out _);
-                    KeepFailure(id, rec, null);   // 1.4.0-beta.1: a failure shown on the page goes once the layer is in or out
+                    KeepFailure(id, rec, null);
                     RecorderLog($"{g.Name}: Vulkan recorder {(update ? "updated" : want ? "installed" : "removed")} ({dir})");
                     changed = true;
                 }
@@ -255,24 +261,23 @@ public sealed partial class ScsKiller
                 {
                     note = (want ? "couldn't install: " : "couldn't remove: ") + e.Message;
                     RecorderLog($"{g.Name}: Vulkan recorder {note}");
-                    // the page says why, as the DirectX recorder's failures do (an antivirus that took the layer's file, ...)
                     note = want ? InstallFailed(g, e, update) : "couldn't remove: " + FailureReason(e, dir);
                 }
         }
         else if (want && !GameRunning(g) && _removedFromAll) note = RemovedFromAllNote;   // a registration the removal left: never armed again
         else if (want && !GameRunning(g))
         {
-            if (src != null && File.Exists(src)) changed |= KeepFailure(id, rec, null);   // in place and up to date: no failure left to show
+            if (src != null && File.Exists(src)) changed |= KeepFailure(id, rec, null);   // in place and current, its source still there
             if (clean && !File.Exists(Path.Combine(dir, "scskiller.ini"))) UpdateRecorderIni(g, rec, "");
             if (clean && !Attest(ArmTarget(g), rec, stamp, gen)) note = ForeignIni(dir, rec);
             else UpdateRecorderIni(g, rec);
         }
-        if (!want) KeepFailure(id, rec, null);
         if (want && VulkanInboxDir(g) is { } inbox && !rec.VulkanInboxes.Contains(inbox, StringComparer.OrdinalIgnoreCase))
         {
             rec.VulkanInboxes.Add(inbox);   // the exe's file key while it records: Steam replacing the exe leaves it to import
             Store.SaveGame(id, rec);
         }
+        if (!want) KeepFailure(id, rec, null);
         if (note != _recorderNotes.GetValueOrDefault(id))
         {
             if (note == null) _recorderNotes.TryRemove(id, out _); else _recorderNotes[id] = note;
@@ -317,7 +322,7 @@ public sealed partial class ScsKiller
         lock (_scanLock) _scan?.Remove(g.Id);   // the next refresh evaluates the game again, its anti-cheat too
     }
 
-    /// <summary>The layer's copy and manifest in the data folder, on the record, then registered for the game.</summary>
+    /// <summary>The layer's copy and manifest in the data folder, on the record before they're registered.</summary>
     void PlaceLayer(Game g, GameRecord rec, string manifest, string src)
     {
         var folder = Path.GetDirectoryName(manifest)!;
@@ -331,15 +336,9 @@ public sealed partial class ScsKiller
         VulkanLayer.Register(manifest, g);
     }
 
-    /// <summary>A carved game that runs on DirectX or Vulkan (<see cref="CarvedReader.Carved"/>, BeamNG.drive) whose API the
-    /// user left on Auto and detection found DirectX: it's recorded on whichever it runs, the DirectX recorder in its folder
-    /// with the layer beside it (SCSKiller 1.4.1-alpha.2). Windows only, where both can be registered for one exe.</summary>
-    bool BothApis(GameState s, GameRecord rec) =>
-        OperatingSystem.IsWindows() && rec.ApiOverride == null && s.Engine is { OffersVulkan: true } e && CarvedReader.Carved(e)
-        && ApiKey(s.ApiDetected ?? e.GraphicsApi) is { } key && key != "vk" && VulkanLayer.Key(s.Game) != null && Vendor.Caps.VulkanKey != null;
-
-    /// <summary><see cref="Reconcile"/>'s layer of a <see cref="BothApis"/> game: registered while the DirectX recorder is
-    /// <paramref name="armed"/> in its folder, out otherwise. Nothing changes while the game runs. The page's note, or null.</summary>
+    /// <summary>For a game on <see cref="BothApis"/>: the layer registered while the DirectX recorder is in its exe's folder
+    /// (<paramref name="armed"/>, which signed the ini the layer reads too), placed again when the app's copy changed, out
+    /// otherwise. The note why it isn't registered, or null. A running game's change waits for it to exit.</summary>
     string? ReconcileLayerBeside(Game g, GameRecord rec, bool armed, ref bool changed)
     {
         if (GameRunning(g)) return null;
@@ -353,10 +352,9 @@ public sealed partial class ScsKiller
             }
             return null;
         }
-        if (_removedFromAll) return null;   // the DirectX recorder's note says so
-        var key = VulkanLayer.Key(g)!;
-        var manifest = VulkanManifest(key);
-        if (VulkanBlocked(g, key, manifest) is { } blocked) return blocked;
+        if (_removedFromAll) return null;
+        var manifest = VulkanManifest(VulkanLayer.Key(g)!);
+        if (VulkanBlocked(g, VulkanLayer.Key(g)!, manifest) is { } blocked) return blocked;
         if (VulkanInboxDir(g) is { } inbox && !rec.VulkanInboxes.Contains(inbox, StringComparer.OrdinalIgnoreCase))
         {
             rec.VulkanInboxes.Add(inbox);   // as ReconcileVulkan: Steam replacing the exe leaves it to import
@@ -364,7 +362,7 @@ public sealed partial class ScsKiller
         }
         var src = VulkanLayerSource;
         if (rec.VulkanLayer != null && File.Exists(manifest) && VulkanLayer.Registered(manifest, g)
-            && (src == null || !File.Exists(src) || SameBytes(Path.Combine(Path.GetDirectoryName(manifest)!, VulkanLayer.Dll), src))) return null;
+            && !(src != null && File.Exists(src) && !SameBytes(Path.Combine(Path.GetDirectoryName(manifest)!, VulkanLayer.Dll), src))) return null;
         try
         {
             if (src == null || !File.Exists(src)) throw new FileNotFoundException($"the Vulkan recorder ({VulkanLayer.Dll}) was not found next to the app");
@@ -506,7 +504,7 @@ public sealed partial class ScsKiller
     /// ponytail: the folder stands in for Steam's pre-caching setting, read Steam's config if a game with it off keeps one.</summary>
     Dictionary<string, string>? VulkanWarmEnv(Game g, GameRecord rec)
     {
-        // 1.4.1-alpha.2: Steam's folder the variables name is made again when Steam's clear took it, so the compile has it to write in
+        // the NVIDIA driver writes nothing when the folder its variable names is missing (measured), and Steam makes AMD's only after a Vulkan run on AMD
         if (SteamVulkanDir(g, rec) is { } steam && !Directory.Exists(steam))
             try
             {
@@ -520,53 +518,46 @@ public sealed partial class ScsKiller
         if (rec.VulkanCacheEnv != null || !OperatingSystem.IsWindows() || Vendor.Vendor != GpuVendor.Nvidia || File.Exists(FozPath(g.Id))
             || SteamGlCache(g) is not { } gl || Path.GetDirectoryName(gl) is not { } nv || !Directory.Exists(nv)) return rec.VulkanCacheEnv;
         Log?.Report($"{g.Name}: the compile writes Steam's Vulkan cache of the game in {nv}");
-        return new(StringComparer.OrdinalIgnoreCase)
-        {
-            ["__GL_SHADER_DISK_CACHE_PATH"] = nv, ["__GL_SHADER_DISK_CACHE_APP_NAME"] = SteamGlAppName,
-            ["__GL_SHADER_DISK_CACHE_READ_ONLY_APP_NAME"] = "steam_shader_cache;steamapp_merged_shader_cache", ["__GL_SHADER_DISK_CACHE_SKIP_CLEANUP"] = "1",
-        };
+        return SteamCacheVars(GpuVendor.Nvidia, nv);
     }
 
-    /// <summary>Steam's folder of the game's app that the vendor's variable names (<see cref="VulkanPlan.SteamCache"/>'s first
-    /// folder: NVIDIA's nvidiav1, AMD's AMDv1), when the compile's cache variables point there. Windows only; null otherwise.</summary>
-    string? SteamVulkanDir(Game g, GameRecord rec)
+    /// <summary>The variables Steam's launches set for the app's folder <paramref name="dir"/> (<see cref="VulkanPlan.SteamCache"/>), as recorded.</summary>
+    static Dictionary<string, string> SteamCacheVars(GpuVendor vendor, string dir) => vendor == GpuVendor.Nvidia
+        ? new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["__GL_SHADER_DISK_CACHE_PATH"] = dir, ["__GL_SHADER_DISK_CACHE_APP_NAME"] = SteamGlAppName,
+            ["__GL_SHADER_DISK_CACHE_READ_ONLY_APP_NAME"] = "steam_shader_cache;steamapp_merged_shader_cache", ["__GL_SHADER_DISK_CACHE_SKIP_CLEANUP"] = "1",
+        }
+        : new(StringComparer.OrdinalIgnoreCase) { ["AMD_VK_USE_PIPELINE_CACHE"] = "1", ["AMD_VK_PIPELINE_CACHE_PATH"] = dir, ["AMD_VK_PIPELINE_CACHE_FILENAME"] = SteamGlAppName };
+
+    /// <summary>On Windows, for a Steam game with DXVK's d3d11.dll: Steam's folder of its app that this vendor's Vulkan cache
+    /// variable names. Steam sets it for every launch, so the game's DXVK reads that folder's cache, keyed on the app alone
+    /// (measured). Null otherwise. ponytail: a launch from outside Steam reads the vendor's own cache instead, record #cache
+    /// for D3D11 games if those need covering too.</summary>
+    string? DxvkSteamDir(Game g)
     {
         if (!OperatingSystem.IsWindows() || VulkanPlan.SteamCache(OwnDriver) is not (_, { } tail) || SteamGlCache(g) is not { } dir
-            || VulkanPlan.CachePath(rec.VulkanCacheEnv, OwnDriver) is not { } env) return null;
+            || Warmer.DxvkDll(OwnDriver, g.ExePath, steam: true) == null) return null;
         for (var up = tail.Length; up > 1; up--) dir = Path.GetDirectoryName(dir)!;
-        return SamePath(env, dir) ? dir : null;
+        return dir;
     }
 
-    /// <summary>A compiled Vulkan game whose cache is in Steam's folder (<see cref="SteamVulkanDir"/>) that holds none of the
-    /// files the game and the compile write there or Steam's own any more: Steam cleared it. On AMD a .parc counts while it
-    /// holds entries (<see cref="Vendors.AmdAppCache.HasEntries"/>). Null: still there, or it can't be told (a link, a file unread).</summary>
-    string? SteamVulkanGone(string gameId, GameRecord r)
+    /// <summary>A DirectX 11 warm's variables: Steam's (<see cref="DxvkSteamDir"/>), its folder made first as the driver writes
+    /// nothing without it. Kept when the folder can't be made: the driver's own cache isn't what the game reads. Null: the
+    /// driver's own cache.</summary>
+    Dictionary<string, string>? DxvkWarmEnv(Game g)
     {
-        if (r.WarmedAt == null || Games.FirstOrDefault(s => s.Game.Id == gameId) is not { } state || !VulkanRoute(state.Game, state.Engine)
-            || SteamVulkanDir(state.Game, r) is not { } dir) return null;
-        try
-        {
-            if (File.GetAttributes(dir).HasFlag(FileAttributes.ReparsePoint)) return null;
-            var found = false;
-            foreach (var entry in new DirectoryInfo(dir).EnumerateFileSystemInfos("*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = false, AttributesToSkip = 0 }))
-            {
-                if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint)) return null;   // where it points isn't ours to read
-                if (entry is not FileInfo || !entry.Name.StartsWith(SteamGlAppName, StringComparison.OrdinalIgnoreCase) && !Vendors.AppCacheFiles.SteamOwn(entry.Name)) continue;
-                if (OwnDriver != GpuVendor.Amd || !entry.Extension.Equals(".parc", StringComparison.OrdinalIgnoreCase)) found = true;
-                else if (Vendors.AmdAppCache.HasEntries(entry.FullName) is { } entries) found |= entries;   // a .parc without entries holds nothing compiled
-                else return null;
-            }
-            return found ? null : TrimmedAllReason;
-        }
-        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException) { return TrimmedAllReason; }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
+        if (DxvkSteamDir(g) is not { } dir) return null;
+        try { Directory.CreateDirectory(dir); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Log?.Report($"{g.Name}: Steam's Vulkan cache folder {dir} couldn't be made: {e.Message}"); }
+        Log?.Report($"{g.Name}: the compile writes Steam's Vulkan cache of the game in {dir}");
+        return SteamCacheVars(OwnDriver, dir);
     }
 
-    /// <summary>The game's driver-cache bytes: its keys' files and its files in Steam's GLCache folder (<see cref="SteamGlFiles"/>),
-    /// what Clear cache deletes. Null: none known.</summary>
+    /// <summary>The game's driver-cache bytes: its keys' files (NVIDIA: its <see cref="LiveKeys"/>') and its files in Steam's
+    /// GLCache folder (<see cref="SteamGlFiles"/>). Null: none known.</summary>
     long? CacheOnDiskOf(Game g, EngineInfo? engine, GameRecord rec)
     {
-        // NVIDIA (1.4.0-beta.1): the keys the game and its last compile use, not an earlier compile's (the Cache page's Earlier compiles)
         long? keyed = rec.CacheKeys.Count > 0 && AppCache != null ? AppCache.SizeOf(AppCache is Vendors.NvidiaAppCache ? LiveKeys(rec) : rec.CacheKeys) : null;
         return SteamGlFiles(g, engine) is { Count: > 0 } steam ? (keyed ?? 0) + steam.Sum(f => f.Length) : keyed;
     }
@@ -576,16 +567,17 @@ public sealed partial class ScsKiller
     long? CacheInUseOf(Game g, EngineInfo? engine, GameRecord rec) =>
         AppCache is Vendors.NvidiaAppCache nv && rec.CacheKeys.Count > 0 ? nv.UsedOf(LiveKeys(rec)) + SteamGlFiles(g, engine).Sum(f => f.Length) : null;
 
-    /// <summary>The keys the game reads: those its own process or its last complete compile held, once both are known; all
-    /// of them otherwise. The rest an earlier compile alone opened (SCSKiller 1.4.0-beta.1).</summary>
+    /// <summary>The keys the game's own process or the last complete warm held open, once both are known, else every learned
+    /// one. The others only an earlier compile opened: the game doesn't read them.</summary>
     static IEnumerable<string> LiveKeys(GameRecord r) =>
         r.GameKeys.Count > 0 && r.WarmedKeys is { } warmed ? r.CacheKeys.Where(k => r.GameKeys.Contains(k) || warmed.Contains(k)) : r.CacheKeys;
 
-    /// <summary>NVIDIA: drops from <see cref="GameRecord.CacheKeys"/> the keys no longer in use (<see cref="LiveKeys"/>) whose
-    /// files are gone from the driver's cache folder; true when any went.</summary>
+    /// <summary>NVIDIA: forgets the DXCache keys outside <see cref="LiveKeys"/> whose files are gone (a Clear cache, the driver's
+    /// cleanup), by a listing of the folder that didn't fail. Returns whether any went.</summary>
     bool PruneGoneKeys(GameRecord r)
     {
         if (AppCache is not Vendors.NvidiaAppCache nv) return false;
+        // Vulkan's, older drivers' and other vendors' keys aren't 8 hex digits: their files are elsewhere
         var old = r.CacheKeys.Except(LiveKeys(r)).Where(k => k.Length == 8 && k.All(Uri.IsHexDigit)).ToList();
         if (old.Count == 0) return false;
         HashSet<string> present;
@@ -607,6 +599,39 @@ public sealed partial class ScsKiller
                 .Where(f => f.Name.StartsWith(SteamGlAppName, StringComparison.OrdinalIgnoreCase) || Vendors.AppCacheFiles.SteamOwn(f.Name))];
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return []; }
+    }
+
+    /// <summary>On Windows, Steam's folder of the game's app that this vendor's Vulkan cache variable names (<see cref="VulkanPlan.SteamCache"/>),
+    /// when the game's recorded session ran with it there, so its warm writes there too. Null: elsewhere or none.</summary>
+    string? SteamVulkanDir(Game g, GameRecord rec)
+    {
+        if (!OperatingSystem.IsWindows() || VulkanPlan.SteamCache(OwnDriver) is not (_, { } tail) || SteamGlCache(g) is not { } dir || VulkanPlan.CachePath(rec.VulkanCacheEnv, OwnDriver) is not { } path) return null;
+        for (var up = tail.Length; up > 1; up--) dir = Path.GetDirectoryName(dir)!;
+        return SamePath(path, dir) ? dir : null;
+    }
+
+    /// <summary>The last warm wrote Steam's folder (<see cref="SteamVulkanDir"/>) and none of the game's files are left there:
+    /// Steam cleared its shader cache. On AMD a .parc without an entry counts as none (<see cref="Vendors.AmdAppCache.HasEntries"/>).
+    /// Null while the folder or anything in it is a link, or it or a .parc can't be read.</summary>
+    string? SteamVulkanGone(string gameId, GameRecord r)
+    {
+        if (r.WarmedAt == null || Games.FirstOrDefault(s => s.Game.Id == gameId) is not { } s || !VulkanRoute(s.Game, s.Engine) || SteamVulkanDir(s.Game, r) is not { } dir) return null;
+        try
+        {
+            if (File.GetAttributes(dir).HasFlag(FileAttributes.ReparsePoint)) return null;
+            var found = false;
+            foreach (var e in new DirectoryInfo(dir).EnumerateFileSystemInfos("*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = false, AttributesToSkip = 0 }))
+            {
+                if (e.Attributes.HasFlag(FileAttributes.ReparsePoint)) return null;
+                if (e is not FileInfo || !e.Name.StartsWith(SteamGlAppName, StringComparison.OrdinalIgnoreCase) && !Vendors.AppCacheFiles.SteamOwn(e.Name)) continue;
+                if (OwnDriver != GpuVendor.Amd || !e.Extension.Equals(".parc", StringComparison.OrdinalIgnoreCase)) found = true;
+                else if (Vendors.AmdAppCache.HasEntries(e.FullName) is { } entries) found |= entries;
+                else return null;
+            }
+            return found ? null : TrimmedAllReason;
+        }
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException) { return TrimmedAllReason; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
     }
 
     /// <summary>For Clear cache's delete of <see cref="SteamGlFiles"/>: the game's lock, after the Linux placer took its

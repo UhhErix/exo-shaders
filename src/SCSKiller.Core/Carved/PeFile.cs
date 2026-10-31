@@ -12,7 +12,12 @@ public static class PeFile
     // Not a FileStream: PEReader maps its sections over 16 KB, and a read error in a mapped page (0xC0000006) ends the
     // process. A stream read throws IOException.
     // ponytail: reads a whole section (a UE exe's .rdata: 20-35 MB), a lazy RVA reader if HDD scans slow down
-    public static PEReader Open(string path) => new(new BufferedStream(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)));
+    // PEReader throws ArgumentException for a stream over 2 GB: a bigger file reads its first 2 GB, a section past them is BadImageFormat
+    public static PEReader Open(string path)
+    {
+        var s = new BufferedStream(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete));
+        return new(s, PEStreamOptions.Default, s.Length > int.MaxValue ? int.MaxValue : 0);   // 0: the length at validation, a file shortened meanwhile too
+    }
 
     /// <summary>What the DLL was linked as (kept when the file is renamed); null if none.</summary>
     public static string? ExportName(PEReader pe)

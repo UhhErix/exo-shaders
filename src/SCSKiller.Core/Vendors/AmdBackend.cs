@@ -113,20 +113,7 @@ public sealed class AmdBackend : IGpuVendorBackend, IRefreshableGpu
         string? release = null, store = null;
         try
         {
-            using var cls = Registry.LocalMachine.OpenSubKey(DisplayClass);
-            RegistryKey? best = null;
-            foreach (var name in cls?.GetSubKeyNames() ?? [])
-            {
-                if (name.Length != 4 || !name.All(char.IsAsciiDigit)) continue;   // 0000, 0001, ... ("Properties" is locked)
-                RegistryKey? k;
-                try { k = cls!.OpenSubKey(name); } catch (System.Security.SecurityException) { continue; }
-                if (k == null) continue;
-                bool amd = (k.GetValue("MatchingDeviceId") as string)?.Contains("VEN_1002", StringComparison.OrdinalIgnoreCase) == true;
-                bool named = string.Equals((k.GetValue("DriverDesc") as string)?.Trim(), adapterName.Trim(), StringComparison.OrdinalIgnoreCase);
-                if (amd && (named || best == null)) { best?.Dispose(); best = k; if (named) break; }
-                else k.Dispose();
-            }
-            using (best)
+            using (var best = AdapterKey(adapterName))
             {
                 store = (best?.GetValue("DriverVersion") as string)?.Trim() is { Length: > 0 } d ? d : null;
                 if (best?.GetValue("RadeonSoftwareVersion") is string { Length: > 0 } v) return (v.Trim(), store);
@@ -141,5 +128,46 @@ public sealed class AmdBackend : IGpuVendorBackend, IRefreshableGpu
         }
         catch (Exception e) when (e is System.Security.SecurityException or UnauthorizedAccessException or IOException) { }
         return (release?.Split('-')[0] is { Length: > 0 } r ? r.Trim() : null, store);
+    }
+
+    /// <summary>The class key's subkey of the AMD adapter whose DriverDesc is <paramref name="adapterName"/>, else of the first AMD
+    /// adapter; null when none. SCSKILLER_TEST_DISPLAY_CLASS: a test run's stand-in for the class key, an HKCU subkey.</summary>
+    static RegistryKey? AdapterKey(string adapterName)
+    {
+        using var cls = Environment.GetEnvironmentVariable("SCSKILLER_TEST_DISPLAY_CLASS") is { Length: > 0 } test
+            ? Registry.CurrentUser.OpenSubKey(test) : Registry.LocalMachine.OpenSubKey(DisplayClass);
+        RegistryKey? best = null;
+        foreach (var name in cls?.GetSubKeyNames() ?? [])
+        {
+            if (name.Length != 4 || !name.All(char.IsAsciiDigit)) continue;   // 0000, 0001, ... ("Properties" is locked)
+            RegistryKey? k;
+            try { k = cls!.OpenSubKey(name); } catch (System.Security.SecurityException) { continue; }
+            if (k == null) continue;
+            bool amd = (k.GetValue("MatchingDeviceId") as string)?.Contains("VEN_1002", StringComparison.OrdinalIgnoreCase) == true;
+            bool named = string.Equals((k.GetValue("DriverDesc") as string)?.Trim(), adapterName.Trim(), StringComparison.OrdinalIgnoreCase);
+            if (amd && (named || best == null)) { best?.Dispose(); best = k; if (named) break; }
+            else k.Dispose();
+        }
+        return best;
+    }
+
+    /// <summary>Whether the adapter's shader cache mode is Always on: UMD\ShaderCache, REG_BINARY UTF-16 "0" off, "1" AMD
+    /// optimized, "2" Always on (community-documented, not by AMD; missing = the default). In that mode every DirectX 11 app
+    /// writes &lt;48 hex&gt;.bin files whose key differs between the game and a warm under its name (seen on 26.9.2). False
+    /// when missing or unreadable.</summary>
+    public static bool CacheAlwaysOn(string adapterName)
+    {
+        try
+        {
+            using var k = AdapterKey(adapterName);
+            using var umd = k?.OpenSubKey("UMD");
+            return umd?.GetValue("ShaderCache") switch
+            {
+                byte[] b => b is [(byte)'2'] or [(byte)'2', 0, ..],
+                string s => s.Trim('\0', ' ') == "2",
+                _ => false,
+            };
+        }
+        catch (Exception e) when (e is System.Security.SecurityException or UnauthorizedAccessException or IOException) { return false; }
     }
 }

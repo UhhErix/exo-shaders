@@ -1,35 +1,30 @@
 # Prebuilt native files
 
-Taken unchanged from SCSKiller 1.4.1-alpha.2 (the alpha feed's `SCSKiller.App-1.4.1-alpha.2-alpha-full.nupkg`, SHA-256
-978de2901e70743e7889711dac611652fbd4eef695a9a871a216cd700da71913, `lib\app\`, as installed by the official app's updater on
-2026-10-28). That alpha's source isn't public (no 1.4 tag, branch or release on github.com/BlueHeisenberg/SCSKiller, and
-the package holds binaries only), so this branch stays local: it is never pushed or released until upstream publishes
-1.4's source. `proxy\` holds the 1.3.x source of the DX12 files with 1.3.4's recorder and compile changes; the Vulkan
-layer, fossilize-replay, the preload proxies, 1.4.0-beta.1's recorder changes and 1.4.1-alpha.1's traversal fix (the
-`traversal_*` lines of the recorder's scskiller.ini, read by d3d12.dll and VkLayer_scskiller.dll) are in these binaries
-only. publish-service.ps1 copies them into engine\out\service in the app's layout.
+Taken unchanged from SCSKiller 1.4.2's release (github.com/BlueHeisenberg/SCSKiller, release v1.4.2,
+`SCSKiller.App-1.4.2-stable-full.nupkg`, SHA-256 7a5f82a10b2ed19e6d7d8a0d6d32e54dded82a5166783a15a83545022ce51adb, the
+same hash as the release's `releases.stable.json`; `lib\app\`), downloaded 2026-10-30. Their source is public: `proxy\`
+holds upstream v1.4.2's (v1.4.3 changes no native file), merged with the fork's in `exo-shaders-upstream-1.4.3`. So these
+are the release builds of the source in this repository, and the alpha-only state this folder had before is over.
+publish-service.ps1 copies them into engine\out\service in the app's layout.
 
-What changed since the alpha.1 files this folder held before (read from the binaries, not their source):
+What changed since the 1.4.1-alpha.2 files this folder held before:
 
-- scskiller_warm.exe (both): 1.3.4's `--known-keys` (items that crashed or hung this driver in an earlier compile,
-  skipped and counted as `known`) and `--asd-name`/`--asd-engine`/`--asd-version`/`--asd-psdb` (the game's Advanced
-  Shader Delivery, registered for the staged exe so the driver compiles only what it doesn't serve); `cached`, `known`
-  and `culprits` in its progress, retry, done and error events, read by Warming/Warmer.cs. alpha.1's refused both
-  arguments (its parser ends on an unknown one), so Core's 1.3.4 compiles need these files.
-- d3d12.dll and scskiller_ags.dll: the exports the warm calls for them (`SCSKiller_CountCached`, `SCSKiller_Cached`,
-  `SCSKiller_WarmKnown`, `SCSKiller_Known`), as in 1.3.4's `proxy\d3d12.def`.
-- Every other file but amd_ags_x64.dll and zlib-ng2.dll was rebuilt too.
+- `native\d3d9.dll` and `native\x86\d3d9.dll` are new: the DirectX 9 recorder for 64- and 32-bit games.
+- Every other file but amd_ags_x64.dll and zlib-ng2.dll was rebuilt (1.4.2's recorder, traversal fix, warm and Vulkan
+  layer).
 
 | File | SHA-256 | From |
 | --- | --- | --- |
-| native/VkLayer_scskiller.dll | 4e7695c2c8d638495f29b95a3b1c00c6a36cd26ec232bef02a156d336b122229 | SCSKiller 1.4.1-alpha.2 |
-| native/amd_ags_x64.dll | 482b241ea855fdd59aaa7687c385ce4165b5340857e6a0e6d15ba27ecb65ee70 | SCSKiller 1.4.1-alpha.2 (AMD's, as before) |
-| native/d3d12.dll | 55122abdcc081df148521fac4ae42d98f0468f8995de664d062a373cfcc40516 | SCSKiller 1.4.1-alpha.2 |
-| native/fossilize-replay.exe | a527a5e1d1e08b011d3f6c59a59ac15084a983507ffc2c94b061b8da777dba17 | SCSKiller 1.4.1-alpha.2 |
-| native/preload/dinput8.dll | 3b523fc250d28642efe6a0f744508fa311d5eeb2f24ea3eb6a4a6730d1db6039 | SCSKiller 1.4.1-alpha.2 |
-| native/preload/version.dll | b01e7d9c9c713fe6196393195670d7af514af7c9e1622ea42fee8d215d351f4f | SCSKiller 1.4.1-alpha.2 |
-| native/preload/winmm.dll | 47b378cc5a585e482b640b75307e7ea7a8619d12f05bc758ec6cbfbb8a20c33a | SCSKiller 1.4.1-alpha.2 |
-| native/scskiller_ags.dll | a06e386e3afd08ba915bf1e21deeea31002a73d4d5a624f43d433a7704f2bf3a | SCSKiller 1.4.1-alpha.2 |
-| native/scskiller_warm.exe | 222844faf7b11cedc68ddd8f4b6ae80863439df806e0f26e3f1f7cfd20ff3c69 | SCSKiller 1.4.1-alpha.2 |
-| native/segheap/scskiller_warm.exe | 409774adf0712b84195fad884e2c103f19500e9909349766e1b5260692c3102d | SCSKiller 1.4.1-alpha.2 |
-| zlib-ng2.dll | 454be2f3d10f804ace577198401431db5e95d0286b59589bc28a40085388e7c2 | SCSKiller 1.4.1-alpha.2 (unchanged since 1.3.0) |
+| native/VkLayer_scskiller.dll | 44e8568a966c702ea456a147163b018821648e6c7a37c48f48daa42b42501da8 | SCSKiller 1.4.2 |
+| native/amd_ags_x64.dll | 482b241ea855fdd59aaa7687c385ce4165b5340857e6a0e6d15ba27ecb65ee70 | SCSKiller 1.4.2 (AMD's, unchanged) |
+| native/d3d12.dll | 042b6c1eb874ba4cd9c131b3739e19096c88d32536ceb09dca9126ae79b8314e | SCSKiller 1.4.2 |
+| native/d3d9.dll | e21f0d9a29a21950db402cf80070c46b538a68693659c0640b022651e9d8b844 | SCSKiller 1.4.2 |
+| native/x86/d3d9.dll | b82e6bc1479dfc210af597758fe0df5a08280d6328630bd17e62e0081b3b40bd | SCSKiller 1.4.2 |
+| native/fossilize-replay.exe | 709398a1f1bdd1dab303dd77afee4c5952fb4c4f454bde1a8696f24802ed97f1 | SCSKiller 1.4.2 |
+| native/preload/dinput8.dll | f5b43e23e1186c64025ecb2943f339693b3bb2848e0f85837fc875e6c0fd535b | SCSKiller 1.4.2 |
+| native/preload/version.dll | bb37bf6ae31110bccf7205993cd34b5127c3c5c61ad03aa6479aa2b3540f9fb0 | SCSKiller 1.4.2 |
+| native/preload/winmm.dll | bdef732ea565b71014e6a8df360395e51238e611ca2e37b191f93a7d26247b1e | SCSKiller 1.4.2 |
+| native/scskiller_ags.dll | 3b0079634a1504645461e9e0dc2dafd0debc179cd1eef8fddd19f2622d4d3319 | SCSKiller 1.4.2 |
+| native/scskiller_warm.exe | e2850c132c993e5f92339ed207c16890943dd36601fdf4dc412d2d0cfd11c500 | SCSKiller 1.4.2 |
+| native/segheap/scskiller_warm.exe | 6c9d065c31e493187a5dbc3dc4cc8e57c9bc9453aa0a577ced674c6f78a79cc4 | SCSKiller 1.4.2 |
+| zlib-ng2.dll | 454be2f3d10f804ace577198401431db5e95d0286b59589bc28a40085388e7c2 | SCSKiller 1.4.2 (unchanged since 1.3.0) |

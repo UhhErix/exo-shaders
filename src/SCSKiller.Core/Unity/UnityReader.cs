@@ -72,9 +72,8 @@ public sealed class UnityReader : IEngineReader
         var lastRun = LastRun(PlayerLog(data));
         var launch = UnrealRhi.LaunchOptions(game);
         var api = Api(apis, lastRun, launch);
-        // 1.4.1-alpha.2: a DirectX 9 build says what it waits for, before what its shaders hold
-        return new EngineInfo(Family, version, null, api, false, CarvedReader.OldDxReason(api)
-            ?? (probed > 0 && readable == 0 ? $"Unity {version}: none of {probed} built-in shaders has DirectX (d3d11) code this reader can read" : null),
+        return new EngineInfo(Family, version, null, api, false,
+            CarvedReader.OldDxReason(api) ?? (probed > 0 && readable == 0 ? $"Unity {version}: none of {probed} built-in shaders has DirectX (d3d11) code this reader can read" : null),
             ApiGuessed: ApiGuessed(apis, LaunchApi(launch) ?? lastRun), OffersVulkan: apis?.Contains(VulkanApi) == true || api.StartsWith("Vulkan", StringComparison.Ordinal));
     }
 

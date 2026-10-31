@@ -216,7 +216,7 @@ public class UpdateTests : IDisposable
 
     /// <summary>The internal feed still listed internal.2 while internal.3 ran: an older version never installs, nor stays
     /// staged, whatever channel's feed names it.</summary>
-    [Fact]
+    [Fact(Skip = "Exo Shaders leaves out the WinUI app's updater (Updater.cs, UpdateHooks.cs): Exo updates it with Exo")]
     public void An_older_feed_entry_never_installs_over_a_newer_build()
     {
         var running = AppVersion.Parse("1.3.0-internal.3")!;
@@ -545,7 +545,7 @@ public class UpdateTests : IDisposable
 
     /// <summary>The App project is WinUI and has no test seam: its source says that "Check for updates" and the Library's
     /// refresh download what they find.</summary>
-    [Fact]
+    [Fact(Skip = "Exo Shaders leaves out the WinUI app's updater (Updater.cs, UpdateHooks.cs): Exo updates it with Exo")]
     public void ManualCheck_AndLibraryRefresh_Download()
     {
         var app = Path.Combine(TestEnv.RepoRoot, "src", "SCSKiller.App");

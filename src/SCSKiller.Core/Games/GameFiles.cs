@@ -8,12 +8,19 @@ namespace SCSKiller.Core.Games;
 public static partial class GameFiles
 {
     static readonly EnumerationOptions Deep = new() { RecurseSubdirectories = true, MaxRecursionDepth = 3, IgnoreInaccessible = true, AttributesToSkip = 0 };
+    // Chrome Engine keeps the exe 4 folders down (Dying Light: The Beast's ph_ft\work\bin\x64): looked for only when nothing is nearer
+    static readonly EnumerationOptions FarDeep = new() { RecurseSubdirectories = true, MaxRecursionDepth = 4, IgnoreInaccessible = true, AttributesToSkip = 0 };
     static readonly EnumerationOptions Flat = new() { IgnoreInaccessible = true, AttributesToSkip = 0 };
+
+    /// <summary>ScsKiller's log, for a game a store source skips because reading it threw (<see cref="Skip"/>).</summary>
+    public static Action<string>? Warn;
+
+    internal static void Skip(string store, string entry, Exception e) => Warn?.Invoke($"{store}: {entry} skipped: {e.GetType().Name}: {e.Message}");
 
     /// <summary>The process that creates the D3D12 device: an Unreal game's Shipping exe (<see cref="ShippingExe"/>), else under
     /// a &lt;Project&gt;\Binaries\Win* folder a Shipping exe, then the largest exe (not Engine\Binaries, which only holds helpers like
     /// CrashReportClient), helpers (<see cref="IsHelper"/>) aside; of exes named alike, the one nearest the root; a 32-bit one is
-    /// passed over, <see cref="UnrealExe"/>), else
+    /// passed over, and none is taken when none is the game's, <see cref="UnrealExe"/>), else
     /// the exe BattlEye's launcher starts (<see cref="BattlEyeTarget"/>), else <paramref name="launcherExe"/>, else the
     /// largest exe near the install root. A launcher among the last two is replaced by the game it starts
     /// (<see cref="LaunchedExe"/>). Exes in a patcher's or installer's copy of the game (<see cref="Staging"/>) are never
@@ -31,7 +38,7 @@ public static partial class GameFiles
             .Select(same => same.MinBy(f => Path.GetRelativePath(installDir, f.FullName).Count(c => c == Path.DirectorySeparatorChar))!)
             .OrderByDescending(f => IsShipping(f.FullName) && !NotTheGameBuild.Any(n => BuildName(f.FullName).Contains(n, StringComparison.OrdinalIgnoreCase)))
             .ThenByDescending(f => f.Length).ToList();
-        if (unreal.Count > 0) return UnrealExe(installDir, unreal);
+        if (unreal.Count > 0 && UnrealExe(installDir, unreal) is { } built) return built;
         if (BattlEyeTarget(installDir) is { } be) return be;
         if (launcherExe != null)
         {
@@ -39,10 +46,8 @@ public static partial class GameFiles
             if (File.Exists(p)) return RedLauncherTarget(installDir, p) ?? BuildOf32BitLauncher(installDir, p) ?? p;
         }
         // ponytail: non-Unreal games get a guess; Steam's launch target (appinfo.vdf config/launch, SteamSource.Apps) could seed it, but for launcher games it names the launcher
-        var exes = EnumerateFiles(installDir, "*.exe", Deep)
-            .Where(f => !NotTheGameExe(installDir, f, excluded))
-            .Select(f => new FileInfo(f))
-            .ToList();
+        List<FileInfo> Exes(EnumerationOptions depth) => [.. EnumerateFiles(installDir, "*.exe", depth).Where(f => !NotTheGameExe(installDir, f, excluded)).Select(f => new FileInfo(f))];
+        var exes = Exes(Deep) is { Count: > 0 } near ? near : Exes(FarDeep);
         // the exe an EasyAntiCheat bootstrap starts is the game: ELDEN RING NIGHTREIGN's Artbook/OST DLC is a Unity app in its own folder
         if (exes.Where(f => f.Name.Equals("start_protected_game.exe", StringComparison.OrdinalIgnoreCase)).Select(f => EacExecutable(installDir, f.FullName)).OfType<string>()
                 .Distinct(StringComparer.OrdinalIgnoreCase).ToList() is [{ } eac])
@@ -69,13 +74,18 @@ public static partial class GameFiles
         || (excluded ?? XboxSource.NotTheGame(installDir)).Contains(Path.GetFullPath(exe));
 
     /// <summary>The first of <paramref name="bySize"/> (a Shipping exe, then the largest), unless it is 32-bit (a launcher
-    /// larger than a modular build's exe): then the largest of the others that isn't, read only in an install without
-    /// anti-cheat.</summary>
-    static string UnrealExe(string installDir, List<FileInfo> bySize)
+    /// larger than a modular build's exe): then the largest of the others that isn't. Null when none is a Shipping exe and
+    /// each is a readable PE that imports no graphics API (<see cref="ImportsGraphics"/>): tools the project's Binaries
+    /// keep while the game runs from another folder. Read only in an install without anti-cheat.</summary>
+    static string? UnrealExe(string installDir, List<FileInfo> bySize)
     {
         var guess = bySize[0].FullName;
         // the root's and the exe folders' markers: enough to read no binary beside anti-cheat, without a full walk on every scan
-        if (bySize.Count == 1 || DetectAntiCheat(new Game("", "", Store.Other, installDir, guess), quick: true) != AntiCheat.None || !Is32Bit(guess)) return guess;
+        bool Beside(string exe) => DetectAntiCheat(new Game("", "", Store.Other, installDir, exe), quick: true) != AntiCheat.None;
+        if (Beside(guess)) return guess;
+        // Phantom Blade Zero keeps an archive tool, 8za_v2.exe, in ProjectPBZ\Binaries\Win64 and runs platform\steam\PBZ.exe
+        if (bySize.All(f => !IsShipping(f.FullName) && !Beside(f.FullName) && ImportsGraphics(f.FullName) == false)) return null;
+        if (bySize.Count == 1 || !Is32Bit(guess)) return guess;
         return bySize.Skip(1).FirstOrDefault(f => !Is32Bit(f.FullName))?.FullName ?? guess;
     }
 
@@ -207,7 +217,7 @@ public static partial class GameFiles
     /// <summary>The &lt;Project&gt;\Binaries\Win* folders of the install root and of projects one or two levels under it, or three
     /// through a WindowsNoEditor folder (Client\WindowsNoEditor\&lt;Project&gt;). Win32 is left out: a 32-bit exe never creates the
     /// game's D3D12 device.</summary>
-    static IEnumerable<string> UnrealFolders(string installDir) =>
+    internal static IEnumerable<string> UnrealFolders(string installDir) =>
         PlatformFolders(EnumerateDirectories(installDir, "*", Flat)
             .SelectMany(d => EnumerateDirectories(d, "*", Flat).SelectMany(Packaged).Prepend(d)).Prepend(installDir));
 
@@ -229,6 +239,12 @@ public static partial class GameFiles
     static IEnumerable<string> Packaged(string dir) => Path.GetFileName(dir).Equals("WindowsNoEditor", StringComparison.OrdinalIgnoreCase)
         ? EnumerateDirectories(dir, "*", Flat).Prepend(dir) : [dir];
 
+    static bool IsX64(string exe)
+    {
+        try { using var pe = PeFile.Open(exe); return pe.PEHeaders.CoffHeader.Machine == System.Reflection.PortableExecutable.Machine.Amd64; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or BadImageFormatException) { return false; }
+    }
+
     /// <summary>An i386 PE that runs as a 32-bit process (not an AnyCPU .NET exe); false when it isn't one or can't be read.</summary>
     internal static bool Is32Bit(string exe)
     {
@@ -242,43 +258,32 @@ public static partial class GameFiles
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or BadImageFormatException) { return false; }
     }
 
-    /// <summary>An x64 PE; false when it isn't one or can't be read.</summary>
-    static bool IsX64(string exe)
-    {
-        try
-        {
-            using var pe = PeFile.Open(exe);
-            return pe.PEHeaders.CoffHeader.Machine == System.Reflection.PortableExecutable.Machine.Amd64;
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or BadImageFormatException) { return false; }
-    }
-
-    /// <summary>The 64-bit game a 32-bit launcher starts (SCSKiller 1.4.1-alpha.2): the one x64 exe in the install named
-    /// &lt;launcher&gt;.* (BeamNG.drive.exe starts BeamNG.drive.x64.exe). Null: the launcher isn't 32-bit, none or
-    /// several, or the install has anti-cheat (no binary read there).</summary>
-    static string? BuildOf32BitLauncher(string installDir, string launcher)
-    {
-        if (!Is32Bit(launcher)) return null;
-        var stem = Path.GetFileNameWithoutExtension(launcher) + ".";
-        var builds = EnumerateFiles(installDir, "*.exe", Deep)
-            .Where(f => Path.GetFileName(f).StartsWith(stem, StringComparison.OrdinalIgnoreCase) && !NotTheGameExe(installDir, f)).ToList();
-        if (builds.Count == 0 || DetectAntiCheat(new Game("", "", Store.Other, installDir, launcher), quick: true) != AntiCheat.None) return null;
-        return builds.Where(IsX64).ToList() is [var one] ? Path.GetFullPath(one) : null;
-    }
-
     /// <summary>The game a launcher (<paramref name="guess"/>) starts: the target of CD PROJEKT RED's launcher-configuration.json
-    /// next to it, else the 64-bit build of a 32-bit launcher (<see cref="BuildOf32BitLauncher"/>), else, when the guess
+    /// next to it, else the 64-bit build a 32-bit guess is named for (<see cref="BuildOf32BitLauncher"/>), else, when the guess
     /// imports no graphics API, the one larger exe of <paramref name="exes"/> that does (no binary read in an install with
     /// anti-cheat). Anything else (one unreadable, several, none) keeps the guess.</summary>
     static string LaunchedExe(string installDir, FileInfo guess, IReadOnlyList<FileInfo> exes)
     {
         if (RedLauncherTarget(installDir, guess.FullName) is { } red) return red;
-        if (BuildOf32BitLauncher(installDir, guess.FullName) is { } build) return build;
         var larger = exes.Where(f => f.Length > guess.Length).ToList();
+        if (BuildOf32BitLauncher(installDir, guess.FullName) is { } build) return build;
         if (larger.Count == 0 || ImportsGraphics(guess.FullName) != false
             || DetectAntiCheat(new Game("", "", Store.Other, installDir, guess.FullName)) != AntiCheat.None) return guess.FullName;
         var imports = larger.Select(f => (f.FullName, Imports: ImportsGraphics(f.FullName))).ToList();
         return imports.All(x => x.Imports != null) && imports.Where(x => x.Imports == true).ToList() is [var game] ? game.FullName : guess.FullName;
+    }
+
+    /// <summary>The one x64 exe of the install named after the 32-bit <paramref name="launcher"/> (BeamNG.drive.exe starts
+    /// Bin64\BeamNG.drive.x64.exe, not BinArm64\BeamNG.drive.arm64.exe); null when the launcher isn't 32-bit, there is none
+    /// or several, or the install has anti-cheat (no other binary is read then).</summary>
+    static string? BuildOf32BitLauncher(string installDir, string launcher)
+    {
+        if (!Is32Bit(launcher)) return null;
+        var stem = Path.GetFileNameWithoutExtension(launcher) + ".";
+        var named = EnumerateFiles(installDir, "*.exe", Deep)
+            .Where(f => Path.GetFileName(f).StartsWith(stem, StringComparison.OrdinalIgnoreCase) && !NotTheGameExe(installDir, f)).ToList();
+        if (named.Count == 0 || DetectAntiCheat(new Game("", "", Store.Other, installDir, launcher), quick: true) != AntiCheat.None) return null;
+        return named.Where(IsX64).ToList() is [var build] ? Path.GetFullPath(build) : null;
     }
 
     /// <summary>The 64BitExe of the BattlEye\BELauncher.ini files near the install root (relative to the folder holding
@@ -304,7 +309,7 @@ public static partial class GameFiles
 
     /// <summary><paramref name="target"/> is an existing file inside <paramref name="installDir"/>, reached through no junction or
     /// symlink below it (the anti-cheat scan doesn't follow those; the root itself may be one).</summary>
-    static bool InsideNoLinks(string installDir, string target)
+    internal static bool InsideNoLinks(string installDir, string target)
     {
         var root = DirKey(installDir);
         if (!target.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || !File.Exists(target)) return false;
@@ -405,14 +410,13 @@ public static partial class GameFiles
     internal static partial string? SystemFolder(Game game);
 
     /// <summary>SHA-256 of each AMD AGS build whose version is known to fit the recorder's AGS wrapper (its exports are still
-    /// matched): Cyberpunk 2077's AGS 5.4, before and since its 2.5 patch.</summary>
-    internal static HashSet<string> WrappableAgs { get; set; } = new(["C1F0BD493B470FA369D681C370BBD46E019A7196DBE03D91272EA0BE214B3384",
-        "B95F711BB2BDD27B1A1571D02DCF030D14C8813162616929BBFBED645EB85690"], StringComparer.OrdinalIgnoreCase);
+    /// matched): Cyberpunk 2077's AGS 5.4.</summary>
+    internal static HashSet<string> WrappableAgs { get; set; } = new(["C1F0BD493B470FA369D681C370BBD46E019A7196DBE03D91272EA0BE214B3384"], StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The exe has AGS make its DirectX 12 device (agsDriverExtensionsDX12_CreateDevice, which can reach System32's
     /// d3d12.dll without a d3d12.dll beside the exe seeing it), with an AGS the wrapper fits (<see cref="AgsUnfit"/>): the one
-    /// beside the exe, or the game's own once the wrapper stands in for it (the name it links, <see cref="App.ScsKiller.AgsLinked"/>).
-    /// <paramref name="unfit"/>: why the wrapper doesn't fit an AGS that makes the device, null otherwise.</summary>
+    /// beside the exe, or the game's own once the wrapper stands in for it (the name it links). <paramref name="unfit"/>: why
+    /// the wrapper doesn't fit an AGS that makes the device, null otherwise.</summary>
     internal static bool AgsMakesTheDevice(string exe, string? wrapper, out string? unfit)
     {
         unfit = null;
@@ -442,9 +446,6 @@ public static partial class GameFiles
         // params with the device, all the wrapper reads. AGS 6 renamed exports the wrapper forwards (agsInit, agsDeInit).
         if (v != null && (v.FileMajorPart != 5 || v.FileMinorPart is < 2 or > 4)) return version;
         if (wrapper == null || !File.Exists(wrapper)) return version + ", the recorder's AGS wrapper is missing";
-        string chain;   // the name the wrapper links the game's AGS by, as it was built
-        try { chain = App.ScsKiller.AgsLinked(wrapper); }
-        catch (IOException x) { return version + ", " + x.Message; }
         try
         {
             using var a = PeFile.Open(ags);
@@ -456,7 +457,7 @@ public static partial class GameFiles
             var linked = PeFile.ImportedFunctions(e, "amd_ags_x64.dll").Concat(Directory.EnumerateFiles(Path.GetDirectoryName(exe)!, "*.dll")
                 .Where(d => !Path.GetFileName(d).StartsWith("amd_ags_", StringComparison.OrdinalIgnoreCase))
                 .SelectMany(d => { using var m = PeFile.Open(d); return PeFile.ImportedFunctions(m, "amd_ags_x64.dll").ToList(); })).Distinct().ToList();
-            var missing = linked.Concat(PeFile.ImportedFunctions(w, chain)).FirstOrDefault(n => !has.Contains(n))
+            var missing = linked.Concat(PeFile.ImportedFunctions(w, App.ScsKiller.AgsChainName)).FirstOrDefault(n => !has.Contains(n))
                 ?? linked.FirstOrDefault(n => !wraps.Contains(n));
             return missing != null ? $"{version}, {missing} not matched" : null;
         }
@@ -873,7 +874,6 @@ public static partial class GameFiles
     /// manifest that can't be read counts for its library's whole steamapps\common, each folder in it as on disk too.</summary>
     static bool SteamAntiCheatApp(Game g, string? steamRoot)
     {
-        // paths compare as the file system does: without case on Windows only (1.4.0-beta.1)
         var names = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         var paths = new[] { g.InstallDir, g.ExePath }.SelectMany(p => new[] { Path.GetFullPath(p), FinalPath(p) }).OfType<string>().ToList();
         var libraries = paths.Select(p => p.IndexOf(SteamSource.CommonPart, names) is var at and >= 0 ? p[..at] : null).OfType<string>().ToList();

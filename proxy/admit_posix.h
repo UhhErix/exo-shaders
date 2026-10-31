@@ -553,7 +553,7 @@ static void refused(const char* why) {
     if (fd < 0) return;
     struct stat st;
     if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_nlink != 1 || ftruncate(fd, 0)) return (void)close(fd);
-    char b[160];
+    char b[1024];
     const int n = snprintf(b, sizeof b, "%lld %s", unix_ms(), why);
     if (write(fd, b, (size_t)std::clamp(n, 0, (int)sizeof b - 1)) < 0) {}
     close(fd);
@@ -600,6 +600,7 @@ static const char* vac_of(uint32_t app, const std::string& steam) {
     if (std::find(std::begin(kValveVac), std::end(kValveVac), app) != std::end(kValveVac)) return "VAC (a Valve game)";
     // appinfo.vdf: as admit.h reads it
     const int fd = open((steam + "/appcache/appinfo.vdf").c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0 && errno == ENOENT) return kVacNoAppinfo;
     struct stat st;
     FILE* f = fd < 0 || fstat(fd, &st) || !S_ISREG(st.st_mode) ? nullptr : fdopen(fd, "rb");
     if (!f) {
@@ -607,7 +608,7 @@ static const char* vac_of(uint32_t app, const std::string& steam) {
         return "VAC: Steam's appinfo.vdf can't be read";
     }
     const int64_t flen = (int64_t)st.st_size;
-    const char* why = "VAC: the game isn't in Steam's appinfo.vdf";
+    const char* why = "VAC: Steam's appinfo.vdf can't be read";
     uint32_t hd[2] = {};
     int64_t table = 0;
     std::string entry;
@@ -615,7 +616,10 @@ static const char* vac_of(uint32_t app, const std::string& steam) {
     if (fread(hd, 4, 2, f) != 2 || (hd[0] != 0x07564428 && hd[0] != 0x07564429) || (hd[0] == 0x07564429 && (fread(&table, 8, 1, f) != 1 || table < 16 || table >= flen)))
         why = "VAC: Steam's appinfo.vdf isn't understood";
     else
-        for (uint32_t a[2]; fread(a, 4, 2, f) == 2 && a[0];) {
+        for (uint32_t a[2]; fread(a, 4, 1, f) == 1;) {
+            // only a list read to its end, its app 0 before v29's string table, says the app isn't in it
+            if (!a[0]) { if (hd[0] != 0x07564429 || (int64_t)ftello(f) <= table) why = kVacNotListed; break; }
+            if (fread(a + 1, 4, 1, f) != 1) break;
             const int64_t left = (hd[0] == 0x07564429 ? table : flen) - (int64_t)ftello(f);
             if (a[1] > left) { why = "VAC: Steam's appinfo.vdf is damaged"; break; }
             if (a[0] != app) { if (fseeko(f, a[1], SEEK_CUR)) break; continue; }
@@ -645,9 +649,9 @@ static const char* vac_of(uint32_t app, const std::string& steam) {
     memcpy(&state, entry.data(), 4);
     Kv kv{entry, 60, hd[0] == 0x07564429 ? &names : nullptr};
     if (!kv.object(0, 0)) return "VAC: the game's entry in appinfo.vdf is damaged";
-    if (!kv.common) return "VAC: Steam has no info about the game";
+    if (!kv.common) return kVacNoInfo;
     if (kv.vac) return "VAC (Steam marks the game)";
-    if (!kv.category && state != 2) return "VAC: Steam has no info about the game";
+    if (!kv.category && state != 2) return kVacNoInfo;
     return nullptr;
 }
 
@@ -836,10 +840,10 @@ static const char* vac_now_unguarded() {
             if (fnmatch("appmanifest_*.acf", n.c_str(), 0)) continue;
             Vdf app;
             std::string d, a, real;
-            if (!read_file(dir + n, text) || !vdf_root(text, "appstate", app)) return "VAC: a Steam manifest can't be read";
+            if (!read_file(dir + n, text) || !vdf_root(text, "appstate", app)) return with_path("VAC: a Steam manifest can't be read", dir + n);
             const uint32_t id = vdf_one(app, "appid", a) ? app_id(a) : 0;
             if (!id || !vdf_one(app, "installdir", d) || d.empty() || d == "." || d == ".." || d.find('/') != std::string::npos)
-                return "VAC: a Steam manifest names no single folder and app";
+                return with_path("VAC: a Steam manifest names no single folder and app", dir + n);
             if (const char* why = owned_path(dir + "common/", d, exe, argv_path, kFolder, real)) return why;
             const bool named = i + 1 == libs.size() && !folder.empty() && d == folder;
             if ((named || (!real.empty() && reaches(walk, real))) && std::find(apps.begin(), apps.end(), id) == apps.end()) apps.push_back(id);
@@ -883,7 +887,7 @@ static const char* vac_now_unguarded() {
 }
 
 // The VAC of the app a steam_appid.txt in dirs names (Steamworks starts a game as that app), any case of its name as Wine
-// finds it. A file that can't be read or holds no app id refuses.
+// finds it. A file that can't be read refuses, and so does one whose leading digits are no app id. One without them names none.
 static const char* vac_named(const std::vector<std::string>& dirs) {
     const char* vac = nullptr;
     std::vector<std::string> names;
@@ -893,11 +897,15 @@ static const char* vac_named(const std::vector<std::string>& dirs) {
             if (lower_az(n) != "steam_appid.txt") continue;
             std::string text;
             if (!read_file(d + n, text, 4096)) return "VAC: a steam_appid.txt can't be read";
-            const size_t a = text.find_first_not_of(" \t\r\n"), b = text.find_last_not_of(" \t\r\n");
-            const uint32_t app = a == std::string::npos ? 0 : app_id(text.substr(a, b - a + 1));
+            if (!text.rfind("\xEF\xBB\xBF", 0)) text.erase(0, 3);
+            // Steamworks takes the leading digits: a file without them names no app
+            const size_t a = text.find_first_not_of(" \t\r\n\v\f+");
+            const std::string digits = a == std::string::npos ? "" : text.substr(a, text.find_first_not_of("0123456789", a) - a);
+            if (digits.empty()) continue;
+            const uint32_t app = app_id(digits);
             if (!app) return "VAC: a steam_appid.txt is malformed";
             const std::string steam = steam_root();
-            const char* why = steam.empty() ? "VAC: Steam's folder is unknown" : vac_of(app, steam);
+            const char* why = named_vac(steam.empty() ? kVacNoSteam : vac_of(app, steam));
             if (why && !strncmp(why, "VAC:", 4)) return why;
             if (why) vac = why;
         }

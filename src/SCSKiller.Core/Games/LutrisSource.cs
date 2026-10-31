@@ -98,6 +98,7 @@ public sealed class LutrisSource(IReadOnlyList<(string Data, string Config, stri
         }
         catch (ArgumentException e) { why = e.Message; }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or NotSupportedException) { why = e.Message; }
+        catch (Exception e) when (e is not OperationCanceledException) { why = $"{e.GetType().Name}: {e.Message}"; }
         return null;
     }
 

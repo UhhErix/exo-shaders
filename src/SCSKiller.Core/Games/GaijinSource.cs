@@ -20,11 +20,13 @@ public sealed class GaijinSource : IGameSource
         using var root = Registry.CurrentUser.OpenSubKey(@"Software\Gaijin");
         if (root == null) return games;
         foreach (var project in root.GetSubKeyNames())
-        {
-            using var key = root.OpenSubKey(project);
-            if (key?.GetValue("InstallDir") is not string install || !Directory.Exists(install) || Exe(install) is not { } exe) continue;
-            games.Add(new Game($"gaijin:{project.ToLowerInvariant()}", Regex.Replace(project, "(?<=[a-z])(?=[A-Z])", " "), Store.Other, install, exe));
-        }
+            try
+            {
+                using var key = root.OpenSubKey(project);
+                if (key?.GetValue("InstallDir") is not string install || !Directory.Exists(install) || Exe(install) is not { } exe) continue;
+                games.Add(new Game($"gaijin:{project.ToLowerInvariant()}", Regex.Replace(project, "(?<=[a-z])(?=[A-Z])", " "), Store.Other, install, exe));
+            }
+            catch (Exception e) when (e is not OperationCanceledException) { GameFiles.Skip("Gaijin", $"gaijin:{project}", e); }
         return games;
     }
 

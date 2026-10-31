@@ -13,10 +13,10 @@ public enum AddonKind
 {
     NotPipeline,       // leaves them alone (renodx-dlss5, dlssfix, an effect add-on)
     ReplacesShaders,   // replaces some shaders: only their pipelines change
-    LayoutInjecting,   // adds a constant to every root signature the game creates: every pipeline changes
+    LayoutInjecting,   // changes every pipeline the game creates (a constant added to every root signature, every shader rewritten)
 }
 
-/// <param name="Mod">"RenoDX"; the file's name for one that couldn't be read; null = another add-on</param>
+/// <param name="Mod">"RenoDX", "Luma"; the file's name for one that couldn't be read; null = another add-on</param>
 /// <param name="Disabled">listed in ReShade.ini's DisabledAddons: never loaded</param>
 public sealed record ReShadeAddon(string Path, string? Mod, AddonKind Kind, bool Disabled = false);
 
@@ -29,11 +29,11 @@ public enum LayerBlock
     OptiScalerIni,      // ...that does, in an OptiScaler.ini with a section header not whole on its line: SimpleIni may read
                         // it across lines, so a copy can't be sure its paths and update check are out
     UnloadedName,       // an .asi, ReShade64.dll or a renamed file another loader may or may not pick up
-    SpecialK,           // Special K under a name the game loads, and which ReShade it loads, from where, isn't certain (ReShade.Hosted)
-    SpecialKCompatibility,   // ...it is, but Special K loads it in Compatibility Mode: ReShade doesn't hook the device the game makes
-    SpecialKAddons,     // ...it is, but two add-ons of one name that change pipelines are in the folders it loads them from
+    SpecialK,           // Special K under a name the game loads, with no single ReShade it loads that a copy can be sure of
+    SpecialKCompatibility, // ...whose one ReShade it loads through an [Import.*] without Mode=Normal: ReShade's graphics hooks are off
+    SpecialKAddons,     // ...with two add-ons of one file name in the folders it loads them from: only one loads
     ProxyLibrary,       // ReShade.ini's [PROXY] chains a DLL a copy lacks; as dxgi.dll it then hooks any d3d12.dll, the recorder's too
-    SpecialKSystem,     // Special K's ReShade on an OS whose Special K install SCSKiller can't read (not Windows)
+    SpecialKSystem,     // Special K outside Windows: its install folder, and so its global add-ons, aren't known
 }
 
 /// <summary>ReShade next to the game: its DLL (whatever its name), ReShade.ini and ReShade.log when present, and the
@@ -45,9 +45,8 @@ public enum LayerBlock
 /// LoadReshade=true (OptiScaler then loads it from the exe's folder); null = no OptiScaler there</param>
 /// <param name="OptiScaler">that OptiScaler's DLL; null = none</param>
 /// <param name="OptiScalerIniOdd">its OptiScaler.ini has a section header that isn't a whole [name] on its line</param>
-/// <param name="SpecialK">Special K beside the exe under a name the game loads hosts ReShade (ReShade.Hosted): what keeps a copy
-/// of its ReShade from reproducing what the game loads, None when nothing does; <paramref name="Dll"/> is the ReShade it loads,
-/// or Special K's when it loads none. Null = no Special K.</param>
+/// <param name="SpecialK">Special K beside the exe under a name the game loads, hosting the ReShade in <paramref name="Dll"/> (Special
+/// K's own when it loads none), with what keeps a copy from reproducing it; null = no Special K</param>
 /// <param name="ProxyLibrary">ReShade.ini sets [PROXY] EnableProxyLibrary with a ProxyLibrary: ReShade's own exports go to that DLL</param>
 public sealed record ReShadeInstall(string Dll, bool LoadsAddons, string? Ini, string? Log, IReadOnlyList<ReShadeAddon> Addons, bool BesideExe = true,
     bool? OptiScalerLoads = null, string? OptiScaler = null, bool OptiScalerIniOdd = false, LayerBlock? SpecialK = null, bool ProxyLibrary = false)
@@ -62,10 +61,10 @@ public sealed record ReShadeInstall(string Dll, bool LoadsAddons, string? Ini, s
     internal static readonly string[] Loaded = ["dxgi.dll", "d3d12.dll", "d3d11.dll", "d3d10.dll", "d3d9.dll", "opengl32.dll", "dinput8.dll", ScsKiller.ChainName, ScsKiller.ChainName11];
 
     /// <summary>What keeps a copy of the layer next to the warm's exe from reproducing what the game loads; None = ReShade
-    /// beside the exe under a name the game loads by itself, or ReShade64.dll that OptiScaler loads.</summary>
+    /// beside the exe under a name the game loads by itself, ReShade64.dll that OptiScaler loads, or the ReShade Special K loads.</summary>
     public LayerBlock Block =>
         !BesideExe ? LayerBlock.NotBesideExe
-        : SpecialK is { } hosted ? hosted
+        : SpecialK is { } sk ? sk
         : OptiScalerLoads == true ? OptiScalerIniOdd ? LayerBlock.OptiScalerIni : LayerBlock.None
         : Loaded.Contains(Path.GetFileName(Dll), StringComparer.OrdinalIgnoreCase) ? ProxyLibrary ? LayerBlock.ProxyLibrary : LayerBlock.None
         : OptiScalerLoads == false ? LayerBlock.OptiScalerOff
@@ -118,9 +117,16 @@ public static class ReShade
     static readonly string[] OptiScalerNames = ["dxgi.dll", "d3d12.dll", "winmm.dll", "version.dll", "dbghelp.dll", "wininet.dll", "winhttp.dll"];
 
     // Logged unconditionally where release builds register their pipeline hooks: RenoDX's shader-replacement util (every
-    // HDR add-on and the devkit, in both RenoDX repos; not dlssfix, fpslimiter or DLSS-only add-ons). Luma add-ons are
-    // DirectX 11 only (a D3D12 device gets a message box, no hooks), so they change no D3D12 pipeline.
+    // HDR add-on and the devkit, in both RenoDX repos; not dlssfix, fpslimiter or DLSS-only add-ons).
     static readonly byte[][] ModMarkers = ["utils::shader attached."u8.ToArray()];
+
+    // Luma (Luma-Framework a587ac1) hooks DirectX 11 devices only and swaps its own shaders in at draw time. These builds
+    // (LUMA_PATCH_BYTECODE_SYNC, "Luma-<project>.addon") also rewrite some of the game's shaders as it creates them; Heavy
+    // Rain's strips every shader's debug data.
+    static readonly string[] LumaPatching = ["Beyond Two Souls", "Burnout Paradise Remastered", "Deus Ex Human Revolution Director's Cut",
+        "INSIDE", "Just Cause 3", "Lego City Undercover", "NieR Replicant", "Snowbreak Containment Zone", "Thief (2014)", "Thumper"];
+    const string LumaEveryShader = "Heavy Rain";
+    static readonly byte[][] LumaMarkers = ["Luma: trying to load a config from a newer version of the mod"u8.ToArray()];
 
     // ReShade.log: which file each add-on name was registered from, then RenoDX (prefixed with that name) adding its
     // constants to a game root signature or cloning the layout instead. Both paths are in every build and a runtime flag
@@ -185,47 +191,76 @@ public static class ReShade
     public static string? RenoDxFolder(string fileName) =>
         fileName.StartsWith("renodx-", StringComparison.OrdinalIgnoreCase) ? Path.GetFileNameWithoutExtension(fileName)["renodx-".Length..] : null;
 
-    /// <summary>"RenoDX" when an add-on file named like its builds sits in the exe's folder or the install root, judged by file
-    /// names alone (an anti-cheat install's files aren't read); null = none.</summary>
-    public static string? RenoDxByName(Game game) =>
-        new[] { GameFiles.DirKey(Path.GetDirectoryName(game.ExePath)!), GameFiles.DirKey(game.InstallDir) }.Distinct(StringComparer.OrdinalIgnoreCase)
-            .Any(d => List(d)?.Any(f => (Ext(f, ".addon") || Ext(f, ".addon64")) && RenoDxFolder(f.Name) != null) == true) ? "RenoDX" : null;
-
     /// <summary>ReShade where the game loads it: an Xbox app game's package root (<see cref="PackageRoot"/>) under a name
     /// the game loads, else the exe's folder; else the install root under any name. Known by its version resource (any
     /// DLL there) or, for one of its usual names, its own bytes; null = none. Its add-ons are the ones in ReShade.ini's
     /// AddonPath, else its folder; DisabledAddons are marked. A RenoDX add-on is LayoutInjecting or ReplacesShaders by ReShade.log's lines for
     /// its file, when the log was written after the file; else by its build folder (<see cref="RenoDxTable"/>, from the file
     /// name or the version resource's OriginalFilename); else ReplacesShaders, as is an add-on that couldn't be read: not
-    /// known to change every pipeline. Each file is read once while its size and write time stay the same.</summary>
-    public static ReShadeInstall? Detect(Game game)
+    /// known to change every pipeline. A Luma build that rewrites the game's shaders (<see cref="LumaPatching"/>) counts only
+    /// for a DirectX 11 game (<paramref name="engine"/>). Each file is read once while its size and write time stay the same.</summary>
+    public static ReShadeInstall? Detect(Game game, EngineInfo? engine = null)
+    {
+        var r = Locate(game, engine);
+        return r == null || engine != null && ScsKiller.Dx11Only(engine) || !r.Addons.Any(a => a.Mod == "Luma") ? r
+            : r with { Addons = [.. r.Addons.Select(a => a.Mod == "Luma" ? a with { Mod = null, Kind = AddonKind.NotPipeline } : a)] };
+    }
+
+    static ReShadeInstall? Locate(Game game, EngineInfo? engine)
     {
         var exeDir = GameFiles.DirKey(Path.GetDirectoryName(game.ExePath)!);
         var root = PackageRoot(game);
         // a packaged app's DLL search looks in its package root before the exe's folder (Microsoft's "Dynamic-link library
         // search order"), for a name the game loads by itself
-        if (root != null && At(root, game, exeDir, root) is { } packaged
-            && (packaged.SpecialK != null || ReShadeInstall.Loaded.Contains(Path.GetFileName(packaged.Dll), StringComparer.OrdinalIgnoreCase)))
+        if (root != null && At(root, game, exeDir, root) is { } packaged && (packaged.SpecialK != null || ReShadeInstall.Loaded.Contains(Path.GetFileName(packaged.Dll), StringComparer.OrdinalIgnoreCase)))
             return packaged;
         foreach (var dir in new[] { exeDir, GameFiles.DirKey(game.InstallDir) }.Distinct(StringComparer.OrdinalIgnoreCase))
             if (At(dir, game, exeDir, root) is { } r) return r;
+        // an Unreal exe outside its project's Binaries that loads DLLs from there (Phantom Blade Zero's platform\steam\PBZ.exe):
+        // only a ReShade whose log says this exe loaded it
+        if (engine is not (null or { Family: "Unreal" }) || GameFiles.InBinaries(game.ExePath)) return null;
+        string[] binaries;
+        try { binaries = [.. GameFiles.UnrealFolders(game.InstallDir).Select(GameFiles.DirKey).Where(d => !d.Equals(exeDir, StringComparison.OrdinalIgnoreCase) && !Linked(d, game.InstallDir))]; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { return null; }
+        // looked at as the exe's folder: its Special K and OptiScaler count as they would there
+        foreach (var dir in binaries)
+            if (At(dir, game, exeDir, root, loaded: true) is { Log: { } log } r && LoadedInto(new FileInfo(log), r.Dll, game.ExePath)) return r;
         return null;
     }
+
+    /// <summary>A folder of the install reached through a junction or symlink below <paramref name="installDir"/>.</summary>
+    static bool Linked(string dir, string installDir)
+    {
+        for (var d = new DirectoryInfo(dir); d != null && !GameFiles.DirKey(d.FullName).Equals(GameFiles.DirKey(installDir), StringComparison.OrdinalIgnoreCase); d = d.Parent)
+            if (d.LinkTarget != null) return true;
+        return false;
+    }
+
+    static readonly Regex Initializing = new(@"\| Initializing crosire's ReShade .* loaded from '(.+)' into '(.+)'");
+
+    /// <summary>ReShade.log, written after <paramref name="dll"/>, starts with that DLL loaded into <paramref name="exe"/>.</summary>
+    static bool LoadedInto(FileInfo log, string dll, string exe) =>
+        log.LastWriteTimeUtc > File.GetLastWriteTimeUtc(dll) && Cached(log, "loadedinto", () =>
+        {
+            using var r = new StreamReader(new FileStream(log.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete));
+            var head = new char[4096];   // its first line, not a whole line of any length
+            var first = new string(head, 0, r.ReadBlock(head)).Split('\n')[0];
+            return Initializing.Match(first) is { Success: true } m ? $"{FullPath(m.Groups[1].Value)}|{FullPath(m.Groups[2].Value)}" : "";
+        }) as string is { } loaded && loaded.Equals($"{FullPath(dll)}|{FullPath(exe)}", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>An Xbox app game's package root: its install folder (Content, with MicrosoftGame.config), searched for
     /// DLLs before the exe's folder; null = another store's game.</summary>
     public static string? PackageRoot(Game game) => game.Store == Store.Xbox ? GameFiles.DirKey(game.InstallDir) : null;
 
-    static ReShadeInstall? At(string dir, Game game, string exeDir, string? root)
+    static ReShadeInstall? At(string dir, Game game, string exeDir, string? root, bool loaded = false)
     {
         var files = List(dir);
-        var besideExe = dir.Equals(exeDir, StringComparison.OrdinalIgnoreCase);
+        var besideExe = loaded || dir.Equals(exeDir, StringComparison.OrdinalIgnoreCase);
         var dll = files?.FirstOrDefault(f => (Ext(f, ".dll") || Ext(f, ".asi")) && IsReShade(f));
         var sk = besideExe || dir.Equals(root, StringComparison.OrdinalIgnoreCase)
             ? files?.FirstOrDefault(f => f != dll && Array.FindIndex(ReShadeInstall.Loaded, n => n.Equals(f.Name, StringComparison.OrdinalIgnoreCase)) is var i and >= 0
                 && (i < 2 || Imports(game.ExePath).Contains(f.Name, StringComparer.OrdinalIgnoreCase)) && IsSpecialK(f)) : null;
-        // every D3D12 game loads Loaded's first two names; Special K loads ReShade and its add-ons itself (1.4.0-beta.1: read
-        // from its ini files, Hosted), whatever is beside it
+        // every D3D12 game loads Loaded's first two names
         if (sk != null) return Hosted(sk, game, exeDir, besideExe ? files! : List(exeDir) ?? [], files!);
         if (dll == null) return null;
         string? Named(string name) => files!.FirstOrDefault(f => f.Name.Equals(name, StringComparison.OrdinalIgnoreCase))?.FullName;
@@ -245,79 +280,82 @@ public static class ReShade
         return new(dll.FullName, Find(dll, "limited", Limited) != 0, ini, log, addons, besideExe || dir.Equals(root, StringComparison.OrdinalIgnoreCase), loads, opti?.FullName, odd, null, proxy);
     }
 
-    // Special K's [Import.*] When= values that load the import at start, before or with the game's device
     static readonly string[] ImportTimes = ["Early", "PlugIn", "Late", "Lazy"];
     static readonly EnumerationOptions Deep = new() { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = 0 };
 
-    /// <summary>
-    /// ReShade as Special K <paramref name="sk"/> loads it (SCSKiller 1.4.0-beta.1): from its [Import.*] sections in
-    /// &lt;name&gt;.ini beside the exe, Special K's Global\master_&lt;name&gt;.ini and custom_&lt;name&gt;.ini (x64 or Any,
-    /// not blacklisted for this exe, loaded at start), plus ReShade64.dll beside the exe; its ReShade.ini and log from the
-    /// exe's folder, or Special K's ReShade folder there when ReShade has none of its own; its add-ons from AddonPath, the
-    /// .addon64 files beside the exe, ReShade\AddOns there and in Special K's Global folder, and the ones imported by name.
-    /// The block (<see cref="ReShadeInstall.SpecialK"/>) is SpecialK when that isn't certain: no Special K install found
-    /// (or a SpecialK.central one), an import that isn't there, a plug-in import, another ReShade in either folder, not
-    /// exactly one ReShade, a ReShade.ini with its own BasePath, a mod Special K loads directly, or Special K's own
-    /// ReShade settings with add-on keys; Compatibility when it loads that ReShade without its hooks; Addons when two
-    /// add-ons of one name change pipelines; System off Windows. Null = no ReShade and no add-on.
-    /// </summary>
+    /// <summary>The ReShade Special K <paramref name="sk"/> loads, as its plugins/reshade.cpp and import.cpp do: ReShade64.dll
+    /// beside the exe, always and with graphics hooks; else each [Import.*] of its ini beside the exe (named as its DLL,
+    /// merged with Global\master_ and custom_) with a When it loads at, whose file is ReShade, with hooks only for Mode=Normal
+    /// when Filename as written names ReShade. ReShade's base path is &lt;exe&gt;\ReShade (RESHADE_BASE_PATH_OVERRIDE) when Special K loads it as ReShade
+    /// without a ReShade.ini beside the exe, else the exe's folder (an Xbox app game's: the DLL's). The add-ons are ReShade's
+    /// own and the .addon64 files Special K loads from the exe's folder, &lt;exe&gt;\ReShade\AddOns, its install's
+    /// Global\ReShade\AddOns and its imports.</summary>
     static ReShadeInstall? Hosted(FileInfo sk, Game game, string exeDir, List<FileInfo> exeFiles, List<FileInfo> skFiles)
     {
-        var block = LayerBlock.None;
+        var why = LayerBlock.None;
         var install = SpecialKInstall();
         try { if (install != null) install = Path.GetFullPath(install); }
         catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { install = null; }
-        if (install == null || exeFiles.Any(f => f.Name.Equals("SpecialK.central", StringComparison.OrdinalIgnoreCase))) block = LayerBlock.SpecialK;
+        // SpecialK.central moves its ini and profile folder into its install; outside Windows its install isn't known.
+        // ponytail: an exe folder the user can't write moves them too, unchecked; add a write probe if one shows up
+        if (install == null || exeFiles.Any(f => f.Name.Equals("SpecialK.central", StringComparison.OrdinalIgnoreCase))) why = LayerBlock.SpecialK;
         var local = exeFiles.FirstOrDefault(f => f.Name.Equals("ReShade64.dll", StringComparison.OrdinalIgnoreCase) && IsReShade(f));
-        // Hooks: ReShade hooks the device as it does on its own (off: Special K's Compatibility Mode); AsReShade: imported
-        // under ReShade's own name and path, so Special K treats it as its ReShade
-        List<(FileInfo Dll, bool Hooks, bool AsReShade)> reshades = local == null ? [] : [(local, true, true)];
+        // Hooks: graphics hooks on, AsReShade: loaded through SK_ReShade_LoadDLL, which sets the base path override
+        var reshades = local != null ? [(Dll: local, Hooks: true, AsReShade: true)] : new List<(FileInfo Dll, bool Hooks, bool AsReShade)>();
+        // a ReShade the game loads by itself beside Special K, in the exe's folder or the package root
         if (exeFiles.Concat(skFiles).Any(f => f != sk && !f.FullName.Equals(local?.FullName, StringComparison.OrdinalIgnoreCase) && (Ext(f, ".dll") || Ext(f, ".asi")) && IsReShade(f)))
-            block = LayerBlock.SpecialK;
-        var name = Path.GetFileNameWithoutExtension(sk.Name);
-        var inis = new[] { GameFiles.Find(exeDir, name + ".ini"), install == null ? null : Path.Combine(install, "Global", "master_" + name + ".ini"), GameFiles.Find(exeDir, "custom_" + name + ".ini") };
-        var imported = new List<FileInfo>();
+            why = LayerBlock.SpecialK;
+        var stem = Path.GetFileNameWithoutExtension(sk.Name);
+        var inis = new[] { GameFiles.Find(exeDir, stem + ".ini"), install == null ? null : Path.Combine(install, "Global", $"master_{stem}.ini"), GameFiles.Find(exeDir, $"custom_{stem}.ini") };
+        var importAddons = new List<FileInfo>();
         foreach (var import in SpecialKImports(inis.OfType<string>()))
         {
-            var fileName = import.GetValueOrDefault("Filename") ?? "";
-            if (!ImportTimes.Contains(import.GetValueOrDefault("When") ?? "", StringComparer.OrdinalIgnoreCase)) continue;
-            if (import.GetValueOrDefault("Architecture") is { } arch && !arch.Equals("x64", StringComparison.OrdinalIgnoreCase) && !arch.Equals("Any", StringComparison.OrdinalIgnoreCase)) continue;
-            if (import.GetValueOrDefault("Blacklist")?.Contains(Path.GetFileName(game.ExePath), StringComparison.OrdinalIgnoreCase) == true) continue;
-            bool named = fileName.Contains("ReShade", StringComparison.OrdinalIgnoreCase);
-            var (file, literal) = ImportFile(fileName, exeDir);
-            bool plugIn = import.GetValueOrDefault("Role")?.Equals("PlugIn", StringComparison.OrdinalIgnoreCase) == true;
+            var name = import.GetValueOrDefault("Filename") ?? "";
+            // Special K loads an import only with one of these When values
+            if (!ImportTimes.Contains(import.GetValueOrDefault("When") ?? "", StringComparer.OrdinalIgnoreCase)
+                || import.GetValueOrDefault("Architecture") is { } arch && !arch.Equals("x64", StringComparison.OrdinalIgnoreCase) && !arch.Equals("Any", StringComparison.OrdinalIgnoreCase)
+                || import.GetValueOrDefault("Blacklist")?.Contains(Path.GetFileName(game.ExePath), StringComparison.OrdinalIgnoreCase) == true) continue;
+            var named = name.Contains("ReShade", StringComparison.OrdinalIgnoreCase);
+            var (file, literal) = ImportFile(name, exeDir);
+            // Role=PlugIn frees a library without SKPlugIn_Init right after loading it
+            var freed = import.GetValueOrDefault("Role")?.Equals("PlugIn", StringComparison.OrdinalIgnoreCase) == true;
+            // one found elsewhere on the DLL search path may be another ReShade
             if (file == null)
             {
-                if (fileName.Length > 0) block = LayerBlock.SpecialK;
+                if (name.Length > 0) why = LayerBlock.SpecialK;
             }
             else if (Ext(file, ".addon") || Ext(file, ".addon64"))
             {
-                imported.Add(file);
-                if (plugIn) block = LayerBlock.SpecialK;
+                importAddons.Add(file);
+                if (freed) why = LayerBlock.SpecialK;
             }
+            // a file already loaded doesn't load again
             else if (IsReShade(file))
             {
-                if (plugIn) block = LayerBlock.SpecialK;
+                if (freed) why = LayerBlock.SpecialK;
+                // SK_ReShade_LoadDLL (Mode, base path override) only for the literal Filename, an expanded one loads plainly
                 if (!reshades.Any(r => r.Dll.FullName.Equals(file.FullName, StringComparison.OrdinalIgnoreCase)))
                     reshades.Add((file, !(named && literal) || import.GetValueOrDefault("Mode")?.Equals("Normal", StringComparison.OrdinalIgnoreCase) == true, named && literal));
             }
-            else if (Find(file, "mods", ModMarkers) != -1) block = LayerBlock.SpecialK;
+            // an add-on under another extension: the staged ReShade loads only .addon and .addon64 files
+            else if (Find(file, "mods", ModMarkers) != -1) why = LayerBlock.SpecialK;
         }
-        if (reshades.Count != 1) block = LayerBlock.SpecialK;
-        var ownIni = exeFiles.FirstOrDefault(f => f.Name.Equals("ReShade.ini", StringComparison.OrdinalIgnoreCase));
-        if (ownIni != null && ReShadeFirst(IniAll(ownIni).Select(e => e.Line), "INSTALL", "BasePath") is { Length: > 0 }) block = LayerBlock.SpecialK;
-        if (block == LayerBlock.None && !reshades[0].Hooks) block = LayerBlock.SpecialKCompatibility;
-        if (!OperatingSystem.IsWindows()) block = LayerBlock.SpecialKSystem;
+        if (reshades.Count != 1) why = LayerBlock.SpecialK;
+        var exeIni = exeFiles.FirstOrDefault(f => f.Name.Equals("ReShade.ini", StringComparison.OrdinalIgnoreCase));
+        // ReShade reads [INSTALL] BasePath from the exe's ReShade.ini before any override
+        if (exeIni != null && ReShadeFirst(IniAll(exeIni).Select(e => e.Line), "INSTALL", "BasePath") is { Length: > 0 }) why = LayerBlock.SpecialK;
+        if (why == LayerBlock.None && !reshades[0].Hooks) why = LayerBlock.SpecialKCompatibility;
+        if (!OperatingSystem.IsWindows()) why = LayerBlock.SpecialKSystem;
         var dll = reshades.Count > 0 ? reshades[0].Dll : sk;
-        // without a ReShade.ini of its own, Special K's ReShade keeps its settings in a ReShade folder beside the exe
-        var baseDir = ownIni == null && (reshades.Count != 1 || reshades[0].AsReShade) ? GameFiles.Find(exeDir, "ReShade")
-            : game.Store == Store.Xbox ? GameFiles.DirKey(dll.DirectoryName!) : exeDir;
+        var baseDir = exeIni == null && reshades is not [{ AsReShade: false }] ? GameFiles.Find(exeDir, "ReShade") : game.Store == Store.Xbox ? GameFiles.DirKey(dll.DirectoryName!) : exeDir;
         var baseFiles = List(baseDir) ?? [];
-        if (install != null && ownIni == null && reshades.Count == 1 && reshades[0].AsReShade
-            && new[] { "master_ReShade.ini", baseFiles.Any(f => f.Name.Equals("ReShade.ini", StringComparison.OrdinalIgnoreCase)) ? null : "default_ReShade.ini" }.OfType<string>()
-                .Select(n => new FileInfo(Path.Combine(install, "Global", "ReShade", n)))
+        // with the override, Special K writes its Global\ReShade master_ReShade.ini (and default_ReShade.ini before there's a
+        // ReShade.ini) into that ReShade.ini at the game's start: add-on keys there may not be on disk yet
+        if (install != null && exeIni == null && reshades is [{ AsReShade: true }]
+            && new[] { "master_ReShade.ini", baseFiles.Any(f => f.Name.Equals("ReShade.ini", StringComparison.OrdinalIgnoreCase)) ? null : "default_ReShade.ini" }
+                .OfType<string>().Select(n => new FileInfo(Path.Combine(install, "Global", "ReShade", n)))
                 .Any(f => f.Exists && IniEntries(f).Any(e => e.Section.Equals("ADDON", StringComparison.OrdinalIgnoreCase))))
-            block = LayerBlock.SpecialK;
+            why = LayerBlock.SpecialK;
         string? Named(string n) => baseFiles.FirstOrDefault(f => f.Name.Equals(n, StringComparison.OrdinalIgnoreCase))?.FullName;
         var (ini, log) = (Named("ReShade.ini"), Named("ReShade.log"));
         var (addonPath, disabled, _) = ini != null ? Config(new FileInfo(ini)) : (null, [], false);
@@ -326,8 +364,8 @@ public static class ReShade
         var addons = (addonDir == baseDir ? baseFiles : List(addonDir) ?? []).Where(f => Ext(f, ".addon") || Ext(f, ".addon64"))
             .Concat(exeFiles.Where(f => Ext(f, ".addon64")))
             .Concat(Deeply(GameFiles.Find(exeDir, Path.Combine("ReShade", "AddOns"))))
-            .Concat(install != null ? Deeply(Path.Combine(install, "Global", "ReShade", "AddOns")) : [])
-            .Concat(imported)
+            .Concat(install == null ? [] : Deeply(Path.Combine(install, "Global", "ReShade", "AddOns")))
+            .Concat(importAddons)
             .DistinctBy(f => f.FullName, StringComparer.OrdinalIgnoreCase)
             .Select(f =>
             {
@@ -335,34 +373,36 @@ public static class ReShade
                 return a with { Disabled = disabled.Any(d => Disables(d, a, f)) };
             }).ToList();
         if (reshades.Count == 0 && addons.Count == 0) return null;
-        if (block == LayerBlock.None && addons.Where(a => !a.Disabled).GroupBy(a => Path.GetFileName(a.Path), StringComparer.OrdinalIgnoreCase)
+        // Special K skips an add-on whose file name is already loaded: which of two loads isn't known
+        if (why == LayerBlock.None && addons.Where(a => !a.Disabled).GroupBy(a => Path.GetFileName(a.Path), StringComparer.OrdinalIgnoreCase)
                 .Any(g => g.Count() > 1 && g.Any(a => a.Kind != AddonKind.NotPipeline)))
-            block = LayerBlock.SpecialKAddons;
-        return new(dll.FullName, Find(dll, "limited", Limited) != 0, ini, log, addons, BesideExe: true, SpecialK: block);
+            why = LayerBlock.SpecialKAddons;
+        return new(dll.FullName, Find(dll, "limited", Limited) != 0, ini, log, addons, true, null, null, false, why);
     }
 
-    /// <summary>The .addon64 files under <paramref name="dir"/>, any depth; none when it can't be read.</summary>
     static IEnumerable<FileInfo> Deeply(string dir)
     {
         try { return GameFiles.EnumerateFiles(new DirectoryInfo(dir), "*.addon64", Deep).Where(f => Ext(f, ".addon64")).ToList(); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { return []; }
     }
 
-    /// <summary>Special K's install folder: SPECIALK_PATH, else its registry Path, else Documents\My Mods\SpecialK; null off Windows.</summary>
+    /// <summary>Special K's install folder for a DLL beside the exe: SPECIALK_PATH, else HKCU\Software\Kaldaien\Special K's Path,
+    /// else Documents\My Mods\SpecialK (core.cpp); null outside Windows.</summary>
     static string? SpecialKInstall()
     {
         if (!OperatingSystem.IsWindows()) return null;
-        if (Environment.GetEnvironmentVariable("SPECIALK_PATH") is { Length: > 0 } set) return set;
+        if (Environment.GetEnvironmentVariable("SPECIALK_PATH") is { Length: > 0 } env) return env;
         try
         {
             using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Kaldaien\Special K");
             if (key?.GetValue("Path") is string { Length: > 0 } path) return path;
         }
         catch (Exception e) when (e is System.Security.SecurityException or UnauthorizedAccessException or IOException) { }
-        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Personal), "My Mods", "SpecialK");
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "My Mods", "SpecialK");
     }
 
-    /// <summary>Special K's [Import.*] sections over its ini files, later files' keys over earlier ones.</summary>
+    /// <summary>The keys of each section whose name holds "Import.", over <paramref name="inis"/> in order, a later one's
+    /// keys replacing an earlier one's.</summary>
     static IEnumerable<Dictionary<string, string>> SpecialKImports(IEnumerable<string> inis)
     {
         var sections = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
@@ -376,16 +416,16 @@ public static class ReShade
         return sections.Values;
     }
 
-    /// <summary>An import's file as Special K finds it: the name as written (Literal), else with environment variables
-    /// expanded; a relative one in the exe's folder. Null = there is none.</summary>
+    /// <summary>The file an import's Filename loads: a full path, or a relative one found beside the exe, the first folder
+    /// LoadLibrary looks in; as written, else with environment variables expanded; null = none.</summary>
     static (FileInfo? File, bool Literal) ImportFile(string name, string exeDir)
     {
         if (name.Length == 0) return (null, false);
         foreach (var (path, literal) in new[] { (name, true), (Environment.ExpandEnvironmentVariables(name), false) })
             try
             {
-                var f = new FileInfo(Path.IsPathFullyQualified(path) ? path : GameFiles.Find(exeDir, path));
-                if (f.Exists) return (f, literal);
+                var file = new FileInfo(Path.IsPathFullyQualified(path) ? path : GameFiles.Find(exeDir, path));
+                if (file.Exists) return (file, literal);
             }
             catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException or IOException or UnauthorizedAccessException) { }
         return (null, false);
@@ -504,7 +544,8 @@ public static class ReShade
     /// <summary>A copy of the layer for a warm (scskiller_warm --layer) in <paramref name="dest"/>, emptied first: as dxgi.dll
     /// (the warm's exe loads that name, whatever the game's is) ReShade's DLL, or the <see cref="ReShadeInstall.Loader"/>
     /// with ReShade64.dll, its OptiScaler.ini (<see cref="ForStage"/>) and the libraries it loads; the add-ons that change
-    /// pipelines, and ReShade.ini without the keys that point ReShade at another folder ([ADDON] AddonPath, [INSTALL] BasePath).</summary>
+    /// pipelines, and ReShade.ini without the keys that point ReShade at another folder ([ADDON] AddonPath, [INSTALL] BasePath), chain a DLL ([PROXY] EnableProxyLibrary)
+    /// or stop an async-PSO build's GetCachedBlob waiting for the compile ([ASYNC] WaitForCachedBlob).</summary>
     public static string Stage(ReShadeInstall r, string dest, long maxFile = MaxLibraryBytes, long budget = LibraryBudget)
     {
         if (Directory.Exists(dest)) Directory.Delete(dest, true);
@@ -527,22 +568,20 @@ public static class ReShade
         return dest;
     }
 
-    // what a staged copy's ReShade.ini leaves out: paths to other folders, and a proxy library the stage lacks (1.4.0-beta.1)
-    static readonly (string Section, string Key)[] Stripped = [("ADDON", "AddonPath"), ("INSTALL", "BasePath"), ("PROXY", "EnableProxyLibrary")];
+    // EnableProxyLibrary forwards ReShade's own exports, which no game calls in Special K's ReShade64.dll but the warm does as dxgi.dll.
+    // WaitForCachedBlob=0 returns the placeholder PSO's blob at once: the warm would count a pipeline still compiling as done.
+    static readonly (string Section, string Key)[] Stripped = [("ADDON", "AddonPath"), ("INSTALL", "BasePath"), ("PROXY", "EnableProxyLibrary"), ("ASYNC", "WaitForCachedBlob")];
 
-    /// <summary>ReShade.ini without <see cref="Stripped"/>'s keys, its lines read as ReShade reads them (<see cref="ReShadeFirst"/>).</summary>
+    /// <summary>ReShade.ini without <see cref="Stripped"/>'s keys, its sections and keys read as <see cref="ReShadeFirst"/> does.</summary>
     static IEnumerable<string> WithoutPaths(IEnumerable<string> ini)
     {
         var section = "";
         foreach (var raw in ini)
         {
             var line = raw.Split('\0')[0].Trim(' ', '\t', '\r', '\n');
-            if (line.Length > 0 && line[0] == '[')
-                section = (line.IndexOf(']') is var end and >= 0 ? line[..end] : line).Trim(' ', '\t', '[', ']');
-            else if (line.Length > 0 && line[0] is not (';' or '/' or '#')
-                     && (line.IndexOf('=') is var eq && eq >= 0 ? line[..eq].Trim(' ', '\t') : line) is var key
-                     && Stripped.Any(x => x.Section.Equals(section, StringComparison.OrdinalIgnoreCase) && x.Key.Equals(key, StringComparison.OrdinalIgnoreCase)))
-                continue;
+            if (line.Length > 0 && line[0] == '[') section = (line.IndexOf(']') is var end and >= 0 ? line[..end] : line).Trim(' ', '\t', '[', ']');
+            else if (line.Length > 0 && line[0] is not (';' or '/' or '#') && (line.IndexOf('=') is var eq and >= 0 ? line[..eq].Trim(' ', '\t') : line) is var key
+                && Stripped.Any(s => s.Section.Equals(section, StringComparison.OrdinalIgnoreCase) && s.Key.Equals(key, StringComparison.OrdinalIgnoreCase))) continue;
             yield return raw;
         }
     }
@@ -561,6 +600,14 @@ public static class ReShade
             && ScsKiller.ChainBlocker(f.FullName) == ScsKiller.SkipVulkanMod) is true;
     }
 
+    // Starfield Luma's settings key, in its SFSE plugin and its ASI build
+    static readonly byte[][] StarfieldLumaMarkers = ["ExtraRenderTargetsToUpgrade"u8.ToArray()];
+
+    /// <summary>Starfield Luma (Starfield-Luma: the SFSE plugin Data\SFSE\Plugins\Luma.dll, or Luma.asi in the install root) by its
+    /// settings key: it upgrades named render targets to R16G16B16A16_FLOAT and replaces post shaders through Data\shadersfx. Null: none.</summary>
+    public static FileInfo? StarfieldLuma(Game game) => new[] { Path.Combine("Data", "SFSE", "Plugins", "Luma.dll"), "Luma.asi" }
+        .Select(p => new FileInfo(GameFiles.Find(game.InstallDir, p))).FirstOrDefault(f => f.Exists && Find(f, "sfluma", StarfieldLumaMarkers) >= 0);
+
     /// <summary>MFG Unlocker beside the exe under a name it loads as (its README's list), by its version resource's ProductName.</summary>
     public static bool MfgUnlocker(string exeDir) => MfgUnlockerNames.Any(n => new FileInfo(GameFiles.Find(exeDir, n)) is var f
         && Cached(f, "mfgunlocker", () => PeVersionInfo.GetVersionInfo(f.FullName).ProductName == "MFG Unlocker") is true);
@@ -578,7 +625,7 @@ public static class ReShade
     static ReShadeAddon Classify(FileInfo f, IReadOnlyDictionary<string, AddonKind>? verdicts, string? log)
     {
         var mod = Find(f, "mods", ModMarkers);
-        if (mod == -1) return new(f.FullName, null, AddonKind.NotPipeline);
+        if (mod == -1) return Luma(f) is { } luma ? new ReShadeAddon(f.FullName, "Luma", luma) : new ReShadeAddon(f.FullName, null, AddonKind.NotPipeline);
         // a log from before the file was replaced says nothing about it
         var logged = verdicts != null && verdicts.TryGetValue(f.FullName, out var k) && File.GetLastWriteTimeUtc(log!) > f.LastWriteTimeUtc ? k : (AddonKind?)null;
         var kind = logged ?? Listed(f.Name) ?? Listed(OriginalName(f.FullName));
@@ -586,12 +633,21 @@ public static class ReShade
     }
 
     /// <summary>A DisabledAddons entry as ReShade reads it: "name" for the add-on registered under that name, "@file" or
-    /// "name@file" for its file (the name isn't checked before loading). The name is RenoDX's for its builds, else the
+    /// "name@file" for its file (the name isn't checked before loading). The name is RenoDX's or Luma's for their builds, else the
     /// version resource's ProductName or the file's stem, as ReShade takes it unless the add-on exports another.</summary>
     static bool Disables(string entry, ReShadeAddon a, FileInfo f) =>
         entry.IndexOf('@') is var at and >= 0 ? entry[(at + 1)..] == f.Name
-        : entry == (a.Mod == "RenoDX" ? "RenoDX" : Cached(f, "productname", () => PeVersionInfo.GetVersionInfo(f.FullName).ProductName ?? "") as string is { Length: > 0 } product
+        : entry == (a.Mod is "RenoDX" or "Luma" ? a.Mod : Cached(f, "productname", () => PeVersionInfo.GetVersionInfo(f.FullName).ProductName ?? "") as string is { Length: > 0 } product
             ? product : Path.GetFileNameWithoutExtension(f.Name));
+
+    static AddonKind? Luma(FileInfo f)
+    {
+        if (!f.Name.StartsWith("Luma-", StringComparison.OrdinalIgnoreCase)) return null;
+        var project = Path.GetFileNameWithoutExtension(f.Name)["Luma-".Length..].Replace('_', ' ');
+        var every = project.Equals(LumaEveryShader, StringComparison.OrdinalIgnoreCase);
+        return !every && !LumaPatching.Contains(project, StringComparer.OrdinalIgnoreCase) || Find(f, "luma", LumaMarkers) < 0 ? null
+            : every ? AddonKind.LayoutInjecting : AddonKind.ReplacesShaders;
+    }
 
     static AddonKind? Listed(string fileName) => RenoDxFolder(fileName) is { } folder && RenoDxTable.TryGetValue(folder, out var k) ? k : null;
 
@@ -703,6 +759,9 @@ public static class ReShade
         return Array.FindIndex(markers, m => bytes.AsSpan().IndexOf(m) >= 0);
     }) as int? ?? NotRead;
 
+    /// <summary><paramref name="read"/>'s result (<paramref name="what"/>) for the file while its size, write time, change time and
+    /// file id stay the same; null = it
+    /// couldn't be read or is over <see cref="MaxBytes"/>.</summary>
     /// <summary>The file's SHA-1, read once while its size and write time stay the same; null = unreadable or over <see cref="MaxBytes"/>.</summary>
     internal static string? ContentHash(FileInfo f) => Cached(f, "sha1", () =>
     {
@@ -710,9 +769,6 @@ public static class ReShade
         return Convert.ToHexStringLower(System.Security.Cryptography.SHA1.HashData(s));
     }) as string;
 
-    /// <summary><paramref name="read"/>'s result (<paramref name="what"/>) for the file while its size, write time, change time and
-    /// file id stay the same; null = it
-    /// couldn't be read or is over <see cref="MaxBytes"/>.</summary>
     static object? Cached(FileInfo f, string what, Func<object> read)
     {
         f.Refresh();

@@ -20,7 +20,7 @@ public static partial class Elevated
     public static partial string CurrentUserSid { get; }
 
     /// <summary>The process runs elevated. Null: can't tell, or no such thing on this OS. <paramref name="deniedIsElevated"/>
-    /// false: a token this process may not read is "can't tell", not elevated (another user's process, anti-cheat).</summary>
+    /// false: a token refused to us is unknown, as anti-cheat refuses it too.</summary>
     public static partial bool? OfProcess(Microsoft.Win32.SafeHandles.SafeProcessHandle process, bool deniedIsElevated = true);
 
     /// <summary>Runs <c>scskiller &lt;args&gt; --yes --result &lt;file&gt;</c> elevated and waits for it. Null = UAC cancelled.</summary>

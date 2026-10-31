@@ -17,9 +17,10 @@ public static class NewShaders
     /// downloads stays under it, a first big community recording doesn't (+32,249 on an 8,281-pipeline plan).</summary>
     public const int Jump = 20;
 
-    /// <summary>A rebuilt plan's "can now compile N more" (ScsKiller.PlannerChanged): told once per compile, whatever the
+    /// <summary>A rebuilt plan's count (ScsKiller.PlannerChanged: "can now compile N more" or <see cref="ScsKiller.PlanReplacedReason"/>): told once per compile, whatever the
     /// count and the day. Not countable ("can now compile more of this game"), its count is the last plan's.</summary>
-    static bool PlannerChanged(GameState s) => s.Status == GameStatus.Stale && s.StatusReason.StartsWith("SCSKiller can now compile ", StringComparison.Ordinal)
+    static bool PlannerChanged(GameState s) => s.Status == GameStatus.Stale && s.StatusReason.StartsWith(ScsKiller.PlanReplacedReason + " (", StringComparison.Ordinal)
+        || s.Status == GameStatus.Stale && s.StatusReason.StartsWith("SCSKiller can now compile ", StringComparison.Ordinal)
         && !s.StatusReason.StartsWith("SCSKiller can now compile more", StringComparison.Ordinal);
 
     /// <summary>What a notification about the game says, as the notified store keeps it; null when there is nothing to tell.</summary>
@@ -46,6 +47,16 @@ public static class NewShaders
     public static NewShadersMode Global(Settings s) => s.OnNewShaders ?? (s.NotifyNewShaders ? NewShadersMode.Notify : NewShadersMode.Off);
 
     public static NewShadersMode ModeOf(GameState s, Settings settings) => s.NewShadersOverride ?? Global(settings);
+
+    /// <summary>Queues one of <see cref="Plan"/>'s Compile: when idle, or at once with <see cref="Settings.NewShadersRightAway"/>.</summary>
+    public static void Queue(IScsKiller core, string gameId)
+    {
+        if (core.Settings.NewShadersRightAway) core.EnqueueRightAway(gameId);
+        else core.EnqueueWhenIdle(gameId);
+    }
+
+    /// <summary>The "Compiling new shaders" notification's line on when they compile.</summary>
+    public static string When(Settings s) => s.NewShadersRightAway ? "They compile now." : "They compile when the PC is idle.";
 
     /// <summary>The games to notify about now and the notified store to keep (<see cref="Plan"/> with every game on Notify).</summary>
     public static (IReadOnlyList<GameState> Due, Dictionary<string, string> Notified) Due(IEnumerable<GameState> games,
@@ -136,27 +147,16 @@ public static class NewShaders
         return picked;
     }
 
-    /// <summary>Queues an automatic compile of the game's new shaders: once no game runs with
-    /// <see cref="Settings.NewShadersRightAway"/>, else when the PC is idle.</summary>
-    public static void Queue(IScsKiller core, string gameId)
-    {
-        if (core.Settings.NewShadersRightAway) core.EnqueueRightAway(gameId);
-        else core.EnqueueWhenIdle(gameId);
-    }
-
-    /// <summary>When the queued new shaders compile, as the notification says.</summary>
-    public static string When(Settings s) => s.NewShadersRightAway ? "They compile now." : "They compile when the PC is idle.";
-
     /// <summary>Of the automatic compiles queued (<paramref name="queued"/>), the ones to take out of the queue: still waiting
-    /// for idle while the game's setting no longer compiles automatically, nor <see cref="NewGames"/> takes it. <paramref name="forget"/>: the ones no longer
-    /// waiting for idle (started, finished, or made a normal item by the user), left alone from now on.</summary>
+    /// for idle (or right away for no game to run) while the game's setting no longer compiles automatically, nor <see cref="NewGames"/> takes it. <paramref name="forget"/>: the ones no longer
+    /// waiting (started, finished, or made a normal item by the user), left alone from now on.</summary>
     public static (IReadOnlyList<string> Withdraw, IReadOnlyList<string> Forget) Withdrawn(IEnumerable<string> queued,
         IEnumerable<QueueItem> queue, IEnumerable<GameState> games, Settings settings)
     {
         var (withdraw, forget) = (new List<string>(), new List<string>());
         foreach (var id in queued)
         {
-            if (queue.FirstOrDefault(q => q.GameId == id) is not { } item || !ScsKiller.WaitsOnItsOwn(item)) forget.Add(id);
+            if (queue.FirstOrDefault(q => q.GameId == id) is not { } w || !ScsKiller.WaitsOnItsOwn(w)) forget.Add(id);
             else if (games.FirstOrDefault(s => s.Game.Id == id) is not { } s
                      // a never-compiled game is only ever NewGames': the new-shaders mode never queues one
                      || (s.WarmedAt == null ? !(settings.CompileNewGames && ScsKiller.InAddAllReady(s))

@@ -6,6 +6,28 @@ repository's root `CHANGELOG.md`.
 
 ## [Unreleased]
 
+**SCSKiller 1.4.3: the first stable 1.4, from its published source (engine 1.4.3)**
+
+- Upstream published 1.4.2's and 1.4.3's source, so the code the fork had written from the 1.4.0 and 1.4.1 alphas'
+  binaries is now upstream's own: a git merge of tag v1.4.3, Exo's own changes kept, and 1.4.2's release natives in
+  `engine/prebuilt` (the source of every native file is in `proxy\`).
+- New from upstream: the traversal stutter fix's 1.4.2 form (also with OptiScaler and HelixSR), Godot 4 on DirectX 12
+  and Vulkan, DirectX 9 recording (`d3d9.dll`, 64- and 32-bit), Warhammer 40,000: Space Marine 2, Unreal Engine 4 games
+  that write their own pipeline cache compiled on AMD without a recording, Fortnite's nameless shader libraries (about 7x
+  the pipelines) without asking for an AES key its encrypted files don't need, Marvel Rivals' full plan on 16 GB, a
+  growing compile restarted sooner and resumed where it was, a faster hand-over to the game's cache that stops on pause,
+  remove or quit and waits for free disk space, AMD's DirectX 11 driver-reset shader skipped alone and compiles into the
+  game's own cache also beside OptiScaler, Steam exes over 2 GB, mod loaders' winmm.dll and version.dll, games that load
+  their own Intel driver, a second copy's recorder left alone (and taken over when Record is turned on, 1.4.3).
+- Kept as Exo's: the traversal fix never in an anti-cheat or VAC game; the Vulkan layer never armed in one; Always
+  record never arms; compiles only when asked (no Compile new games); HDD mode per drive from the drives' seek penalty;
+  Advanced Shader Delivery, local ASD, PcIdle, compile estimates, pipeline-cache hit rates, the memory guard, Exo's
+  library sources (Exo, Amazon, more GOG/Ubisoft/Battle.net/Epic installs), Glacier 2, Sekiro, Spider-Man's archives,
+  public Unreal keys, planner memoization and the D3DSCache fold's earlier-driver handling.
+- Dropped: the fork's AGS-chain shim for alpha wrappers (1.4.2's wrapper links `amd_ags_x64_scskiller.dll` as upstream
+  expects); `AmdAppCache.ProvenAgsApp` (upstream now registers every game's own AGS name, OptiScaler included).
+- Protocol: unchanged. What's new keeps its `bullets` (1.4.2's section headings aren't sent).
+
 **A compile's pipelines reach the game's Windows shader cache, and nothing useless stays**
 
 - On NVIDIA from 621, the step that moves a compile's pipelines from its staged exe's D3DSCache folder into the game's

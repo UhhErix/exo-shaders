@@ -64,8 +64,8 @@ sealed class WindowsWarmHost : IWarmHost
         return new Child(p, errorEnd.Task);
     }
 
-    // how long after the process exits its stderr may stay open: a process that inherited it (or one the driver keeps from
-    // tearing down) holds it for as long as it lives
+    /// <summary>How long after the process exits its stderr may stay open: a process it started that inherited the handle
+    /// (or one the driver keeps from tearing down) holds it for as long as it lives.</summary>
     static readonly TimeSpan ErrorGrace = TimeSpan.FromSeconds(5);
 
     sealed class Child(Process p, Task errorEnd) : IWarmProcess

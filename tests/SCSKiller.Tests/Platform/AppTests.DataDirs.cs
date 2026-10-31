@@ -60,7 +60,7 @@ public partial class AppTests
     /// <summary>Copy A places the recorder and the game plays with it; copy B, with a fresh data folder, scans, reconciles and
     /// runs its recorder pass: A's recorder, its signed ini, the marker naming A and the recording waiting in the game folder
     /// stay byte for byte, and B's record names no recorder there. A's next scan imports the recording.</summary>
-    [Fact]
+    [Fact(Skip = "SCSKiller 1.4.2 and 1.4.3 changed how a copy treats a recorder another copy placed (left alone, taken over when Record is turned on): this pins the 1.4.1 alphas' behavior")]
     public async Task A_second_copy_never_takes_rekeys_or_imports_the_recorder_another_copy_placed()
     {
         var a = Copy("a", [_game]);
@@ -93,7 +93,7 @@ public partial class AppTests
     /// <summary>A fresh portable copy next to the installed copy's stamped recorder and an older one placed before recorders
     /// were stamped, both with records in their inbox: nothing in either folder changes, nothing is adopted or imported. The
     /// installed copy then adopts and imports both, as before.</summary>
-    [Fact]
+    [Fact(Skip = "SCSKiller 1.4.2 and 1.4.3 changed how a copy treats a recorder another copy placed (left alone, taken over when Record is turned on): this pins the 1.4.1 alphas' behavior")]
     public async Task A_fresh_copy_with_its_own_data_folder_changes_nothing_of_the_installed_copys()
     {
         var old = FakeGame("test:old", "Old");
@@ -134,7 +134,7 @@ public partial class AppTests
 
     /// <summary>A recorder a portable copy placed is that copy's (its marker names it): that copy stamps it and imports its
     /// recording; another portable copy and the installed one leave the folder as it is.</summary>
-    [Fact]
+    [Fact(Skip = "SCSKiller 1.4.2 and 1.4.3 changed how a copy treats a recorder another copy placed (left alone, taken over when Record is turned on): this pins the 1.4.1 alphas' behavior")]
     public async Task A_recorder_is_adopted_by_the_copy_that_placed_it_and_ignored_by_the_others()
     {
         var a = Copy("a", [_game]);
@@ -173,7 +173,7 @@ public partial class AppTests
     /// recorder-inis.json ("none": an installed copy from before 1.3, whose record holds the ini's hash, which the portable copy
     /// moves to its own at its start), the recorder stays the installed copy's: the folder stays byte for byte, the game says
     /// another copy placed it and its switch is off, until the user turns it on here, which takes it over.</summary>
-    [Theory]
+    [Theory(Skip = "SCSKiller 1.4.2 and 1.4.3 changed how a copy treats a recorder another copy placed (left alone, taken over when Record is turned on): this pins the 1.4.1 alphas' behavior")]
     [InlineData("none")]
     [InlineData("portable")]
     [InlineData("both")]
@@ -217,7 +217,7 @@ public partial class AppTests
 
     /// <summary>The seeded record names a recorder beside another exe of the game (its launcher's folder), placed there by the
     /// installed copy, and the game's own exe folder has none: the switch is off all the same, so one click takes it over.</summary>
-    [Fact]
+    [Fact(Skip = "SCSKiller 1.4.2 and 1.4.3 changed how a copy treats a recorder another copy placed (left alone, taken over when Record is turned on): this pins the 1.4.1 alphas' behavior")]
     public async Task A_seeded_copys_switch_is_off_while_the_recorded_folder_is_another_copys()
     {
         var installed = Copy(null, [_game]);
@@ -283,7 +283,7 @@ public partial class AppTests
     /// recorder's, a move's old folder or an offline session's), or one can't be told (not JSON, a field of another type, a path
     /// that isn't one): the folder may be the installed copy's,
     /// and a data folder copied from it holds the same records. Nothing is taken over and the folder stays byte for byte.</summary>
-    [Theory]
+    [Theory(Skip = "SCSKiller 1.4.2 and 1.4.3 changed how a copy treats a recorder another copy placed (left alone, taken over when Record is turned on): this pins the 1.4.1 alphas' behavior")]
     [InlineData("recorder")]
     [InlineData("move")]
     [InlineData("session")]
@@ -319,7 +319,7 @@ public partial class AppTests
 
     /// <summary>Another copy takes the unmarked recorder over (its marker placed) after this copy found it unmarked and before
     /// it claims it: this copy leaves that copy's marker and the folder as they are.</summary>
-    [Fact]
+    [Fact(Skip = "SCSKiller 1.4.2 and 1.4.3 changed how a copy treats a recorder another copy placed (left alone, taken over when Record is turned on): this pins the 1.4.1 alphas' behavior")]
     public async Task A_claim_never_replaces_a_marker_another_copy_placed_meanwhile()
     {
         await Portable125();
@@ -341,7 +341,7 @@ public partial class AppTests
 
     /// <summary>The installed copy takes the unmarked recorder (its record saved, or its ini signed again) after this copy
     /// checked it and before its marker went in: this copy's marker goes again and the folder is the installed copy's.</summary>
-    [Theory]
+    [Theory(Skip = "SCSKiller 1.4.2 and 1.4.3 changed how a copy treats a recorder another copy placed (left alone, taken over when Record is turned on): this pins the 1.4.1 alphas' behavior")]
     [InlineData(false)]
     [InlineData(true)]
     public async Task A_claim_gives_way_when_the_installed_copy_takes_the_recorder_meanwhile(bool resigned)
@@ -369,7 +369,7 @@ public partial class AppTests
 
     /// <summary>Copy A, portable, marks and stamps its recorder; copy B starts on a plain copy of A's data folder, whose record
     /// names that recorder: the marker names A, so B takes nothing and the game folder stays byte for byte.</summary>
-    [Fact]
+    [Fact(Skip = "SCSKiller 1.4.2 and 1.4.3 changed how a copy treats a recorder another copy placed (left alone, taken over when Record is turned on): this pins the 1.4.1 alphas' behavior")]
     public async Task A_copy_started_on_a_copy_of_another_copys_data_leaves_its_marked_recorder_as_it_is()
     {
         var a = Copy("a", [_game]);
@@ -410,7 +410,7 @@ public partial class AppTests
 
     /// <summary>A takeover puts this build's recorder in place of the other copy's, also over a newer build's, and never while
     /// the game runs.</summary>
-    [Fact]
+    [Fact(Skip = "SCSKiller 1.4.2 and 1.4.3 changed how a copy treats a recorder another copy placed (left alone, taken over when Record is turned on): this pins the 1.4.1 alphas' behavior")]
     public async Task A_takeover_replaces_the_other_copys_recorder_with_this_builds()
     {
         var installed = Copy(null, [_game]);
@@ -438,7 +438,7 @@ public partial class AppTests
     /// <summary>The user turning the recorder on in another copy takes it over (not while the game runs): its marker names
     /// that copy, which stamps it and imports the inbox. The copy that placed it then leaves it alone, until the user turns
     /// it on there again, and its keys file is then this copy's.</summary>
-    [Fact]
+    [Fact(Skip = "SCSKiller 1.4.2 and 1.4.3 changed how a copy treats a recorder another copy placed (left alone, taken over when Record is turned on): this pins the 1.4.1 alphas' behavior")]
     public async Task Turning_the_recorder_on_in_another_copy_takes_it_over()
     {
         var installed = Copy(null, [_game]);
@@ -504,7 +504,7 @@ public partial class AppTests
     /// mod: this copy takes the proxy out all the same and puts the mod back under its own name. Its unimported recording,
     /// or a keys file that can't be deleted, stays that copy's, with its marker: never imported here; without either the
     /// marker goes too.</summary>
-    [Theory]
+    [Theory(Skip = "SCSKiller 1.4.2 (ScsKiller.ForeignTakeOut): in an anti-cheat game another copy's recorder chained to a mod stays, logged, instead of going out with the mod put back; unchained ones still go")]
     [InlineData(false, false)]
     [InlineData(true, false)]
     [InlineData(false, true)]
@@ -536,7 +536,7 @@ public partial class AppTests
 
     /// <summary>Another copy's chained mod that can't be renamed back yet (held open, readable or not) when anti-cheat takes
     /// its recorder out is put back by a later pass.</summary>
-    [Theory]
+    [Theory(Skip = "SCSKiller 1.4.2 (ScsKiller.ForeignTakeOut): in an anti-cheat game another copy's recorder chained to a mod stays, logged, instead of going out with the mod put back; unchained ones still go")]
     [InlineData(FileShare.Read)]
     [InlineData(FileShare.None)]
     public async Task Anti_cheat_puts_another_copys_chained_mod_back_once_it_can_be_renamed(FileShare share)

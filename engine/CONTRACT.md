@@ -618,7 +618,7 @@ type Inventory = {
 | `settings.get` | – | `Settings` (read-only: the settings policy sets them, `traversal` aside) |
 | `settings.setTraversal` | `{mode: "off" \| "all"}` | `Settings`: the traversal stutter fix for every game it applies to, or none (games' own overrides stay). Every recorder's scskiller.ini is written again. Refused in `--safe`. |
 | `driver.setCacheLimit` | `{index}` (`settings.meta.cacheSizes`) | NVIDIA shader cache size. Runs the bundled CLI elevated (Windows asks for administrator permission), as the app does. `{ok: true, text}` / `{ok: false, text}` (`"Cancelled."` when UAC is declined). Confirm first with `CACHE_LIMIT_CONFIRM`. |
-| `driver.setCleanupGuard` | `{on: boolean}` | `on`: Windows' automatic cleanup (SilentCleanup, Storage Service) no longer runs the DirectX Shader Cache handler, which can empty D3DSCache, where NVIDIA from 621 keeps compiled pipelines; `off`: undo. Clears or sets bit 0 of that handler's `Autorun` value only. Runs the bundled CLI elevated (`cleanup-guard on\|off`). `{ok, text}` as `driver.setCacheLimit`. |
+| `driver.setCleanupGuard` | `{on: boolean}` | `on`: Windows' automatic cleanup (SilentCleanup, Storage Service) no longer runs the DirectX Shader Cache handler, which can empty D3DSCache, where NVIDIA from 621 keeps compiled pipelines; `off`: undo. Upstream's `D3DSCache.KeepFromCleanup`: sets that handler's `Autorun` to 0 and keeps the value before it beside it (`SCSKillerAutorun`), which `off` puts back (1 when none was kept). Kept = `Autorun` reads 0 (`D3DSCache.CleanupKept`). Runs the bundled CLI elevated (`shader-cleanup keep\|allow`; `cleanup-guard on\|off` is its older name). `{ok, text}` as `driver.setCacheLimit`. |
 
 ## GameDetail (`game.detail`)
 

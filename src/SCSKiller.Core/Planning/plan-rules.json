@@ -392,13 +392,6 @@
       "rootSignature": {"select": ["dagorCbvRanges"]}
     },
     {
-      "id": "snowdrop-helix",
-      "requires": ["rs.select.v1", "stagesets.v1"],
-      "match": {"family": "Snowdrop", "fork": "helix"},
-      "rootSignature": {"select": ["snowdrop"]},
-      "stageSets": [["VS"], ["VS", "PS"], ["CS"]]
-    },
-    {
       "id": "carved-zouna",
       "requires": ["rs.desc.v1"],
       "match": {"family": "Carved", "fork": "Zouna"},
@@ -420,6 +413,13 @@
               ]}}
         ]
       }
+    },
+    {
+      "id": "snowdrop-helix",
+      "requires": ["rs.select.v1", "stagesets.v1"],
+      "match": {"family": "Snowdrop", "fork": "helix"},
+      "rootSignature": {"select": ["snowdrop"]},
+      "stageSets": [["VS"], ["VS", "PS"], ["CS"]]
     },
     {
       "id": "re-pragmata",

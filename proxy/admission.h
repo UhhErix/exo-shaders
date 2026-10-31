@@ -42,14 +42,45 @@ static inline std::string to_utf8(const std::wstring& w) {
 }
 #endif
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 
+// why with the path of the one file it is about, for the app to show ("<why>: <path>"), until this thread's next call. The
+// path is the file system's: a byte that isn't UTF-8, a control or bidi character or a line break becomes '?', and a longer
+// one keeps its last 400 bytes.
+inline const char* with_path(const char* why, const std::string& p) {
+    std::string s;
+    for (size_t i = 0; i < p.size();) {
+        const unsigned char c = (unsigned char)p[i];
+        const size_t n = c < 0x80 ? 1 : (c & 0xe0) == 0xc0 ? 2 : (c & 0xf0) == 0xe0 ? 3 : (c & 0xf8) == 0xf0 ? 4 : 0;
+        uint32_t cp = n == 1 ? c : c & (0x7f >> n);
+        bool ok = n && i + n <= p.size();
+        for (size_t k = 1; ok && k < n; ++k) ok = ((unsigned char)p[i + k] & 0xc0) == 0x80, cp = cp << 6 | (p[i + k] & 0x3f);
+        static const uint32_t least[] = {0, 0, 0x80, 0x800, 0x10000};
+        const bool whole = ok && cp >= least[n] && cp <= 0x10ffff && (cp < 0xd800 || cp >= 0xe000);
+        const bool shown = whole && cp >= 0x20 && (cp < 0x7f || cp >= 0xa0) && cp != 0x61c && (cp < 0x200e || cp > 0x200f) && (cp < 0x2028 || cp > 0x202e)
+                           && (cp < 0x2066 || cp > 0x2069);
+        if (shown) s.append(p, i, n);
+        else s += '?';
+        i += whole ? n : 1;
+    }
+    if (s.size() > 400) {
+        size_t cut = s.size() - 400;
+        while (((unsigned char)s[cut] & 0xc0) == 0x80) ++cut;
+        s = "..." + s.substr(cut);
+    }
+    static thread_local char b[512];
+    snprintf(b, sizeof b, "%s: %s", why, s.c_str());
+    return b;
+}
+
 // The stamp lines sig= covers, as ScsKiller.Signed writes them: exe_size=, exe_time=, then pid= and pid_time= when pid= is
-// there, then risk= when it is there.
+// there, then risk= when it is there, then the others and the traversal_ lines (traversal_lines).
 inline std::wstring signed_stamp(const std::wstring& size, const std::wstring& time, const std::wstring& pid, const std::wstring& pid_time, const std::wstring& risk,
-                                 const std::wstring& vendor = L"", const std::wstring& overlay = L"", const std::wstring& play_s = L"", const std::wstring& tag = L"") {
+                                 const std::wstring& vendor = L"", const std::wstring& overlay = L"", const std::wstring& play_s = L"", const std::wstring& tag = L"",
+                                 const std::wstring& traversal = L"") {
     std::wstring s = L"exe_size=" + size + L"\r\nexe_time=" + time + L"\r\n";
     if (!pid.empty()) s += L"pid=" + pid + L"\r\npid_time=" + pid_time + L"\r\n";
     if (!risk.empty()) s += L"risk=" + risk + L"\r\n";
@@ -57,6 +88,20 @@ inline std::wstring signed_stamp(const std::wstring& size, const std::wstring& t
     if (!overlay.empty()) s += L"overlay=" + overlay + L"\r\n";
     if (!play_s.empty()) s += L"ab_play_s=" + play_s + L"\r\n";
     if (!tag.empty()) s += L"ab_tag=" + tag + L"\r\n";
+    return s + traversal;
+}
+
+// traversal.h's keys, in the order ScsKiller.TraversalKeys writes them: sig= covers their lines, so a hand edit can't turn the
+// fix on. get(key): the ini's value, "" without the line.
+template <class Get> std::wstring traversal_lines(Get get) {
+    static const wchar_t* const keys[] = {L"suballocate", L"buffers", L"textures", L"upload", L"readback", L"uav_buffers", L"uav_textures", L"reuse_frames",
+                                          L"reuse_ms", L"heap_mb", L"spare_heaps", L"max_pool_mb", L"max_resource_mb", L"probe_ms", L"dred", L"zeroed", L"zeroed_textures",
+                                          L"zeroed_upload", L"zeroed_reuse", L"copy_high", L"test_budget_mb"};
+    std::wstring s;
+    for (auto* k : keys) {
+        const std::wstring key = std::wstring(L"traversal_") + k, v = get(key.c_str());
+        if (!v.empty()) s += key + L"=" + v + L"\r\n";
+    }
     return s;
 }
 
@@ -219,6 +264,15 @@ static bool vdf_one(const Vdf& o, const char* key, std::string& v) {
 
 static bool all_digits(const std::string& s) { return !s.empty() && s.find_first_not_of("0123456789") == std::string::npos; }
 static const uint32_t kValveVac[] = {10, 80, 240, 300, 320, 440, 500, 550, 570, 730, 4000, 1422450};  // Games.Vac.Valve
+// vac_of's findings that Steam has no info about the app, compared by address
+static const char kVacNoSteam[] = "VAC: Steam's folder is unknown";
+static const char kVacNoAppinfo[] = "VAC: Steam has no appinfo.vdf";
+static const char kVacNotListed[] = "VAC: the game isn't in Steam's appinfo.vdf";
+static const char kVacNoInfo[] = "VAC: Steam has no info about the game";
+// A steam_appid.txt naming an app Steam has no info about (Games.Vac.Named): refused, but a risk session may record it.
+static const char* named_vac(const char* why) {
+    return why == kVacNoSteam || why == kVacNoAppinfo || why == kVacNotListed || why == kVacNoInfo ? "VAC (Steam has no info about the app steam_appid.txt names)" : why;
+}
 
 // A binary KeyValues object (appinfo.vdf's app entries), walked with every read bounded: keys are inline names (v28) or
 // u32 indexes into the file's string table (v29). Finds root/[appinfo/]common and its category object. False: malformed.

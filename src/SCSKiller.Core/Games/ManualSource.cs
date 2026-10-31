@@ -101,6 +101,7 @@ public sealed class ManualSource(AppStore store) : IGameSource
             return RootProblem(root, e.Exe, []) == null ? ToGame(e) : null;
         }
         catch (Exception e) when (e is ArgumentException or IOException or UnauthorizedAccessException) { return null; }
+        catch (Exception e) when (e is not OperationCanceledException) { GameFiles.Skip("Added folders", root, e); return null; }
     }
 
     public IReadOnlyList<string> Folders => store.LoadAddedLibrary().Folders ?? [];

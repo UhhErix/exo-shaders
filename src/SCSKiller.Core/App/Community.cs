@@ -107,6 +107,17 @@ public sealed class CommunityManifest
     public CommunityEntry? Find(Game g, string? contentHash, bool full = false) =>
         (full ? Lookup(fulls, g, contentHash) : null) ?? Lookup(entries, g, contentHash);
 
+    public const int MaxLegacyHashes = 2;
+
+    /// <summary><see cref="Find"/> by the content hash, else the alias, as long as the index has no
+    /// <paramref name="legacyHashes"/>. With them (an earlier version may have shared the build under one): the richest of the
+    /// content hash's, at most <see cref="MaxLegacyHashes"/> legacy ones' and the alias's entries, by uploaders then PSOs, the
+    /// content hash's on a tie.</summary>
+    public CommunityEntry? FindRichest(Game g, string? contentHash, IReadOnlyList<string>? legacyHashes, bool full = false) =>
+        contentHash == null || legacyHashes is not { Count: > 0 } ? Find(g, contentHash, full) ?? Find(g, null, full)
+        : legacyHashes.Take(MaxLegacyHashes).Prepend(contentHash).Select(h => Find(g, h, full)).Append(Find(g, null, full))
+            .OfType<CommunityEntry>().MaxBy(e => (e.Uploaders, e.Psos));
+
     /// <summary>The official recording of a build, matched as <see cref="Find"/> matches.</summary>
     public OfficialEntry? FindOfficial(Game g, string? contentHash) => Lookup(officials, g, contentHash);
 

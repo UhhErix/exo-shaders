@@ -45,42 +45,34 @@ public sealed record CacheInventory(IReadOnlyList<CacheFolder> Folders, IReadOnl
 
     public long Bytes(CacheGroupKind kind) => Groups.Where(g => g.Kind == kind).Sum(g => g.Bytes);
 
-    /// <summary>The folders "Open folder" offers for an item (SCSKiller 1.4.0-beta.1): each listed cache folder that holds its
-    /// files, and for files outside them the narrowest folder over them that isn't a drive's root or above a listed folder.
-    /// Two or more: the page lets the user pick.</summary>
+    /// <summary>The folders to open for <paramref name="item"/>: where its files outside the listed folders are (a game's own
+    /// D3DSCache folder), then each listed folder holding some.</summary>
     public IReadOnlyList<string> FoldersOf(CacheItem item)
     {
-        var listed = Folders.Select(f => Games.GameFiles.DirKey(f.Path)).ToList();
-        List<string> outside = [], inside = [];
-        foreach (var dir in item.Files.Select(f => System.IO.Path.GetDirectoryName(f.Path)).OfType<string>().Where(d => d.Length > 0)
-                     .Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            if (listed.FirstOrDefault(l => In(l, dir)) is { } folder)
-            {
-                if (!inside.Contains(folder, StringComparer.OrdinalIgnoreCase)) inside.Add(folder);
-            }
-            else if (!Broad(dir))
-            {
-                int at = outside.FindIndex(o => Common(o, dir) != null);
-                if (at < 0) outside.Add(dir);
-                else outside[at] = Common(outside[at], dir)!;
-            }
-        }
-        return [.. outside.Where(o => !outside.Any(p => Games.GameFiles.Inside(p, o))).Distinct(StringComparer.OrdinalIgnoreCase), .. inside];
-
-        // a drive's root, or a folder above a listed one: too wide to open for one item
-        bool Broad(string d) => System.IO.Path.GetPathRoot(d) is { Length: > 0 } root && In(d, root) || listed.Any(l => In(d, l));
-
-        // the narrowest folder over both that isn't too wide; null = none
+        var listed = Folders.Select(f => GameFiles.DirKey(f.Path)).ToList();
+        static bool In(string dir, string path) => string.Equals(GameFiles.DirKey(dir), GameFiles.DirKey(path), StringComparison.OrdinalIgnoreCase) || GameFiles.Inside(dir, path);
+        // a folder holding a listed one (%LOCALAPPDATA%) or a drive root is no item's own
+        bool Broad(string dir) => Path.GetPathRoot(dir) is { Length: > 0 } root && In(dir, root) || listed.Any(l => In(dir, l));
         string? Common(string a, string b)
         {
-            for (string? d = a; d != null; d = System.IO.Path.GetDirectoryName(d))
-                if (In(d, b)) return Broad(d) ? null : d;
+            for (string? c = a; c != null; c = Path.GetDirectoryName(c)) if (In(c, b)) return Broad(c) ? null : c;
             return null;
         }
-
-        static bool In(string d, string path) =>
-            string.Equals(Games.GameFiles.DirKey(d), Games.GameFiles.DirKey(path), StringComparison.OrdinalIgnoreCase) || Games.GameFiles.Inside(d, path);
+        List<string> outside = [], inListed = [];
+        // empty: a path without this OS's separators (the design data's Windows paths on Linux)
+        foreach (var dir in item.Files.Select(f => Path.GetDirectoryName(f.Path)).OfType<string>().Where(d => d.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (listed.FirstOrDefault(l => In(l, dir)) is { } at)
+            {
+                if (!inListed.Contains(at, StringComparer.OrdinalIgnoreCase)) inListed.Add(at);
+                continue;
+            }
+            if (Broad(dir)) continue;
+            var i = outside.FindIndex(o => Common(o, dir) != null);
+            if (i < 0) outside.Add(dir);
+            else outside[i] = Common(outside[i], dir)!;
+        }
+        return [.. outside.Where(o => !outside.Any(p => GameFiles.Inside(p, o))).Distinct(StringComparer.OrdinalIgnoreCase), .. inListed];
     }
 }
 
@@ -467,7 +459,7 @@ public sealed partial class ScsKiller
         {
             foreach (var item in items.Where(i => !i.Kept))
             {
-                var running = item.GameIds.Select(id => games.TryGetValue(id, out var s) ? GameRunning(s.Game) ? s.Game.Name : null
+                var running = item.GameIds.Select(id => games.TryGetValue(id, out var s) ? CacheInUse(s.Game) ? s.Game.Name : null
                     : UninstalledExe(Store.LoadGame(id)) is { } exe && names.Contains(Path.GetFileNameWithoutExtension(exe)) ? exe : null).FirstOrDefault(n => n != null);
                 if (running != null)
                 {
@@ -631,7 +623,7 @@ public sealed partial class ScsKiller
             : $"The {OtherApps.ToLowerInvariant()} group ({Format.Bytes(inv.Bytes(CacheGroupKind.Unattributed))}) is kept unless you tick it.");
 
     /// <summary>The D3DSCache folders of the games running now, whose dbs the runtime holds open: never read.</summary>
-    HashSet<string> RunningD3DSCache() => Games.Where(s => GameRunning(s.Game))
+    HashSet<string> RunningD3DSCache() => Games.Where(s => CacheInUse(s.Game))
         .SelectMany(s => D3DSCacheNames(Store.LoadGame(s.Game.Id)).Append(D3DSCache.FolderName(s.Game.ExePath))
             .Concat(s.Game.Store == Core.Store.Xbox && XboxSource.LaunchPath(s.Game) is { } x ? [D3DSCache.FolderName(x)] : []))
         .ToHashSet(StringComparer.OrdinalIgnoreCase);

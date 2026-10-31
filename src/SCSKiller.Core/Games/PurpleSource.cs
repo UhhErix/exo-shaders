@@ -18,16 +18,18 @@ public sealed class PurpleSource(IEnumerable<(string Code, string Name, string I
     {
         var games = new List<Game>();
         foreach (var (code, name, install) in entries ?? (OperatingSystem.IsWindows() ? Entries() : []))
-        {
-            if (!Directory.Exists(install)) continue;
-            var info = Path.Combine(install, $"VersionInfo_{code}.xml");
-            if (!File.Exists(info)) continue;
-            string? version;
-            try { version = XDocument.Load(info).Root?.Element("Version")?.Value.Trim(); }
-            catch (Exception e) when (e is XmlException or IOException or UnauthorizedAccessException) { continue; }   // rewritten while PURPLE patches
-            if (GameFiles.FindExe(install) is not { } exe) continue;
-            games.Add(new Game($"purple:{code}", name, Store.Other, install, exe, string.IsNullOrEmpty(version) ? null : version));
-        }
+            try
+            {
+                if (!Directory.Exists(install)) continue;
+                var info = Path.Combine(install, $"VersionInfo_{code}.xml");
+                if (!File.Exists(info)) continue;
+                string? version;
+                try { version = XDocument.Load(info).Root?.Element("Version")?.Value.Trim(); }
+                catch (Exception e) when (e is XmlException or IOException or UnauthorizedAccessException) { continue; }   // rewritten while PURPLE patches
+                if (GameFiles.FindExe(install) is not { } exe) continue;
+                games.Add(new Game($"purple:{code}", name, Store.Other, install, exe, string.IsNullOrEmpty(version) ? null : version));
+            }
+            catch (Exception e) when (e is not OperationCanceledException) { GameFiles.Skip("PURPLE", $"purple:{code}", e); }
         return games;
     }
 
@@ -49,16 +51,20 @@ public sealed class PurpleSource(IEnumerable<(string Code, string Name, string I
     [SupportedOSPlatform("windows")]
     static IEnumerable<(string, string, string)> Entries()
     {
+        var entries = new List<(string, string, string)>();
         using var root = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall");
-        if (root == null) yield break;
+        if (root == null) return entries;
         foreach (var sub in root.GetSubKeyNames())
-        {
-            using var key = root.OpenSubKey(sub);
-            if (key?.GetValue("UninstallString") is not string uninst
-                || Regex.Match(uninst, @"PurpleLauncher\.exe""?\s+--uninstall\s+""?([\w.-]+)", RegexOptions.IgnoreCase) is not { Success: true } m) continue;
-            if (key.GetValue("InstallLocation") is not string install || install.Length == 0) continue;
-            var code = m.Groups[1].Value;
-            yield return (code, key.GetValue("DisplayName") as string ?? code, install);
-        }
+            try
+            {
+                using var key = root.OpenSubKey(sub);
+                if (key?.GetValue("UninstallString") is not string uninst
+                    || Regex.Match(uninst, @"PurpleLauncher\.exe""?\s+--uninstall\s+""?([\w.-]+)", RegexOptions.IgnoreCase) is not { Success: true } m) continue;
+                if (key.GetValue("InstallLocation") is not string install || install.Length == 0) continue;
+                var code = m.Groups[1].Value;
+                entries.Add((code, key.GetValue("DisplayName") as string ?? code, install));
+            }
+            catch (Exception e) when (e is not OperationCanceledException) { GameFiles.Skip("PURPLE", sub, e); }
+        return entries;
     }
 }

@@ -6,7 +6,7 @@ public sealed partial class ScsKiller
 {
     /// <summary>
     /// NVIDIA from 621: the last complete warm's D3DSCache dbs went into the game's own folder and it holds none now, as
-    /// Windows' cleanup leaves it (<see cref="WindowsCleanup"/>), and no other folder holds dbs for the game's exe. Kept on
+    /// Windows' cleanup leaves it (<see cref="D3DSCache.KeepFromCleanup"/>), and no other folder holds dbs for the game's exe. Kept on
     /// the record until a later warm: the game's next run refills the folder with what it compiles itself, not the warm.
     /// </summary>
     bool D3DSCacheGone(Game g, GameRecord r)
@@ -33,7 +33,7 @@ public sealed partial class ScsKiller
             Store.SaveGame(g.Id, rec);
         });
         Log?.Report($"{g.Name}: its D3DSCache folder {r.D3DSCacheFolder ?? r.D3DSCacheMade} was emptied, so the compiled pipelines there are gone"
-                    + (WindowsCleanup.Check().Automatic ? " (Windows' automatic cleanup can delete them)" : ""));
+                    + (D3DSCache.CleanedAutomatically() ? " (Windows' automatic cleanup can delete them)" : ""));
         return true;
     }
 

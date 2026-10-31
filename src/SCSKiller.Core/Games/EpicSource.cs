@@ -38,9 +38,10 @@ public sealed class EpicSource(string? manifestsDir = null, string? launcherDir 
         }
         var installs = Installs(launcherDir ?? (manifestsDir == null ? DefaultLauncherDir : null));
         foreach (var i in installs)
-            // complete=false is a first download still running (no version yet) or an update being applied (the game is
+            // Exo Shaders: complete=false is a first download still running (no version yet) or an update being applied (the game is
             // on disk at its last version, so it stays listed)
-            if (i.Complete || i.Version != null) Add(i.App, i.Title, i.Dir, i.Exe, i.Version);
+            try { if (i.Complete || i.Version != null) Add(i.App, i.Title, i.Dir, i.Exe, i.Version); }
+            catch (Exception e) when (e is not OperationCanceledException) { GameFiles.Skip("Epic", $"epic:{i.App}", e); }
         var current = installs.Select(i => i.App).ToHashSet();   // the launcher leaves the classic one's manifests behind
         var dir = manifestsDir ?? DefaultManifestsDir;
         if (Directory.Exists(dir))
@@ -55,7 +56,8 @@ public sealed class EpicSource(string? manifestsDir = null, string? launcherDir 
                     if (Str(r, "MainGameAppName") is { Length: > 0 } main && main != app) continue;   // add-on sharing the main game's install (Legendary names a base game's own)
                     Add(app, Str(r, "DisplayName"), install, Str(r, "LaunchExecutable"), Str(r, "AppVersionString"));
                 }
-                catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException) { }   // half-written manifest while the launcher installs
+                catch (JsonException) { }   // half-written manifest while the launcher installs
+                catch (Exception e) when (e is not OperationCanceledException) { GameFiles.Skip("Epic", item, e); }
             }
         foreach (var l in EpicInstalls.LegendaryInstalls(manifestsDir == null ? legendaryFiles ?? EpicInstalls.LegendaryInstalledFiles() : legendaryFiles ?? []))
             Add(l.AppName, l.Title, l.Dir, l.Executable, l.Version, folder: true);

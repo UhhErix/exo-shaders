@@ -28,11 +28,13 @@ public sealed class GryphlineSource(IEnumerable<string>? launcherExes = null) : 
                 try { installs = Directory.GetDirectories(folder); }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException) { continue; }
                 foreach (var install in installs)
-                {
-                    if (!seen.Add(GameFiles.DirKey(install)) || GameFiles.FindExe(install) is not { } game) continue;
-                    var name = Path.GetFileNameWithoutExtension(game);
-                    games.Add(new Game($"gryphline:{name.ToLowerInvariant()}", Names.GetValueOrDefault(name) ?? Path.GetFileName(install), Store.Other, install, game));
-                }
+                    try
+                    {
+                        if (!seen.Add(GameFiles.DirKey(install)) || GameFiles.FindExe(install) is not { } game) continue;
+                        var name = Path.GetFileNameWithoutExtension(game);
+                        games.Add(new Game($"gryphline:{name.ToLowerInvariant()}", Names.GetValueOrDefault(name) ?? Path.GetFileName(install), Store.Other, install, game));
+                    }
+                    catch (Exception e) when (e is not OperationCanceledException) { GameFiles.Skip("GRYPHLINK", install, e); }
             }
         }
         return games;

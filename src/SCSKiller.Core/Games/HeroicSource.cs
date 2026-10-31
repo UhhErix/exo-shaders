@@ -50,6 +50,7 @@ public sealed class HeroicSource(HeroicSource.Runner runner, IReadOnlyList<strin
                         games.Add(new Game(IdPrefix(runner) + app, title, Store, Path.TrimEndingDirectorySeparator(install), exe, version));
                 }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }
+                catch (Exception e) when (e is not OperationCanceledException) { GameFiles.Skip("Heroic", IdPrefix(runner) + app, e); }
         return games.DistinctBy(g => g.Id).ToList();
     }
 
@@ -64,23 +65,29 @@ public sealed class HeroicSource(HeroicSource.Runner runner, IReadOnlyList<strin
             {
                 case Runner.Legendary when Json(Path.Combine(folder, "legendaryConfig", "legendary", "installed.json")) is { ValueKind: JsonValueKind.Object } all:
                     foreach (var p in all.EnumerateObject())
-                        if (p.Value.ValueKind == JsonValueKind.Object && !True(p.Value, "is_dlc") && Str(p.Value, "platform") == "Windows" && Str(p.Value, "install_path") is { } install)
-                            found.Add((p.Name, Str(p.Value, "title") ?? p.Name, install, GameFiles.FindExe(install, Str(p.Value, "executable") is { Length: > 0 } e ? e : null),
-                                Str(p.Value, "version")));
+                        try
+                        {
+                            if (p.Value.ValueKind == JsonValueKind.Object && !True(p.Value, "is_dlc") && Str(p.Value, "platform") == "Windows" && Str(p.Value, "install_path") is { } install)
+                                found.Add((p.Name, Str(p.Value, "title") ?? p.Name, install, GameFiles.FindExe(install, Str(p.Value, "executable") is { Length: > 0 } e ? e : null),
+                                    Str(p.Value, "version")));
+                        }
+                        catch (Exception e) when (e is not OperationCanceledException) { GameFiles.Skip("Heroic", "epic:" + p.Name, e); }
                     break;
                 case Runner.Gog when Json(Path.Combine(folder, "gog_store", "installed.json")) is { ValueKind: JsonValueKind.Object } root
                                      && root.TryGetProperty("installed", out var list) && list.ValueKind == JsonValueKind.Array:
                     foreach (var g in list.EnumerateArray())
-                    {
-                        if (g.ValueKind != JsonValueKind.Object || True(g, "is_dlc") || !"windows".Equals(Str(g, "platform"), StringComparison.OrdinalIgnoreCase)
-                            || Str(g, "appName") is not { } app || Str(g, "install_path") is not { } install) continue;
-                        var info = GameFiles.Find(install, $"goggame-{app}.info");
-                        var (title, exe, version) = (GameFiles.FolderName(install), (string?)null, Str(g, "version"));
-                        if (File.Exists(info) && SteamSource.Small(info) is { } text)
-                            try { (title, exe, version) = GogSource.ParseInfo(text, install, title); }
-                            catch (Exception x) when (x is JsonException or InvalidOperationException) { }   // a task that isn't an object
-                        found.Add((app, title, install, exe ?? GameFiles.FindExe(install, Str(g, "executable") is { Length: > 0 } e ? e : null), version));
-                    }
+                        try
+                        {
+                            if (g.ValueKind != JsonValueKind.Object || True(g, "is_dlc") || !"windows".Equals(Str(g, "platform"), StringComparison.OrdinalIgnoreCase)
+                                || Str(g, "appName") is not { } app || Str(g, "install_path") is not { } install) continue;
+                            var info = GameFiles.Find(install, $"goggame-{app}.info");
+                            var (title, exe, version) = (GameFiles.FolderName(install), (string?)null, Str(g, "version"));
+                            if (File.Exists(info) && SteamSource.Small(info) is { } text)
+                                try { (title, exe, version) = GogSource.ParseInfo(text, install, title); }
+                                catch (Exception x) when (x is JsonException or InvalidOperationException) { }   // a task that isn't an object
+                            found.Add((app, title, install, exe ?? GameFiles.FindExe(install, Str(g, "executable") is { Length: > 0 } e ? e : null), version));
+                        }
+                        catch (Exception e) when (e is not OperationCanceledException) { GameFiles.Skip("Heroic", Path.Combine(folder, "gog_store", "installed.json"), e); }
                     break;
                 case Runner.Nile when Json(Path.Combine(folder, "nile_config", "nile", "installed.json")) is { ValueKind: JsonValueKind.Array } list:
                     var titles = new Dictionary<string, string>();
@@ -90,8 +97,12 @@ public sealed class HeroicSource(HeroicSource.Runner runner, IReadOnlyList<strin
                                 && Str(p, "id") is { } id && Str(p, "title") is { } t)
                                 titles.TryAdd(id, t);
                     foreach (var g in list.EnumerateArray())
-                        if (g.ValueKind == JsonValueKind.Object && Str(g, "id") is { } app && Str(g, "path") is { } install)
-                            found.Add((app, titles.GetValueOrDefault(app) ?? GameFiles.FolderName(install), install, GameFiles.FindExe(install, FuelCommand(install)), Str(g, "version")));
+                        try
+                        {
+                            if (g.ValueKind == JsonValueKind.Object && Str(g, "id") is { } app && Str(g, "path") is { } install)
+                                found.Add((app, titles.GetValueOrDefault(app) ?? GameFiles.FolderName(install), install, GameFiles.FindExe(install, FuelCommand(install)), Str(g, "version")));
+                        }
+                        catch (Exception e) when (e is not OperationCanceledException) { GameFiles.Skip("Heroic", Path.Combine(folder, "nile_config", "nile", "installed.json"), e); }
                     break;
             }
         }

@@ -422,13 +422,14 @@ internal sealed partial class Host
 
     private static (long At, object? Value)? _cleanup;
 
-    /// <summary>WindowsCleanup.Check for the page (NVIDIA from 621 keeps compiled pipelines in D3DSCache), read again at
+    /// <summary>D3DSCache.CleanupKept for the page (NVIDIA from 621 keeps compiled pipelines in D3DSCache), read again at
     /// most once a minute or right after a change. Null: no DirectX Shader Cache handler, nothing to keep out.</summary>
     private static object? Cleanup(bool force = false)
     {
         if (!force && _cleanup is { } c && Environment.TickCount64 - c.At < 60_000) return c.Value;
-        var r = WindowsCleanup.Check();
-        object? value = r.Registered ? new { kept = !r.Automatic, canUndo = r.CanUndo, text = r.Text } : null;
+        // upstream's own read (Autorun 0: kept), the value its KeepFromCleanup writes; undo puts back the one it kept
+        object? value = D3DSCache.CleanupKept() is { } kept
+            ? new { kept, canUndo = kept, text = kept ? "Leaves compiled shaders" : "Can delete compiled shaders" } : null;
         _cleanup = (Environment.TickCount64, value);
         return value;
     }

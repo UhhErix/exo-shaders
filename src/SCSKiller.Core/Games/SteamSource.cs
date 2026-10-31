@@ -13,6 +13,8 @@ public sealed partial class SteamSource(string? steamRoot = null) : IGameSource
 
     (string Stamp, HashSet<uint> Asked, Dictionary<uint, string> Types)? _types;   // appinfo.vdf is only re-read when it changes
 
+    readonly System.Collections.Concurrent.ConcurrentDictionary<uint, byte> _noExeLogged = new();   // once per app and process, not every scan
+
     /// <summary>Games listed before, by id: a game's exe is reused while its build and install folder are the same and the
     /// exe is there, instead of looking through its folders again.</summary>
     public IReadOnlyDictionary<string, Game>? Known { get; set; }
@@ -24,6 +26,7 @@ public sealed partial class SteamSource(string? steamRoot = null) : IGameSource
     {
         var root = steamRoot ?? Root();
         var installed = new List<(uint Id, Game Game)>();
+        var noExe = new List<(uint Id, string Name, string Install)>();
         foreach (var lib in Libraries(root))
             try
             {
@@ -45,13 +48,21 @@ public sealed partial class SteamSource(string? steamRoot = null) : IGameSource
                         }
                         var exe = Known?.GetValueOrDefault($"steam:{id}") is { Version: { } was } k && was == build && k.InstallDir.Equals(install, StringComparison.OrdinalIgnoreCase)
                             && File.Exists(k.ExePath) && !GameFiles.NotTheGameExe(install, k.ExePath) ? k.ExePath : GameFiles.FindExe(install);
-                        if (exe == null) continue;
+                        if (exe == null)
+                        {
+                            noExe.Add((id, V("name") ?? dir, install));
+                            continue;
+                        }
                         installed.Add((id, new Game($"steam:{id}", V("name") ?? dir, Store.Steam, install, exe, build)));
                     }
-                    catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Log?.Report($"Steam: {acf} skipped: {e.Message}"); }
+                    // one unreadable game never drops the store, and keeps its records: CleanUninstalled needs its manifest and exe gone
+                    catch (Exception e) when (e is not OperationCanceledException) { Log?.Report($"Steam: {acf} skipped: {e.GetType().Name}: {e.Message}"); }
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Log?.Report($"Steam: library {lib} skipped: {e.Message}"); }
-        var types = TypesOf(Path.Combine(root, "appcache", "appinfo.vdf"), installed.Select(a => a.Id).ToHashSet());
+        var types = TypesOf(Path.Combine(root, "appcache", "appinfo.vdf"), installed.Select(a => a.Id).Concat(noExe.Select(a => a.Id)).ToHashSet());
+        foreach (var (id, name, install) in noExe)   // a redistributable or soundtrack has no exe by design
+            if ((types?.TryGetValue(id, out var t) != true || IsGameType(t!)) && _noExeLogged.TryAdd(id, 0))
+                Log?.Report($"Steam: {name} ({id}) left out: no game exe found in {install}");
         return installed.Where(a => types?.TryGetValue(a.Id, out var t) != true || IsGameType(t!)).Select(a => a.Game).ToList();
     }
 

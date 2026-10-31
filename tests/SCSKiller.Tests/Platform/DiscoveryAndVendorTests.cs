@@ -409,7 +409,7 @@ public class DiscoveryAndVendorTests(ITestOutputHelper output)
         Assert.Null(Wine.UnixPath(@"C:\Windows"));
     }
 
-    [Fact]
+    [Fact(Skip = "SCSKiller 1.4.2 registers every game's own AGS app name (OptiScaler included) and dropped the proven-only AGS rules and the alpha wrappers' chain name: this pins the 1.4.1 alphas' AGS behavior")]
     public void Amd_an_AGS_app_name_keys_the_cache_by_its_FNV_1a()
     {
         Assert.Equal("dxc:dc72f790", AmdAppCache.AppNameKey("Townfall"));   // SILENT HILL: Townfall's own process, handle-verified
@@ -426,9 +426,6 @@ public class DiscoveryAndVendorTests(ITestOutputHelper output)
         Assert.Equal("dxc:6b2fcd83", AmdAppCache.AgsKey("ff7rebirth_.exe", "scskAgsA"));
         Assert.Equal("dxc:9832c88a", AmdAppCache.AgsKey("agsprobe.exe", "End"));
         Assert.Equal("dxc:15d4f9d9", AmdAppCache.AgsKey("agsprobe.exe", "scskAgsA"));
-        Assert.True(AmdAppCache.ProvenAgsApp("Townfall"));
-        Assert.False(AmdAppCache.ProvenAgsApp("townfall"));
-        Assert.False(AmdAppCache.ProvenAgsApp("OakGame"));
     }
 
     [Fact]

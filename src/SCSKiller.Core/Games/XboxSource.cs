@@ -40,7 +40,7 @@ public sealed class XboxSource(IEnumerable<string>? driveRoots = null) : IGameSo
                 {
                     if (ParseGame(content, configPath, Known) is { } game) games.Add(game);
                 }
-                catch (Exception) { }   // a config we can't read/parse shouldn't take the rest of the scan down
+                catch (Exception e) when (e is not OperationCanceledException) { GameFiles.Skip("Xbox", configPath, e); }
             }
         }
         return games;

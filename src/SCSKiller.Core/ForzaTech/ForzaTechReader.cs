@@ -215,7 +215,7 @@ public sealed class ForzaTechReader : IEngineReader
         try
         {
             fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            if (DeclaredEntries(fs) > maxEntries)
+            if (DeclaredEntries(fs, maxEntries) > maxEntries)
             {
                 fs.Dispose();
                 counts.Huge++;
@@ -236,9 +236,11 @@ public sealed class ForzaTechReader : IEngineReader
         }
     }
 
-    /// <summary>The entry count the end of central directory record declares, or its ZIP64 record's when that is larger; 0 when
-    /// there is none, and then <see cref="ZipArchive"/> decides.</summary>
-    internal static long DeclaredEntries(Stream s)
+    /// <summary>The entry count the end of central directory record declares, or its ZIP64 record's when that is larger, or the
+    /// directory records actually there (counted up to <paramref name="cap"/> + 1) when more: <see cref="ZipArchive"/> loads
+    /// records until one lacks the signature, whatever the count says. 0 when there is no end record, and then
+    /// <see cref="ZipArchive"/> decides.</summary>
+    internal static long DeclaredEntries(Stream s, long cap = long.MaxValue)
     {
         const int Eocd = 22, Locator = 20, MaxComment = 0xFFFF;
         var tail = new byte[(int)Math.Min(s.Length, Locator + Eocd + MaxComment)];
@@ -251,14 +253,35 @@ public sealed class ForzaTechReader : IEngineReader
         if (at < 0) return 0;
         at += from;
         long n = BinaryPrimitives.ReadUInt16LittleEndian(tail.AsSpan(at + 10));
+        n = Math.Max(n, Records(s, BinaryPrimitives.ReadUInt32LittleEndian(tail.AsSpan(at + 16)), cap));
         if (at < Locator || !tail.AsSpan(at - Locator).StartsWith("PK\u0006\u0007"u8)) return n;
         var zip64 = BinaryPrimitives.ReadUInt64LittleEndian(tail.AsSpan(at - 12));   // the ZIP64 end record's offset
         if (zip64 > (ulong)Math.Max(0, s.Length - 56)) return n;
         var rec = new byte[56];
         s.Position = (long)zip64;
         s.ReadExactly(rec);
-        // ZipArchive follows ZIP64 on any of three sentinels, so its count bounds the directory whenever it is there
-        return rec.AsSpan().StartsWith("PK\u0006\u0006"u8) ? Math.Max(n, (long)Math.Min(BinaryPrimitives.ReadUInt64LittleEndian(rec.AsSpan(32)), long.MaxValue)) : n;
+        if (!rec.AsSpan().StartsWith("PK\u0006\u0006"u8)) return n;
+        // ZipArchive follows ZIP64 on any of three sentinels, so its count and directory start count whenever it is there
+        var start = BinaryPrimitives.ReadUInt64LittleEndian(rec.AsSpan(48));
+        if (start <= long.MaxValue) n = Math.Max(n, Records(s, (long)start, cap));
+        return Math.Max(n, (long)Math.Min(BinaryPrimitives.ReadUInt64LittleEndian(rec.AsSpan(32)), long.MaxValue));
+    }
+
+    /// <summary>Central directory records back to back from <paramref name="at"/>, counted up to <paramref name="cap"/> + 1.</summary>
+    static long Records(Stream s, long at, long cap)
+    {
+        const int Header = 46;
+        var h = new byte[Header];
+        long n = 0;
+        for (; n <= cap && at + Header <= s.Length; n++)
+        {
+            s.Position = at;
+            s.ReadExactly(h);
+            if (!h.AsSpan().StartsWith("PK\u0001\u0002"u8)) break;
+            at += Header + BinaryPrimitives.ReadUInt16LittleEndian(h.AsSpan(28)) + BinaryPrimitives.ReadUInt16LittleEndian(h.AsSpan(30))
+                + BinaryPrimitives.ReadUInt16LittleEndian(h.AsSpan(32));
+        }
+        return n;
     }
 
     /// <summary>The entry's bytes when it is exactly one valid container of at most <see cref="Dxbc.MaxSize"/>; else null (counted).</summary>

@@ -28,6 +28,7 @@ public sealed class EaSource(IEnumerable<string>? installDirs = null, Func<strin
             if (!File.Exists(xml)) continue;
             try { if (Parse(dir, XDocument.Load(xml)) is { } g) games.Add(g); }
             catch (Exception e) when (e is XmlException or IOException or UnauthorizedAccessException) { }   // destaged under us
+            catch (Exception e) when (e is not OperationCanceledException) { GameFiles.Skip("EA app", dir, e); }
         }
         return games;
     }
@@ -101,10 +102,12 @@ public sealed class EaSource(IEnumerable<string>? installDirs = null, Func<strin
             using var b = RegistryKey.OpenBaseKey(hive, view);
             using var root = b.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall");
             foreach (var sub in root?.GetSubKeyNames() ?? [])
-            {
-                using var key = root!.OpenSubKey(sub);
-                if (key?.GetValue("InstallLocation") is string { Length: > 0 } at && Directory.Exists(at)) dirs.Add(at);
-            }
+                try
+                {
+                    using var key = root!.OpenSubKey(sub);
+                    if (key?.GetValue("InstallLocation") is string { Length: > 0 } at && Directory.Exists(at)) dirs.Add(at);
+                }
+                catch (Exception e) when (e is not OperationCanceledException) { GameFiles.Skip("EA app", sub, e); }
         }
         return dirs;
     }

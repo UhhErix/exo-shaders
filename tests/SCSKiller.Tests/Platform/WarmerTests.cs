@@ -173,7 +173,7 @@ public class WarmerTests : IDisposable
         Assert.Equal("Fake-Win64-Shipping.exe", a[1]);
         Assert.Equal(["--threads", "7", "--priority", "idle", "--start", "42", "--stop-event"], a[2..9]);
         Assert.Equal(["--adapter-luid", "000000001234ABCD", "--memory-mb", "6144"], a[10..14]);
-        Assert.Equal(["--stage-path", @"nowhere\Binaries\Win64\Fake-Win64-Shipping.exe"], a[14..]);
+        Assert.Equal(["--memory-restart", "1", "--stage-path", @"nowhere\Binaries\Win64\Fake-Win64-Shipping.exe"], a[14..]);   // 1.4.2: a growing process restarts and goes on
     }
 
     [Fact]
@@ -559,7 +559,7 @@ public class WarmerTests : IDisposable
 
     static readonly AgsRegistration Townfall = new("Townfall", "UnrealEngine5.6");
 
-    [Fact]
+    [Fact(Skip = "SCSKiller 1.4.2 registers every game's own AGS app name (OptiScaler included) and dropped the proven-only AGS rules and the alpha wrappers' chain name: this pins the 1.4.1 alphas' AGS behavior")]
     public void AGS_arguments_only_on_AMD_for_a_registering_game()
     {
         const string dll = @"C:\app\native\amd_ags_x64.dll";

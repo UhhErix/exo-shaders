@@ -9,6 +9,35 @@ public static class Format
 
     public const string Dash = "—";
 
+    /// <summary>The Library cache card's line while the NVIDIA shader cache is turned off (<see cref="ScsKiller.CacheOff"/>); null otherwise.</summary>
+    public static string? CacheOffLine(GpuVendor vendor, CacheLimit? limit) => ScsKiller.CacheOff(vendor, limit) ? "The NVIDIA shader cache is turned off" : null;
+
+    /// <summary>The driver cache's warning (the Library tile's icon, the Cache page's line): <see cref="CacheOffLine"/>, the driver's
+    /// default limit, or over 75% of the limit; null otherwise. <paramref name="used"/>: what the limit counts, the fullest game's
+    /// when the limit is each game's own (<paramref name="perGame"/>).</summary>
+    public static string? CacheWarning(GpuVendor vendor, CacheLimit? limit, long used, bool perGame) =>
+        CacheOffLine(vendor, limit) ?? (limit?.Bytes is not { } max ? null
+        : limit.IsDriverDefault ? "Driver default limit may evict games"
+        : max > 0 && used * 4 > max * 3 ? perGame ? "A game's cache is nearly full" : "The cache is nearly full" : null);
+
+    /// <summary>The cache's line on the Library and the Cache page, from sizes the app already measured: the driver cache against
+    /// its limit, AMD's DirectX 11 cache apart (<paramref name="capped"/>: its DirectX 12 one, which the limit counts) and the Windows
+    /// shader cache (NVIDIA 621 and later), led by what they hold on disk together.</summary>
+    public static string CacheSplit(CacheUsage usage, CacheLimit? limit, long? capped, long windows)
+    {
+        var driver = capped ?? usage.BytesOnDisk;
+        var dx11 = capped is { } c ? Math.Max(0, usage.BytesOnDisk - c) : 0;
+        List<string> parts = [$"driver cache {Bytes(driver)}" + (limit is null ? ", limit unknown" : limit.Bytes is { } l ? $" of its {Bytes(l)} limit" : ", no limit")];
+        if (dx11 > 0) parts.Add($"DirectX 11 {Bytes(dx11)}");
+        if (windows > 0) parts.Add($"Windows {Bytes(windows)}");
+        if (parts.Count > 1) parts.Insert(0, $"{Bytes(driver + dx11 + windows)} on disk");
+        else parts[0] = "D" + parts[0][1..];
+        return string.Join(" · ", parts);
+    }
+
+    /// <summary>The tooltip of <see cref="CacheSplit"/>'s line when the driver's size is only an upper bound; null otherwise.</summary>
+    public static string? CacheUpperNote(CacheUsage usage) => usage.UpperBound ? "The driver sizes its files ahead, so they can hold less than this." : null;
+
     /// <summary>Locales group digits with U+00A0 or U+202F, which UI fonts draw wide or as a fallback glyph: a plain space instead, on every thread.</summary>
     public static void PlainGroupSeparator()
     {
@@ -44,9 +73,8 @@ public static class Format
     const string NoPlayText = "loading or compiling shaders the whole time";
 
     /// <summary>"5 min: 3 stutters from shader compiles (worst 1.3 s), 2 other hitches, 1% low 35 fps. Loading: 4 slow
-    /// frames compiling shaders (worst 9.4 s), 12 others." (compiling shaders: startup only)</summary>
-    /// <param name="unsplit">a DirectX 11 launch (<see cref="FrameReport.D3D11"/>): its recorder sees no creates, so every
-    /// hitch counts as a stutter and none is said to be from shader compiles</param>
+    /// frames compiling shaders (worst 9.4 s), 12 others." (compiling shaders: startup only). <paramref name="unsplit"/>: a
+    /// DirectX 11 session has no creates, so "5 min: 3 stutters (worst 1.3 s), 1% low 35 fps. DirectX 11: ..."</summary>
     public static string Frames(FrameReport f, IReadOnlyList<Hitch> shader, bool unsplit = false)
     {
         int other = f.Hitches.Count(h => h.Cause == HitchCause.Other), loading = f.Hitches.Count(h => h.Cause == HitchCause.Loading);
@@ -54,9 +82,9 @@ public static class Format
         return (NoPlay(f.Low1PctFps) ? $"{Duration(f.Duration)}, {NoPlayText}." : $"{Duration(f.Duration)}: " + (unsplit
                 ? other == 0 ? "no stutters" : $"{other:N0} stutter{(other == 1 ? "" : "s")} (worst {Ms(f.Hitches.Where(h => h.Cause == HitchCause.Other).Max(h => h.Ms))})"
                 : (shader.Count == 0 ? "no stutters from shader compiles"
-                    : $"{shader.Count:N0} stutter{(shader.Count == 1 ? "" : "s")} from shader compiles (worst {Ms(shader.Max(h => h.Ms))})")
-                  + (other == 0 ? ", no other hitches" : $", {other:N0} other hitch{(other == 1 ? "" : "es")}"))
-            + $", 1% low {f.Low1PctFps:0} fps." + (unsplit ? " " + Unsplit : ""))
+                : $"{shader.Count:N0} stutter{(shader.Count == 1 ? "" : "s")} from shader compiles (worst {Ms(shader.Max(h => h.Ms))})")
+            + (other == 0 ? ", no other hitches" : $", {other:N0} other hitch{(other == 1 ? "" : "es")}"))
+            + $", 1% low {f.Low1PctFps:0} fps." + (unsplit ? $" {BeforeAfter.Dx11Label}." : ""))
             + (compiling.Count + loading == 0 ? "" : " Loading: " + string.Join(", ", new[]
             {
                 compiling.Count == 0 ? null : $"{compiling.Count:N0} slow frame{(compiling.Count == 1 ? "" : "s")} compiling shaders (worst {Ms(compiling.Max(h => h.Ms))})",
@@ -64,26 +92,10 @@ public static class Format
             }.OfType<string>()) + ".");
     }
 
-    /// <summary>An earlier launch in the frame history: "1% low 35 fps · 3 stutters".</summary>
-    /// <remarks>The shader stutter count is left out of a DirectX 11 launch (<see cref="FrameSession.D3D11"/>, or <paramref name="unsplit"/>).</remarks>
+    /// <summary>An earlier launch in the frame history: "1% low 35 fps · 3 stutters". <paramref name="unsplit"/> or a DirectX 11
+    /// launch: its stutters aren't counted (<see cref="FrameSession.Stutters"/> counts shader ones).</summary>
     public static string Session(FrameSession e, bool unsplit = false) => NoPlay(e.Low1PctFps) ? NoPlayText
         : $"1% low {e.Low1PctFps:0} fps" + (unsplit || e.D3D11 ? "" : " · " + (e.Stutters == 0 ? "no stutters" : $"{e.Stutters:N0} stutter{(e.Stutters == 1 ? "" : "s")}"));
-
-    /// <summary>What a DirectX 11 launch's frame line adds (SCSKiller 1.4.0-beta.1).</summary>
-    public const string Unsplit = "DirectX 11: SCSKiller can't tell shader compilation stutters from other stutters.";
-
-    /// <summary>NVIDIA's shader cache is turned off (a size of 0 in the NVIDIA Control Panel): the Library's cache card says
-    /// so; null = it isn't.</summary>
-    public static string? CacheOffLine(GpuVendor vendor, CacheLimit? limit) => ScsKiller.CacheOff(vendor, limit) ? "The NVIDIA shader cache is turned off" : null;
-
-    /// <summary>The Cache page's summary: the driver cache and its limit, and with a Windows shader cache (NVIDIA from 621)
-    /// that and the total: "Driver cache 12.3 GB of 100 GB · Windows shader cache 4.1 GB · Total 16.4 GB".</summary>
-    public static string CacheSplit(long driver, bool upperBound, long? limit, long windows)
-    {
-        string le = upperBound ? "≤ " : "";
-        string first = $"Driver cache {le}{Bytes(driver)}" + (limit is { } l ? " of " + Bytes(l) : "");
-        return windows > 0 ? $"{first} · Windows shader cache {Bytes(windows)} · Total {le}{Bytes(driver + windows)}" : first;
-    }
 
     /// <summary>"Carved DXBC", "Unity 2022.3.10"; just the family (or <paramref name="family"/>) when the reader found no
     /// version: Carved and FromSoft say "-", Unity "?".</summary>
@@ -91,12 +103,17 @@ public static class Format
         e.Version is "" or "-" or "?" ? family ?? e.Family : $"{family ?? e.Family} {e.Version}";
 
     public const string MergingStage = "Handing the compile to the game's cache";
+    public const string WritingStage = "Finishing: writing into the game's cache";
     public const string SavingStage = "Saving the driver's cache";
     public const string FinishingStage = "Finishing up";
 
     /// <summary>The item is being compiled: any stage before it finishes, paused included.</summary>
     public static bool Running(QueueItem q) => q.Stage is QueueStage.Indexing or QueueStage.Planning or QueueStage.Materializing
         or QueueStage.Warming or QueueStage.Merging or QueueStage.Saving or QueueStage.Finishing or QueueStage.Paused;
+
+    /// <summary>A running item's progress report: only its count changed, not its stage (a warm's, a fold's, a plan step's).</summary>
+    public static bool ProgressTick(QueueItem q) => q.Stage is QueueStage.Warming or QueueStage.Merging or QueueStage.Saving or QueueStage.Finishing
+        || q is { Stage: QueueStage.Planning or QueueStage.Materializing, Progress.Note: not null };
 
     /// <summary>The notification area's status: a line, and the compile's share done (null = no progress to show).
     /// <paramref name="running"/>: the queue's running item (<see cref="Running"/>), <paramref name="name"/> its game's.</summary>
@@ -108,6 +125,7 @@ public static class Format
             : running.PlanCheck ? ("Checking games for more to compile", null)
             : running.Stage == QueueStage.Paused ? ($"Paused: {name}", done)
             : running.Stage == QueueStage.Warming && done is { } d ? ($"Compiling {name}, {100 * d:0}%", d)
+            : running is { Stage: QueueStage.Merging, Note: { } writing } ? ($"{writing}: {name}", null)
             : running.Stage == QueueStage.Merging ? ($"{MergingStage}: {name}" + (done is { } m ? $", {100 * m:0}%" : ""), done)
             : running.Stage == QueueStage.Saving ? ($"{SavingStage}: {name}", null)
             : running.Stage == QueueStage.Finishing ? ($"{FinishingStage}: {name}", null)
@@ -147,12 +165,13 @@ public static class Format
             GameStatus.Warmed when r is ScsKiller.OverCacheLimitReason or ScsKiller.OverGameCapReason or ScsKiller.OverCompileFolderReason => "Too big for the shader cache",
             GameStatus.Warmed when r == ScsKiller.CacheFullReason => "Shader cache full",
             _ when ScsKiller.NotReached(r) => "Not in the game's cache yet",
+            _ when ScsKiller.LinkedAway(r) => Sentence(r),
             GameStatus.Warmed when ScsKiller.IsPartlyCompiled(s) => Sentence(ScsKiller.PartlyCompiledNote(s)),
             GameStatus.Warmed when partly => $"Driver {s.WarmedDriverVersion} · {s.Careful!.LaunchCompiled * 100:0}% still compiled",
-            GameStatus.Warmed when ScsKiller.RtAfterRecording(s) && s.NoStutter == null => s.RecorderInstalled ? "Recorder on: play with ray tracing"
-                : ScsKiller.RecordedEnough(s) ? "Ray tracing needs a recording" : "Ray tracing needs a 5-min recording",
-            GameStatus.Warmed when ScsKiller.BothApis(s.Plan) => "DirectX 11 and 12" + (ScsKiller.IsPartial(s.Plan) ? " · partly covered" : ""),
-            GameStatus.Warmed => $"Driver {s.WarmedDriverVersion}" + (ScsKiller.IsPartial(s.Plan) ? " · partly covered" : ""),
+            GameStatus.Warmed when ScsKiller.RtAfterRecording(s) && s.NoStutter == null => (s.RecorderInstalled ? "Recorder on: play with ray tracing"
+                : ScsKiller.RecordedEnough(s) ? "Ray tracing needs a recording" : "Ray tracing needs a 5-min recording") + KeyNote(s),
+            GameStatus.Warmed when ScsKiller.BothApis(s.Plan) => "DirectX 11 and 12" + (ScsKiller.IsPartial(s.Plan) ? " · partly covered" : "") + KeyNote(s),
+            GameStatus.Warmed => $"Driver {s.WarmedDriverVersion}" + (ScsKiller.IsPartial(s.Plan) ? " · partly covered" : "") + KeyNote(s),
             GameStatus.Stale => StaleNote(r),
             GameStatus.NeedsRecording when r == ScsKiller.OfflineSessionNote => r,
             GameStatus.NeedsRecording when r is Vulkan.VulkanPlan.StartOnce or ScsKiller.LauncherClearsReason => null,   // the title says it
@@ -200,7 +219,8 @@ public static class Format
     public static string ModNote(GameState s) =>
         (s is { ShaderMod: not null, ShaderModBlocks: false } && s.Status != GameStatus.Unsupported ? "\n" + ScsKiller.ShaderModNote(s) : "")
         + (s.Dxvk && s.Status != GameStatus.Unsupported ? "\n" + (s.DxvkCompiled ? ScsKiller.DxvkCompiledNote : ScsKiller.DxvkNote) : "")
-        + (s.MfgUnlocker ? "\n" + ScsKiller.MfgUnlockerNote : "");
+        + (s.MfgUnlocker ? "\n" + ScsKiller.MfgUnlockerNote : "")
+        + (s.StarfieldLuma && s.Status != GameStatus.Unsupported ? "\n" + ScsKiller.StarfieldLumaNote : "");
 
     /// <summary>Recorder in, not long enough yet: the DirectX 12 hint stays, a DirectX 11 run never loads the recorder.</summary>
     public static string RecorderOnNote(GameState s) => "recorder on: play for about 5 minutes"
@@ -225,6 +245,9 @@ public static class Format
     static string FirstClause(string t) => ClauseEnd.Split(t, 2)[0];
     public static string Sentence(string t) => t.Length > 0 ? char.ToUpperInvariant(t[0]) + t[1..] : t;
     /// <summary>A status clause and the next one as two sentences; <paramref name="first"/> alone without a next.</summary>
+    /// <summary>" · needs the game's AES key for full coverage" for a game whose files are partly encrypted, else "".</summary>
+    public static string KeyNote(GameState s) => s.Engine?.KeyMissing == true ? " · " + ScsKiller.KeyForFullCoverage : "";
+
     public static string Then(string first, string? next) => string.IsNullOrEmpty(next) ? first : first + (first.EndsWith('.') ? " " : ". ") + Sentence(next);
     static string InDb(string reason) => reason.Contains(ScsKiller.InDbSupportersNote, StringComparison.OrdinalIgnoreCase) ? ScsKiller.InDbSupportersNote : ScsKiller.InDbNote;
 }

@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
 
@@ -25,7 +26,7 @@ public sealed partial class AppLog : IProgress<string>
     {
         (_dataDir, _file) = (dataDir, file);
         profile ??= Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        (_profile, _user) = Maskers([profile, ShortPath(profile)], user ?? Environment.UserName);
+        (_profile, _user) = Maskers([profile], user ?? Environment.UserName);
         _writer = Task.Run(async () =>
         {
             await foreach (var line in _lines.Reader.ReadAllAsync())
@@ -90,15 +91,27 @@ public sealed partial class AppLog : IProgress<string>
     internal static (Regex? Profile, Regex? User) Maskers(IEnumerable<string?> profiles, string? user)
     {
         var spellings = profiles
-            .Select(p => (p ?? "").Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries))
-            .Where(parts => parts.Length >= 2)
-            .Select(parts => string.Join(@"[\\/]", parts.Select(Regex.Escape)))
+            .OfType<string>()
+            .SelectMany(p => new[] { p, ShortPath(p), p.StartsWith("/var/home/") ? p[4..] : null })   // Fedora Atomic: /home links to /var/home
+            .Select(p => (Rooted: p?.StartsWith('/') == true, Parts: (p ?? "").Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries)))
+            .Where(p => p.Parts.Length >= (p.Rooted ? 1 : 2))   // never a bare Windows drive
+            .Select(p => (p.Rooted ? @"[\\/]" : "") + string.Join(@"[\\/]+", p.Parts.Select(Spelled)))   // + : doubled or JSON-escaped separators
             .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var p = spellings.Count == 0 ? null
             : new Regex(@"(?:[\\/]{2}\?[\\/])?(?:" + string.Join("|", spellings) + $@")(?![\p{{L}}\p{{N}}_\-]|\.{Word})", Options);
-        var u = user is { Length: >= 3 } ? new Regex($"(?<!{Word}){Regex.Escape(user)}(?!{Word})", Options) : null;
+        // a word character just before still counts as a boundary when it ends an escape (\n, \u0020, %20)
+        var u = user is { Length: >= 3 } ? new Regex($@"(?:(?<!{Word})|(?<=\\[nrtbf]|\\u[0-9a-f]{{4}}|%[0-9a-f]{{2}})){Spelled(user)}(?!{Word})", Options) : null;
         return (p, u);
     }
+
+    // as written, or each character as a JSON writer escapes it (\u00eb) or a URI percent-encodes it (%C3%AB), in any
+    // mix: Options covers the hex case, the upper and lower case forms cover an encoded ZOË
+    static string Spelled(string s) => string.Concat(s.EnumerateRunes().Select(r => r.IsAscii && Rune.IsLetterOrDigit(r)
+        ? r.ToString()
+        : $"(?:{string.Join("|", new[] { r, Rune.ToUpperInvariant(r), Rune.ToLowerInvariant(r) }.Distinct().SelectMany(Encodings))})"));
+
+    static IEnumerable<string> Encodings(Rune r) =>
+        [Regex.Escape(r.ToString()), string.Concat(r.ToString().Select(c => $@"\\u{(int)c:x4}")), string.Concat(Encoding.UTF8.GetBytes(r.ToString()).Select(b => $"%{b:X2}"))];
 
     internal static string Mask(string line, Regex? profile, Regex? user)
     {

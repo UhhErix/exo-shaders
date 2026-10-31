@@ -1063,10 +1063,10 @@ internal sealed partial class Host
             : new { ok = false, text = "Couldn't apply: " + r.Message.Split('\n')[0] };
     }
 
-    /// <summary>Keeps Windows' automatic cleanup out of D3DSCache (on), or undoes it (WindowsCleanup).</summary>
+    /// <summary>Keeps Windows' automatic cleanup out of D3DSCache (on), or undoes it (upstream's D3DSCache.KeepFromCleanup, the CLI's shader-cleanup).</summary>
     private async Task<object> SetCleanupGuard(bool on)
     {
-        Elevated.Result? r = await AsAdminAsync(() => WindowsCleanup.Set(on), ["cleanup-guard", on ? "on" : "off"]);
+        Elevated.Result? r = await AsAdminAsync(() => D3DSCache.KeepFromCleanup(on), ["shader-cleanup", on ? "keep" : "allow"]);
         if (r is { Ok: false }) Log($"Windows cleanup guard {(on ? "on" : "off")}: {r.Message}");
         Cleanup(force: true);
         MarkState();
@@ -1080,7 +1080,7 @@ internal sealed partial class Host
     private static object SectionDto(WhatsNewSection s) => new
     {
         version = s.Version,
-        bullets = s.Bullets.Select(b => WhatsNew.Spans(b).Select(x => new { text = x.Text, kind = x.Kind == SpanKind.Plain ? "text" : Fmt.Camel(x.Kind.ToString()), url = x.Url })),
+        bullets = s.Lines.Where(l => !l.Heading && !l.Group).Select(b => WhatsNew.Spans(b.Text).Select(x => new { text = x.Text, kind = x.Kind == SpanKind.Plain ? "text" : Fmt.Camel(x.Kind.ToString()), url = x.Url })),
     };
 
     private static object WhatsNewDto(bool all)
