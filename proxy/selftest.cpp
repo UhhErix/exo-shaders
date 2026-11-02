@@ -3239,6 +3239,7 @@ static const NvRow kNvRows[] = {
     {"P n>n", 'P', 'n', 'n', 0}, {"P t>t", 'P', 't', 't', 0}, {"P t>n", 'P', 't', 'n', 0}, {"P n>t", 'P', 'n', 't', 0},
     {"P d>t", 'P', 'd', 't', 0}, {"P t>d", 'P', 't', 'd', 0}, {"P t>u", 'P', 't', 'u', 0}, {"P x>t", 'P', 'x', 't', 0},
     {"P t>x", 'P', 't', 'x', 0}, {"P x>x", 'P', 'x', 'x', 0}, {"P -t", 'P', '-', 't', 0}, {"P -n", 'P', '-', 'n', 0},
+    {"P g>g", 'P', 'g', 'g', 0}, {"P g>n", 'P', 'g', 'n', 0}, {"P n>g", 'P', 'n', 'g', 0},  // flags 0x1 on PSOs (Phantom Blade Zero sets 0x4, then 0x1, before its first PSO); before the A rows, which can remove the device
     {"R o>o", 'R', 'o', 'o', 0}, {"R o>n", 'R', 'o', 'n', 0}, {"R -o", 'R', '-', 'o', 0}, {"A o>o", 'A', 'o', 'o', 0},
     {"A o>n", 'A', 'o', 'n', 0}, {"A -o", 'A', '-', 'o', 0}, {"P o>n", 'P', 'o', 'n', 0},
     {"e2e R t>t", 'R', 't', 't', 1}, {"e2e R n>t", 'R', 'n', 't', 1}, {"e2e R n>n", 'R', 'n', 'n', 1}, {"e2e R -t", 'R', '-', 't', 1},
@@ -3313,16 +3314,18 @@ static int nvext_child(int proc, unsigned seed, const std::wstring& dir, const s
         if (mode == 'u') nvcall("thread set", nv.slot_thread(dev, 0, 404));
         if (mode == 'd') nvcall("device set", nv.slot(dev, 0, 1001));
         if (mode == 'o' || mode == 'O') flags(0x11, mode == 'O');
+        if (mode == 'g') flags(0x1, false);
     };
     auto reset = [&](char mode) {
         if (mode == 't' || mode == 'u') nvcall("thread reset", nv.slot_thread(dev, ~0u, 0));
         if (mode == 'd') nvcall("device reset", nv.slot(dev, ~0u, 0));
         if (mode == 'o' || mode == 'O') flags(0, mode == 'O');
+        if (mode == 'g') flags(0, false);
     };
     const bool e2e = proc >= 3;
     std::vector<size_t> order;
     for (size_t i = 0; i < std::size(kNvRows); ++i)
-        if (kNvRows[i].phase == (int)e2e && (proc == 2 || proc == 5 || kNvRows[i].a != '-')) order.push_back(i);
+        if (kNvRows[i].phase == (int)e2e && (proc == 2 || proc == 5 || kNvRows[i].a != '-') && !(kNvRows[i].kind == 'A' && GetEnvironmentVariableW(L"SELFTEST_NVEXT_NO_A", nullptr, 0))) order.push_back(i);
     if (proc == 2) std::stable_partition(order.begin(), order.end(), [](size_t i) { return !strcmp(kNvRows[i].name + 2, "t>t"); });
     order.insert(order.begin(), {SIZE_MAX, SIZE_MAX - 1});  // a fresh collection and PSO first, untimed: the compiler's start-up
     for (size_t i : order) {
