@@ -675,6 +675,7 @@ internal sealed partial class Host
     {
         GameState? g = _k.Games.FirstOrDefault(x => x.Game.Id == id);
         if (g is null) return null;
+        if (GameFiles.IsRiot(g.Game)) return ScsKiller.RiotReason;
         string? current = _k.Queue.FirstOrDefault(Format.Running)?.GameId;
         if (_blocked.TryGetValue(id, out var c) && ReferenceEquals(c.State, g) && c.Current == current) return c.Blocked;
         string? blocked;

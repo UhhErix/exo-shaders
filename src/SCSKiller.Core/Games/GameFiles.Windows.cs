@@ -11,15 +11,26 @@ public static partial class GameFiles
 
     public static partial string? VolumeOf(string path) => Path.GetPathRoot(path) is { Length: > 0 } root ? root : null;
 
+    /// <summary>The path to open past MAX_PATH, as the proxy's long_path (recorder_key.h): this process isn't long-path aware
+    /// unless Windows' LongPathsEnabled is on, so without the prefix a game past 260 characters gets the path form of its key
+    /// where the proxy gets its file identity, and its stamp never matches.</summary>
+    static string LongPath(string p)
+    {
+        const string prefix = @"\\?\";
+        if (p.Length < 260 || p.StartsWith(prefix, StringComparison.Ordinal) || p.Contains('/') || p.Contains(@"\.\") || p.Contains(@"\..\")) return p;
+        if (p.StartsWith(@"\\", StringComparison.Ordinal)) return prefix + @"UNC\" + p[2..];
+        return p.Length > 2 && p[1] == ':' && p[2] == '\\' ? prefix + p : p;
+    }
+
     public static partial string? FinalPath(string dir)
     {
-        using var h = CreateFileW(dir, 0, 7 /* FILE_SHARE_READ | WRITE | DELETE */, 0, 3 /* OPEN_EXISTING */, 0x02000000 /* FILE_FLAG_BACKUP_SEMANTICS */, 0);
+        using var h = CreateFileW(LongPath(dir), 0, 7 /* FILE_SHARE_READ | WRITE | DELETE */, 0, 3 /* OPEN_EXISTING */, 0x02000000 /* FILE_FLAG_BACKUP_SEMANTICS */, 0);
         return h.IsInvalid ? null : FinalPath(h);
     }
 
     public static partial (byte[]? Id, string? Final)? Identity(string path)
     {
-        using var h = CreateFileW(path, 0x80 /* FILE_READ_ATTRIBUTES */, 7, 0, 3, 0x02000000, 0);
+        using var h = CreateFileW(LongPath(path), 0x80 /* FILE_READ_ATTRIBUTES */, 7, 0, 3, 0x02000000, 0);
         if (h.IsInvalid) return null;
         var id = new byte[24];
         if (!GetFileInformationByHandleEx(h, 0x12 /* FileIdInfo */, id, id.Length)) return (null, FinalPath(h));

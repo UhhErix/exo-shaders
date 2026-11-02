@@ -64,9 +64,19 @@ public sealed class ExoLibrarySource : IGameSource
 		return "exo:" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(Key(e.InstallDir).ToUpperInvariant()))).Substring(0, 16);
 	}
 
+	/// <summary>A Riot game by Exo's store label or its folder: its folder isn't looked into (GameFiles.IsRiot).</summary>
+	private static bool IsRiot(ExoLibraryEntry e)
+	{
+		return e.Store.Contains("riot", StringComparison.OrdinalIgnoreCase) || (Path.IsPathFullyQualified(e.InstallDir) && GameFiles.RiotGames(e.InstallDir));
+	}
+
 	/// <summary>Why Exo Shaders won't take this folder as a game (ManualSource.RootProblem's reasons), or null.</summary>
 	public static string? Problem(ExoLibraryEntry e)
 	{
+		if (IsRiot(e))
+		{
+			return App.ScsKiller.RiotReason;
+		}
 		if (string.IsNullOrWhiteSpace(e.InstallDir) || e.InstallDir.IndexOfAny(Path.GetInvalidPathChars()) >= 0 || !Path.IsPathFullyQualified(e.InstallDir))
 		{
 			return "the game folder isn't a full path";
@@ -108,6 +118,10 @@ public sealed class ExoLibrarySource : IGameSource
 		{
 			try
 			{
+				if (IsRiot(entry))
+				{
+					continue;
+				}
 				string dir = Key(entry.InstallDir);
 				if (!Directory.Exists(dir) || covered.Any((string c) => Overlaps(c, dir)) || list.Any((Game g) => Overlaps(g.InstallDir, dir)))
 				{

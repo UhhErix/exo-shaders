@@ -6,7 +6,8 @@ namespace SCSKiller.Core.Games;
 /// &lt;product&gt;.&lt;patchline&gt;.product_settings.yaml: product_install_full_path is the folder the client installs into
 /// ("C:/Riot Games/VALORANT/live"). RiotClientInstalls.json beside Metadata names only the client's own exe. The name is the
 /// uninstall entry's (HKCU "Riot Game &lt;product&gt;.&lt;patchline&gt;"), else the product's known one. Every Riot game counts
-/// as anti-cheat (<see cref="GameFiles.DetectAntiCheat"/>): Vanguard installs outside the game folder.</summary>
+/// as anti-cheat (<see cref="GameFiles.DetectAntiCheat"/>): Vanguard installs outside the game folder. Exo Shaders: its folder
+/// is never listed or read (<see cref="GameFiles.IsRiot"/>): a product's exe is the known name, or one made of its product's.</summary>
 public sealed class RiotSource(string? metadataDir = null, Func<string, string?>? registry = null) : IGameSource
 {
     public Store Store => Store.Other;
@@ -16,8 +17,8 @@ public sealed class RiotSource(string? metadataDir = null, Func<string, string?>
     // League's install root holds its client (LeagueClient.exe, the largest exe there); the game is under Game\
     static readonly Dictionary<string, (string Name, string? Exe)> Products = new()
     {
-        ["valorant"] = ("VALORANT", null), ["league_of_legends"] = ("League of Legends", @"Game\League of Legends.exe"),
-        ["bacon"] = ("Legends of Runeterra", null), ["lion"] = ("2XKO", null),
+        ["valorant"] = ("VALORANT", @"ShooterGame\Binaries\Win64\VALORANT-Win64-Shipping.exe"), ["league_of_legends"] = ("League of Legends", @"Game\League of Legends.exe"),
+        ["bacon"] = ("Legends of Runeterra", @"Game\LoR.exe"), ["lion"] = ("2XKO", @"Lion\Binaries\Win64\Lion-Win64-Shipping.exe"),
     };
 
     static readonly Regex InstallPath = new(@"^product_install_full_path:[ \t]*[""']?(.*?)[""']?[ \t\r]*$", RegexOptions.Multiline);
@@ -38,9 +39,8 @@ public sealed class RiotSource(string? metadataDir = null, Func<string, string?>
                 {
                     if (InstallPath.Match(File.ReadAllText(Path.Combine(sub, key + ".product_settings.yaml"))) is not { Success: true } m || m.Groups[1].Value.Length == 0) continue;
                     install = GameFiles.DirKey(m.Groups[1].Value);
-                    if (known.Exe != null && !File.Exists(Path.Combine(install, known.Exe))) continue;   // still installing
-                    if (GameFiles.FindExe(install, known.Exe) is not { } found) continue;
-                    exe = found;
+                    if (!File.Exists(exe = Path.Combine(install, known.Exe ?? product + ".exe")) && known.Exe != null) continue;   // still installing
+                    if (!Directory.Exists(install)) continue;
                 }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { continue; }
                 var name = (registry ?? Uninstall)($@"Riot Game {key}") is { } shown && !string.IsNullOrWhiteSpace(shown) ? shown.Trim() : known.Name ?? product;

@@ -1172,6 +1172,11 @@ public sealed partial class ScsKiller : IScsKiller
     /// that holds no lock the evaluation takes, since it runs on another thread.</param>
     GameState Evaluate(Game g, bool force, out bool fresh, out bool driverStale, CancellationToken ct = default, bool capped = false)
     {
+        if (GameFiles.IsRiot(g))
+        {
+            (fresh, driverStale) = (false, false);
+            return new GameState(g, null, AntiCheat.Other, GameStatus.Unsupported, RiotReason, null, null, null, null, null, null, null, false, null, Playing: IsPlaying(g.Id)) { RecorderSkip = SkipAntiCheat };
+        }
         if (Hdd(g) && !_asked.ContainsKey(g.Id) && !Checked(g))
         {
             (fresh, driverStale) = (false, false);
@@ -3179,6 +3184,9 @@ public sealed partial class ScsKiller : IScsKiller
         + (r.FirstLaunch is { } l ? $", and the first launch still compiled {l.Compiled * 100:0}% of its pipelines" : "")
         + "): the next compile runs without it";
 
+    /// <summary>Exo Shaders: every Riot game (<see cref="GameFiles.IsRiot"/>), whatever an earlier scan or compile left on its record.</summary>
+    public const string RiotReason = "Riot games are never touched: no compile, no recorder, and none of their files are read";
+
     public const string MissesGameReason = "the compile didn't reach this game's cache: the game uses another driver-cache key";
     public const string CantReachReason = "the compile can't reach this game: it reads its shaders from a different driver cache than the one SCSKiller fills. Clear its cache to free the space. A driver update lets it compile again";
     public const string ThirtyTwoBitReason = "32-bit games aren't supported yet";
@@ -3541,6 +3549,7 @@ public sealed partial class ScsKiller : IScsKiller
     public IReadOnlyList<CachePart> GameCaches(string gameId, bool gamePrecache = false)
     {
         var s = Find(gameId);
+        if (GameFiles.IsRiot(s.Game)) return [];
         var rec = Store.LoadGame(gameId);
         var parts = new List<CachePart>();
         if (AppCache != null && DriverKeys(s.Game, rec).Keys is { Count: > 0 } keys) parts.Add(Part(DriverPart, AppCache.FilesOf(keys)));
@@ -3586,6 +3595,7 @@ public sealed partial class ScsKiller : IScsKiller
     /// (<see cref="SharedWith"/>: an AMD app profile gives several exes one key): the delete would silently cold it.</summary>
     public bool ClearGameCache(string gameId, bool gamePrecache = false)
     {
+        if (GameFiles.IsRiot(Find(gameId).Game)) return false;
         if (PairHoldsCache(gameId) is { } why) throw new InvalidOperationException(why);
         return ClearCache(gameId, gamePrecache, steam: true);
     }
@@ -5074,7 +5084,7 @@ public sealed partial class ScsKiller : IScsKiller
     public void StartSharing(IEnumerable<Game>? games = null)
     {
         if (Sharing is not { } sharing || !Settings.ShareRecordings) return;
-        var list = (games ?? Games.Select(s => s.Game)).ToList();
+        var list = (games ?? Games.Select(s => s.Game)).Where(g => !GameFiles.IsRiot(g)).ToList();
         lock (_scanLock) SharingPass = SharingPass.ContinueWith(_ => Share(sharing, list), TaskScheduler.Default).Unwrap();
     }
 
@@ -5699,6 +5709,7 @@ public sealed partial class ScsKiller : IScsKiller
     {
         var games = states.Select(s => s.Game).Where(g =>
         {
+            if (GameFiles.IsRiot(g)) return false;
             try { return Legacy(g.Id); }
             catch (IOException) { return false; }   // read outside the recording lock, a writer may hold it: the next scan checks again
         }).ToList();
@@ -8989,6 +9000,11 @@ public sealed partial class ScsKiller : IScsKiller
     /// run is still to come (it would warm the cache that run must find cold).</summary>
     void Add(string gameId, bool whenIdle, bool planCheck = false, bool prompt = false, bool pair = false, bool rightAway = false)
     {
+        if (Games.FirstOrDefault(s => s.Game.Id == gameId) is { } riot && GameFiles.IsRiot(riot.Game))
+        {
+            Log?.Report($"{riot.Game.Name}: not queued: {RiotReason}");
+            return;
+        }
         if (!planCheck && Games.FirstOrDefault(s => s.Game.Id == gameId) is { } listed
             && (GameVerdicts.Current.Unsupported(listed.Game, listed.Engine) != null || listed.StatusReason is CantReachReason or ThirtyTwoBitReason)) return;
         if (!pair && PairHoldsCache(gameId, compiling: true) is { } why)

@@ -144,19 +144,37 @@ public partial class AppTests
         if (!stateIndependent) Assert.Equal("needs a recording, " + ScsKiller.RiskNoRecording, s.StatusReason);
     }
 
-    /// <summary>A Riot Client game (VALORANT: Unreal, encrypted paks, Vanguard outside its folder) is anti-cheat by its
-    /// source: with no key found in its exe, it says its files are encrypted, and the recorder stays out.</summary>
-    [Fact]
-    public async Task A_riot_game_with_encrypted_files_says_so_and_never_gets_the_recorder()
+    /// <summary>A Riot game (Riot's source, Exo's label for it, or a folder under "Riot Games"): whatever its folder holds and
+    /// whatever its record says, no reader, planner or warmer ever sees it and a compile is refused. Ways this could fail: an
+    /// old record shows it Warmed; a reader walks its folder; a queue path skips the check; the recorder goes in.</summary>
+    [Theory]
+    [InlineData("riot:valorant.live", "")]
+    [InlineData("test:elsewhere", "Riot Games")]
+    public async Task A_riot_game_is_never_read_planned_or_compiled_whatever_its_folder_or_record_holds(string id, string under)
     {
-        var game = _game with { Id = "riot:valorant.live", Name = "VALORANT" };
-        var encrypted = Unreal with { Encrypted = true, Unsupported = "encrypted game files (needs the game's AES key)" };
-        var k = Killer(new FakeReader(encrypted), new Planner(), game: game);
+        var game = FakeGame(id, "VALORANT", under);
+        File.WriteAllBytes(Path.Combine(game.InstallDir, "scskiller_creates.csv"), "#session,1,VALORANT.exe\n1.0,G,1,1,1.000,k,0,1,0\n"u8.ToArray());
+        var reader = new FakeReader(Unreal);
+        var warmer = new FakeWarmer();
+        var k = Killer(reader, new Planner(), warmer, game: game);
+        var rec = k.Store.LoadGame(id);
+        rec.WarmedAt = DateTimeOffset.Now;   // the record an earlier version left: Warmed
+        rec.WarmedDriverId = k.DriverId;
+        k.Store.SaveGame(id, rec);
         var s = (await k.ScanAsync(default)).Single();
-        Assert.Equal((AntiCheat.Other, GameStatus.Unsupported, "encrypted game files (needs the game's AES key)", ScsKiller.SkipAntiCheat),
-            (s.AntiCheat, s.Status, s.StatusReason, s.RecorderSkip));
-        Assert.Null(Format.ShortNote(s));   // the status title says it: "Encrypted game files"
-        Assert.Contains(ScsKiller.SkipAntiCheat, Assert.Throws<InvalidOperationException>(() => k.InstallRecorder(game.Id)).Message);
+        Assert.Equal((AntiCheat.Other, GameStatus.Unsupported, ScsKiller.RiotReason, ScsKiller.SkipAntiCheat), (s.AntiCheat, s.Status, s.StatusReason, s.RecorderSkip));
+        Assert.Equal((0, 0), (reader.Detects, reader.Indexes));
+        k.Enqueue(id);
+        k.EnqueueWhenIdle(id);
+        k.Compile(id);
+        k.StartQueue();
+        Assert.Empty(k.Queue);
+        Assert.Empty(warmer.Started);
+        Assert.Empty(k.GameCaches(id));
+        k.ReconcileRecorders(id);
+        Assert.False(File.Exists(Path.Combine(game.InstallDir, ScsKiller.Dll12)));
+        Assert.Contains(ScsKiller.SkipAntiCheat, Assert.Throws<InvalidOperationException>(() => k.InstallRecorder(id)).Message);
+        Assert.NotNull(ExoLibrarySource.Problem(new ExoLibraryEntry("riot", "VALORANT", "riot", game.InstallDir)));
     }
 
     /// <summary>A game added by hand and recorded, then listed by a store (a launcher SCSKiller finds since) that flags its

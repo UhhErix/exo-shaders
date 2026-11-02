@@ -336,6 +336,7 @@ public sealed class ManualSource(AppStore store) : IGameSource
         string full;
         try { full = GameFiles.DirKey(root); }
         catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { return $"{root} isn't a folder."; }
+        if (GameFiles.RiotGames(full)) return App.ScsKiller.RiotReason;
         if (!Directory.Exists(full)) return $"{full} doesn't exist.";
         if (Path.GetPathRoot(full) is { } drive && GameFiles.DirKey(drive).Equals(full, StringComparison.OrdinalIgnoreCase))
             return $"{full} is a whole drive: pick the game's own folder.";

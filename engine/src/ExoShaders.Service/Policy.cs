@@ -205,7 +205,7 @@ internal sealed partial class Host
         foreach (GameState g in k.Games)
         {
             if (Quitting) return;
-            if (g.Game.Id == current) continue;   // the engine refuses option changes during that game's compile
+            if (g.Game.Id == current || GameFiles.IsRiot(g.Game)) continue;   // the engine refuses option changes during that game's compile; a Riot game has none
             foreach (var (what, run) in PolicyGame(g))
             {
                 try { run(); changed = true; _log.Report($"[exo] settings policy, {g.Game.Name}: {what}"); }

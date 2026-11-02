@@ -1872,7 +1872,7 @@ public class DiscoveryAndVendorTests(ITestOutputHelper output)
                 @"riot:league_of_legends.live League of Legends League of Legends\Game\League of Legends.exe",
                 @"riot:league_of_legends.pbe League of Legends (PBE) League of Legends (PBE)\Game\League of Legends.exe",
                 @"riot:lion.live 2XKO 2XKO\Lion\Binaries\Win64\Lion-Win64-Shipping.exe",
-                @"riot:newgame.live New Game New Game\live\NewGame.exe",
+                @"riot:newgame.live New Game New Game\live\newgame.exe",
                 @"riot:valorant.live VALORANT VALORANT\live\ShooterGame\Binaries\Win64\VALORANT-Win64-Shipping.exe"],
                 games.Select(g => $"{g.Id} {g.Name} {Path.GetRelativePath(root, g.ExePath)}"));
             Assert.All(games, g => Assert.Equal((Store.Other, (string?)null), (g.Store, g.Version)));

@@ -1738,7 +1738,9 @@ public partial class AppTests : IDisposable
         if (OwnWarmExe() == null) return;
         var steam = Directory.CreateDirectory(Path.Combine(_root, "Steam")).FullName;
         var apps = Directory.CreateDirectory(Path.Combine(steam, "steamapps")).FullName;
-        // a second library libraryfolders.vdf doesn't list (there's none at all here): its steamapps\common path decides
+        // Steam's own folder has its library list (without one, with steamapps there, the proxy refuses: VAC, can't be read)
+        File.WriteAllText(Path.Combine(apps, "libraryfolders.vdf"), "\"libraryfolders\"\n{\n}\n");
+        // a second library libraryfolders.vdf doesn't list: its steamapps\common path decides
         var lib2 = Directory.CreateDirectory(Path.Combine(_root, "Lib2", "steamapps")).FullName;
         void Manifest(string at, uint id, string dir) =>
             File.WriteAllText(Path.Combine(at, $"appmanifest_{id}.acf"), $"\"AppState\"\n{{\n\t\"appid\"\t\t\"{id}\"\n\t\"installdir\"\t\t\"{dir}\"\n}}\n");

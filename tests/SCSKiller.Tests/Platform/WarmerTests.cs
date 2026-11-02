@@ -690,7 +690,7 @@ public class WarmerTests : IDisposable
             var a = File.ReadAllLines(Path.Combine(work, "args.txt"));
             var bundled = NativeTools.Find(AmdAgs.DllName);
             if (amd && bundled != null)
-                Assert.Equal(["--ags", bundled, "--ags-app", "Townfall", "--ags-engine", "UnrealEngine5.6"], a.SkipWhile(x => x != "--ags").ToArray());
+                Assert.Equal(["--ags", bundled, "--ags-app", "Townfall", "--ags-engine", "UnrealEngine5.6", "--ags-version", $"{Townfall.AppVersion:x},{Townfall.EngineVersion:x}"], a.SkipWhile(x => x != "--ags").ToArray());
             else Assert.DoesNotContain("--ags", a);
             if (amd && bundled == null) Assert.Contains(log, l => l.Contains("amd_ags_x64.dll not found"));
         }

@@ -744,7 +744,7 @@ public static partial class GameFiles
     {
         AntiCheat Marker(string name) => GameFiles.Marker(name) is var kind && kind == ignore ? AntiCheat.None : kind;
         if (game.Id.StartsWith("battlenet:", StringComparison.Ordinal) || game.Id.StartsWith("hoyoplay:", StringComparison.Ordinal)) return AntiCheat.Other;
-        if (game.Id.StartsWith("riot:", StringComparison.Ordinal) || RiotGames(game.InstallDir) || RiotGames(game.ExePath)) return AntiCheat.Other;
+        if (IsRiot(game)) return AntiCheat.Other;
         if (AntiCheatIds.Contains(game.Id, StringComparer.OrdinalIgnoreCase)) return AntiCheat.Other;
         // the same install listed under another id (added by hand, also through a junction): the Steam app whose folder it is counts too
         if (!game.Id.StartsWith("steam:", StringComparison.Ordinal) && SteamAntiCheatApp(game, steamRoot)) return AntiCheat.Other;
@@ -838,8 +838,15 @@ public static partial class GameFiles
     }
 
     /// <summary>The path has a "Riot Games" folder: the Riot Client installs every Riot title under one.</summary>
-    internal static bool RiotGames(string path) =>
-        Path.GetFullPath(path).Split(Path.DirectorySeparatorChar).Contains("Riot Games", StringComparer.OrdinalIgnoreCase);
+    internal static bool RiotGames(string path) => path.Length > 0
+        && Path.GetFullPath(path).Split(Path.DirectorySeparatorChar).Contains("Riot Games", StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Exo Shaders: a Riot store game (the Riot Client's, or Exo's library says so) or anything under a "Riot Games"
+    /// folder. Its files are never read, whatever its folder holds: no plan, no compile, no recorder, no session data
+    /// (ScsKiller.Evaluate says <see cref="App.ScsKiller.RiotReason"/>).</summary>
+    public static bool IsRiot(Game g) => g.Id.StartsWith("riot:", StringComparison.Ordinal)
+        || ExoLibrarySource.LabelOf(g.Id)?.Contains("riot", StringComparison.OrdinalIgnoreCase) == true
+        || RiotGames(g.InstallDir) || RiotGames(g.ExePath);
 
     // AttributesToSkip defaults to Hidden | System: a hidden EasyAntiCheat folder or a system randgrid.sys still counts
     static readonly EnumerationOptions AllNames = new() { IgnoreInaccessible = false, AttributesToSkip = 0 };
