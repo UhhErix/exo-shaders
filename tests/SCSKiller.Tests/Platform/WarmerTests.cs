@@ -236,6 +236,23 @@ public class WarmerTests : IDisposable
     /// <summary>The real scskiller_warm on WARP (no GPU cache): with --stage-path the child runs from
     /// stage\&lt;install folder&gt;\&lt;dir&gt;\&lt;exe&gt; (the proxy logs its process's path), its log ends up in stage\ and the
     /// staged folders are gone; a path that would reach MAX_PATH stages the exe alone. Needs this checkout's proxy built.</summary>
+    /// <summary>The check's measure: a timed warm's file is where the check reads it, beside the log the result names, after its
+    /// stage is gone. On WARP, under a made-up exe name: no game and no GPU cache of one.</summary>
+    [Fact]
+    public async Task A_timed_warm_leaves_its_times_beside_its_log()
+    {
+        var bin = Path.Combine(TestEnv.RepoRoot, "proxy", "build", "Release");
+        if (!File.Exists(Path.Combine(bin, "scskiller_warm.exe"))) return;
+        var luid = Process.Start(new ProcessStartInfo(Path.Combine(bin, "selftest.exe"), "warpluid") { RedirectStandardOutput = true, Environment = { ["SCSKILLER_SELFTEST_UNARMED"] = "1" } })!.StandardOutput.ReadToEnd().Trim();
+        var vendor = new UnsupportedVendor(new GpuInfo(GpuVendor.Unknown, "WARP", "1.0", Convert.ToInt64(luid, 16), 0));
+        var work = Path.Combine(_dir, "timed");
+        Directory.CreateDirectory(work);
+        var game = Game with { ExePath = Path.Combine(_dir, $"scsk-timed-{Guid.NewGuid():N}"[..20] + ".exe") };
+        var r = await new Warmer(vendor, Path.Combine(bin, "scskiller_warm.exe")).Timed().Start(game, work, new WarmOptions(1, WarmPriority.Idle), null).Completion.WaitAsync(Patience);
+        Assert.Equal(WarmOutcome.Completed, r.Outcome);
+        Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(r.LogPath)!, "scskiller_warm_times.csv")));
+    }
+
     [Fact]
     public async Task The_real_warm_runs_its_child_from_the_stage_path_and_removes_it()
     {
