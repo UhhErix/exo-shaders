@@ -959,6 +959,13 @@ public sealed partial class ScsKiller
         return done;
     }
 
+    static bool Unlistable(string dir)
+    {
+        try { _ = Directory.EnumerateFileSystemEntries(dir).Any(); return false; }
+        catch (DirectoryNotFoundException) { return false; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException) { return true; }
+    }
+
     /// <summary>The one cleanup of an offline session, in the app and in the helper (one at a time, across processes), never
     /// while its process runs: each file it placed that still holds the bytes it placed (<see cref="GameRecord.RecorderFiles"/>)
     /// deleted first, and each name it journaled (<see cref="OfflineSession.Created"/>) only when it is SCSKiller's: its own
@@ -979,6 +986,7 @@ public sealed partial class ScsKiller
             return null;
         }
         var name = OfflineEac.Current.FirstOrDefault(e => e.Id == id || e.Exe.Equals(Path.GetFileName(s.Exe), StringComparison.OrdinalIgnoreCase))?.Name ?? id;
+        if (Unlistable(Path.GetDirectoryName(s.Exe)!)) return [.. rec.RecorderFiles.Keys];   // says nothing of whose it is, which Foreign takes for another copy's: tried again
         if (Foreign(Path.GetDirectoryName(s.Exe)!))   // a journal copied with another copy's data (a portable first start): that copy's session
         {
             log($"{name}: the offline session in {Path.GetDirectoryName(s.Exe)} is another SCSKiller copy's: left to it");
