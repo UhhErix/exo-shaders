@@ -54,8 +54,7 @@ npm run build
 ```
 
 The service lands in `engine\out\service` and the page in `ui\dist`; Exo Launcher's release build takes both from
-there. The native helpers come prebuilt from SCSKiller's release ([engine/prebuilt](engine/prebuilt)); their source is
-[proxy](proxy). Design: [ARCHITECTURE.md](ARCHITECTURE.md).
+there. The native helpers are built from [proxy](proxy) and kept in [engine/prebuilt](engine/prebuilt). Design: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## License
 

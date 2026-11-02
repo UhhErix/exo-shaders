@@ -36,9 +36,15 @@ internal sealed partial class Host
     private void ClearOldRecorderSwitches()
     {
         if (Consent.OverridesCleared) return;
+        if (_k.Games.Count == 0) return;   // nothing listed yet says nothing of what's on record
+        bool left = false;
         foreach (GameState g in _k.Games)
-            if (!g.Playing && _k.Store.LoadGame(g.Game.Id).Recorder == RecorderOverride.On) _k.SetRecorderOverride(g.Game.Id, RecorderOverride.Default);
-        Consent = Consent with { OverridesCleared = true };
+        {
+            if (_k.Store.LoadGame(g.Game.Id).Recorder != RecorderOverride.On) continue;
+            if (g.Playing) left = true;   // the next run clears it
+            else _k.SetRecorderOverride(g.Game.Id, RecorderOverride.Default);
+        }
+        if (!left) Consent = Consent with { OverridesCleared = true };
     }
 
     /// <summary>recorder.set: on or off for one game. Another copy's recorder stays that copy's unless takeOver says otherwise.</summary>
@@ -97,6 +103,10 @@ internal sealed partial class Host
                 VerifyRecord? found = await _k.VerifyAsync(id, stop.Token);
                 GameDiagnosticsReport d = _k.Diagnose(id);
                 _io.Event("notice", new { kind = "verifyDone", id, stopped = found is null, verdict = VerdictKey(d.Verdict), hitRate = found?.HitRate, reaches = found?.Reaches, cause = found?.Cause, needsFirstLaunch = d.NeedsFirstLaunch });
+            }
+            catch (OperationCanceledException)
+            {
+                _io.Event("notice", new { kind = "verifyDone", id, stopped = true, verdict = VerdictKey(_k.Diagnose(id).Verdict), needsFirstLaunch = _k.Diagnose(id).NeedsFirstLaunch });
             }
             catch (Exception e)
             {
