@@ -378,6 +378,7 @@ public class WarmerTests : IDisposable
         async Task<(string Runtime, string Log)> Run()
         {
             var work = Directory.CreateDirectory(Path.Combine(_dir, "work-" + Guid.NewGuid().ToString("N")[..6])).FullName;
+            OnePipeline(work);
             var log = new List<string>();
             var r = await new Warmer(vendor, Path.Combine(bin, "scskiller_warm.exe")) { Log = new Progress(log.Add) }
                 .Start(game, work, new WarmOptions(1, WarmPriority.BelowNormal), null).Completion.WaitAsync(Patience);
@@ -713,6 +714,18 @@ public class WarmerTests : IDisposable
         }
     }
 
+    /// <summary>A work folder's db with one real pipeline: a warm with nothing to create makes no device.</summary>
+    static void OnePipeline(string work)
+    {
+        var rs = Carved.Hlsl.RootSignature("DescriptorTable(UAV(u0))");
+        var cs = Carved.Hlsl.Cs(1);
+        var (rsHash, csHash) = (PsoDb.Hex(System.Security.Cryptography.SHA1.HashData(rs)), PsoDb.Hex(System.Security.Cryptography.SHA1.HashData(cs)));
+        using var db = File.Create(Path.Combine(work, "scskiller.db"));
+        PsoDb.WriteBlob(db, rsHash, rs);
+        PsoDb.WriteBlob(db, csHash, cs);
+        PsoDb.Write(db, 'C', PsoDb.Compute(rsHash, csHash));
+    }
+
     /// <summary>The real scskiller_warm on WARP with an AGS DLL that isn't there: it says why and warms on a plain device.</summary>
     [Fact]
     public async Task The_real_warm_falls_back_to_a_plain_device_when_AGS_fails()
@@ -722,6 +735,7 @@ public class WarmerTests : IDisposable
         var luid = Process.Start(new ProcessStartInfo(Path.Combine(bin, "selftest.exe"), "warpluid") { RedirectStandardOutput = true, Environment = { ["SCSKILLER_SELFTEST_UNARMED"] = "1" } })!.StandardOutput.ReadToEnd().Trim();
         var work = Path.Combine(_dir, "agswork");
         Directory.CreateDirectory(work);
+        OnePipeline(work);
         var exe = $"scsk-ags-{Guid.NewGuid():N}"[..18] + ".exe";
         var missing = Path.Combine(_dir, "nowhere", AmdAgs.DllName);
         var p = Process.Start(new ProcessStartInfo(Path.Combine(bin, "scskiller_warm.exe"),
