@@ -137,7 +137,7 @@ static std::vector<std::string> g_plan;                          // warm mode on
 static std::vector<std::string> g_items11;                       // warm mode only: D3D11 items, the tag ('1', '2', '3') + the payload
 static Hash key11(size_t k) { return sha1(g_items11[k].data(), g_items11[k].size()); }  // key_of(tag, payload)
 static HashSet g_known_tuples;                                   // (stages + root sig) tuples known at launch
-static uint64_t g_lib_loads, g_db_records_at_start, g_creates, g_known_hits, g_tuple_hits, g_slow_known, g_slow_tuple, g_slow_unknown, g_unsupported;
+static uint64_t g_lib_loads, g_db_records_at_start, g_creates, g_known_hits, g_tuple_hits, g_slow_known, g_slow_tuple, g_slow_unknown, g_over20_known, g_over20_tuple, g_over20_unknown, g_unsupported;
 static std::atomic<uint64_t> g_create_fails;
 static std::atomic<uint64_t> g_dd_hits, g_dd_held, g_dd_hits_slow, g_dd_held_slow;  // dedupe: re-creates answered, and those whose kept
                                                                                   // pipeline the game still held (driver call); slow: >= 10 ms
@@ -1440,6 +1440,8 @@ static void note(Writer& w, double ms, bool lib, double pre_ms) {
     const double slow = 3.0;  // ms; a PSO cache hit is well under this, a compile well over (a cached state object isn't: SessionLog.StateObjectCompileMs)
     g_known_hits += known, g_tuple_hits += tknown;
     (known ? g_slow_known : tknown ? g_slow_tuple : g_slow_unknown) += ms > slow;
+    // 3 ms counts many hits as slow (a stage compile under load); a miss of the warm costs 20 ms and more (ScsKiller.UnreachedMedianMs)
+    (known ? g_over20_known : tknown ? g_over20_tuple : g_over20_unknown) += ms >= 20.0;
     g_repeats += repeat, g_slow_repeats += repeat && ms > slow;
     if (g_csv) {  // key: the PSO key (sha1 of tag + payload, as the db's record); proxy_ms: the hook's own time, outside ms
         double own = pre_ms + std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - n0).count();
@@ -1447,9 +1449,9 @@ static void note(Writer& w, double ms, bool lib, double pre_ms) {
                 GetCurrentThreadId(), (int)t_presenting);
     }
     if (g_creates % 500 == 0) {
-        logf("creates=%llu (library loads %llu) known=%llu tuple_known=%llu | slow: known=%llu tuple_only=%llu unknown=%llu | repeats=%llu slow=%llu | unsupported=%llu failed=%llu db=%zu nvapi_state=%llu dedupe=%llu held=%llu slow: dedupe=%llu held=%llu db_skipped=%llu",
+        logf("creates=%llu (library loads %llu) known=%llu tuple_known=%llu | slow: known=%llu tuple_only=%llu unknown=%llu | repeats=%llu slow=%llu | unsupported=%llu failed=%llu db=%zu nvapi_state=%llu dedupe=%llu held=%llu slow: dedupe=%llu held=%llu db_skipped=%llu | over 20 ms: known=%llu tuple_only=%llu unknown=%llu",
              g_creates, g_lib_loads, g_known_hits, g_tuple_hits, g_slow_known, g_slow_tuple, g_slow_unknown, g_repeats, g_slow_repeats, g_unsupported, g_create_fails.load(), g_keys.size(),
-             g_nv_creates, g_dd_hits.load(), g_dd_held.load(), g_dd_hits_slow.load(), g_dd_held_slow.load(), g_db_skipped);
+             g_nv_creates, g_dd_hits.load(), g_dd_held.load(), g_dd_hits_slow.load(), g_dd_held_slow.load(), g_db_skipped, g_over20_known, g_over20_tuple, g_over20_unknown);
     }
 }
 

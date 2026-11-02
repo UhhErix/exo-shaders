@@ -6,6 +6,21 @@ repository's root `CHANGELOG.md`.
 
 ## [Unreleased]
 
+**Consent, diagnostics, the check, Riot, community**
+
+- The recorder goes into no game until Exo asks once (`recorder.auto`) or for one game (`recorder.set`). Without consent
+  the next run takes out what this engine placed, and only that. Another SCSKiller copy's recorder is left to it.
+- `game.diagnostics`: a game's last launch in small numbers and a plain verdict. A launch with no `#end` counts as ended
+  once its exe has gone, so Unreal games get a verdict without another launch.
+- `game.verify`: a bounded sample re-compile that tells whether the compile reaches the game. One that doesn't isn't
+  compiled for hours again on that driver and build.
+- Riot games are never read, planned, compiled or recorded, whatever their folder holds or their record said.
+- Patreon sign-in with the community database; downloads follow the sign-in, uploads are their own switch, off by default.
+- Native files are built here from `proxy\` (`prebuilt/SOURCE.md`), with a 20 ms line in the recorder's log. The published
+  build is versioned 1.4.3 in every assembly, which also leaves Core's test hooks out.
+- A stable pipeline cache that can't be read logs its magic, version and length.
+- A game past MAX_PATH with Windows' long paths off is signed with the identity the recorder reads.
+
 **SCSKiller 1.4.3: the first stable 1.4, from its published source (engine 1.4.3)**
 
 - Upstream published 1.4.2's and 1.4.3's source, so the code the fork had written from the 1.4.0 and 1.4.1 alphas'

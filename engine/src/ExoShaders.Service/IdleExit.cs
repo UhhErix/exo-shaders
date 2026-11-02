@@ -69,6 +69,7 @@ internal sealed partial class Host
         if (k.Compiling && (!k.RunningWhenIdle || k.IdleTime() >= k.IdleAfter)) return true;
         if (Volatile.Read(ref _policyPending) == 1 || _policyGate.CurrentCount == 0 || Volatile.Read(ref _newShadersPending) == 1
             || _newShadersGate.CurrentCount == 0 || Volatile.Read(ref _cacheReading) == 1 || Volatile.Read(ref _elevated) > 0) return true;
+        if (_account is { SigningIn: true } or { Busy: true } || !k.SharingPass.IsCompleted) return true;
         return !k.SettingsRefresh.IsCompleted || !k.StutterUpdate.IsCompleted || !k.CommunitySync.IsCompleted
             || !k.RecorderIndexing.IsCompleted || !k.RecordingMigration.IsCompleted;
     }

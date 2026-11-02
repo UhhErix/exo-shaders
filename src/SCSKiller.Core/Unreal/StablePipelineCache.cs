@@ -25,6 +25,10 @@ public static class StablePipelineCache
     /// guid shared by every entry, no last used time per entry. A fork writes 8-byte entry keys and PSO hashes (Lost Records:
     /// Bloom &amp; Rage, version 26), read when the 4-byte layout doesn't end at EOF-MARK. Null: not such a file, or a later
     /// version (<see cref="Version"/>).</summary>
+    /// <summary>What a file this can't read is, for the log: its first 8 bytes against <see cref="Magic"/>, its version field, its length, whether it ends in the end mark.</summary>
+    public static string Describe(ReadOnlySpan<byte> b) => b.Length < 12 ? $"{b.Length} bytes"
+        : $"magic {U64(b, 0):x16}{(U64(b, 0) == Magic ? " (ours)" : "")}, version {U32(b, 8)}, {b.Length} bytes{(b.Length >= 8 && U64(b, b.Length - 8) == EofMagic ? ", end mark found" : "")}";
+
     public static List<Pso>? Read(ReadOnlySpan<byte> b) => Read(b, 4) ?? (Version(b) is not 17 ? Read(b, 8) : null);
 
     static List<Pso>? Read(ReadOnlySpan<byte> b, int keyWidth)

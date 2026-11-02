@@ -29,7 +29,7 @@ internal sealed partial class Host
         "game.compile", "game.compileMax", "queue.add", "queue.addWhenIdle", "queue.start", "queue.resume",
         "driverStale.compileNow", "driverStale.whenIdle", "library.addAllReady", "library.addAllRecommended",
         "recorder.install", "recorder.uninstall", "recorder.set", "recorder.auto", "recorder.alongside", "recorder.offline", "recorder.startOffline",
-        "recorder.startRisk", "recorder.clear", "game.verify", "game.clearCache", "game.putBackKept", "game.dropKept", "game.play",
+        "recorder.startRisk", "recorder.clear", "game.verify", "sharing.signIn", "sharing.cancelSignIn", "sharing.refresh", "sharing.signOut", "sharing.setUpload", "game.clearCache", "game.putBackKept", "game.dropKept", "game.play",
         "games.remove", "games.hide", "cache.delete", "cache.freeOldDriver", "driver.setCacheLimit", "driver.setAutoShader",
         "driver.setCleanupGuard", "game.asdUndo", "ba.start", "ba.launch", "ba.continue", "ba.recordAfterAgain", "ba.cancel",
         "game.setTraversal", "settings.setTraversal",   // a recorder's scskiller.ini is written in the game's folder
@@ -48,7 +48,8 @@ internal sealed partial class Host
     private static readonly HashSet<string> NoGameNeeded =
     [
         "snapshot", "ui.visible", "exitWhenIdle", "shutdown", "logs.subscribe", "whatsNew", "whatsNew.atStart", "settings.get",
-        "policy.preview", "app.dismissGpuNotice", "scan", "exo.library", "cache.refreshSizes", "cache.inventory",
+        "policy.preview", "app.dismissGpuNotice", "scan", "exo.library", "cache.refreshSizes", "cache.inventory", "recorder.auto",
+        "sharing.status", "sharing.signIn", "sharing.cancelSignIn", "sharing.refresh", "sharing.signOut", "sharing.setUpload",
     ];
 
     private async Task<object?> Dispatch(string method, Params p)
@@ -60,6 +61,7 @@ internal sealed partial class Host
         // two after start. A click on one in that time waits for the list (at most a minute) and finds its game.
         if (!NoGameNeeded.Contains(method)) await Task.WhenAny(_firstList.Task, Task.Delay(TimeSpan.FromMinutes(1)));
         ScsKiller k = _k;
+        if (method.StartsWith("sharing.", StringComparison.Ordinal)) return await SharingMethod(method, p);
         switch (method)
         {
             // ------------------------------------------------------------ general

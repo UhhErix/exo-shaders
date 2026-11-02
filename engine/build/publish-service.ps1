@@ -16,15 +16,17 @@
 #   scskiller.exe, scskillerw.exe   beside the service, sharing its one .NET runtime: ScheduledTask.TaskExe (the
 #                                   "re-warm after a driver update" task) and Elevated.CliExe (cache size / Auto
 #                                   Shader Compilation, run as administrator)
-# The native binaries are SCSKiller 1.4.2's release builds (prebuilt\SOURCE.md) of the source in proxy\.
+# The native binaries are built from the source in proxy\ (prebuilt\SOURCE.md).
 #
 #   pwsh build\publish-service.ps1 [-NativeFrom <SCSKiller.App\current>] [-Out <dir>] [-SkipCli]
 
 [CmdletBinding()]
 param(
-    # SCSKiller 1.4.2's own native files, kept in prebuilt\.
+    # The native files built from proxy\ with -DSCSK_VERSION=1.4.3, kept in prebuilt\.
     [string]$NativeFrom = (Join-Path $PSScriptRoot '..\prebuilt'),
     [string]$Out,
+    # Every assembly's version. Core's test hooks (SCSK_TEST_HOOKS) build in only under 0.0.0-internal, a plain build's.
+    [string]$Version = '1.4.3',
     [switch]$SkipCli
 )
 
@@ -67,16 +69,16 @@ New-Item -ItemType Directory -Force $Out | Out-Null
 
 # The service
 Invoke-Dotnet @('publish', (Join-Path $engine 'src\ExoShaders.Service\ExoShaders.Service.csproj'),
-    '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $Out, '-p:DebugType=none', '-p:PublishReadyToRun=true')
+    '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $Out, '-p:DebugType=none', '-p:PublishReadyToRun=true', "-p:Version=$Version")
 
 # The CLI the engine starts for the scheduled task and elevated driver settings: published into the same folder, so
 # all three programs run on one copy of the .NET runtime (same version, same SCSKiller.Core).
 if (-not $SkipCli) {
     $cliProj = Join-Path $repo 'src\SCSKiller.Cli\SCSKiller.Cli.csproj'
-    Invoke-Dotnet @('publish', $cliProj, '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $Out, '-p:DebugType=none', '-p:PublishReadyToRun=true')
+    Invoke-Dotnet @('publish', $cliProj, '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $Out, '-p:DebugType=none', '-p:PublishReadyToRun=true', "-p:Version=$Version")
     # scskillerw.exe: the same program without a console window (what the scheduled task runs), same dependencies
     Invoke-Dotnet @('publish', (Join-Path $engine 'src\SCSKiller.CliW\SCSKiller.CliW.csproj'),
-        '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $Out, '-p:DebugType=none', '-p:PublishReadyToRun=true')
+        '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $Out, '-p:DebugType=none', '-p:PublishReadyToRun=true', "-p:Version=$Version")
 }
 
 # Native files, in the app's layout

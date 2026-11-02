@@ -66,6 +66,9 @@ type Notice =
   | { kind: "beforeAfterDone", id: string, name: string }     // report ready: call ba.report
   | { kind: "error", text: string }                           // background failure worth showing (e.g. scan failed, a recording session failed)
   | { kind: "conflict", text: string }                        // the official app started on the same data folder: the service is stopping
+  | { kind: "verifyDone", id: string, stopped: boolean, verdict: Verdict, hitRate?: number, reaches?: boolean, cause?: string, needsFirstLaunch: boolean }
+      // game.verify ended; stopped: too early to say, nothing was kept
+  | { kind: "verifyFailed", id: string, text: string }
 ```
 
 ## Process
@@ -106,16 +109,15 @@ ExoShaders.Service.exe --asd-remove-all              (Exo Shaders' uninstall: ta
   `exitWhenIdle`, `shutdown`, `logs.subscribe`, `whatsNew*`, `settings.get`, `policy.preview`,
   `app.dismissGpuNotice`, `scan`, `exo.library` and the cache page's reads) waits for that first list, at most a
   minute, so a page showing the last state can act on its games while the service starts.
-- Reads from SCSKiller's servers (api.scskiller.com, api.scskiller.io as its fallback) only what the official app reads
-  signed out, and sends nothing: after a scan, at most about daily, the engine-support updates (plan-rules.json, game
-  verdicts, Maximum suggestions, news; each used only when it verifies with SCSKiller's pinned rules keys, stable
-  channel) and the known-stutter, confirmed-engines and boot-precompile lists; the community manifest, the official
-  recordings marked for everyone and the shared upscaler packs (plain downloads, no token). Never: the community
-  database or Patreon/backer recordings (they need a sign-in), sharing, diagnostics upload, compatibility reports
-  ("Rate this compile"), problem reports ("Report a problem": `ProblemReport`/`SendProblemAsync` aren't exposed),
-  the anonymous daily check, Patreon sign-in or update checks. `--safe` reads nothing. Pinned third-party downloads
-  the engine needs to read some games (Oodle/zlib codecs, FromSoftware/RE Engine key tables, public Unreal key lists
-  from GitHub) still happen as in the app.
+- Reads from SCSKiller's servers (see Network hosts) what the official app reads signed out: after a scan, at most about
+  daily, the engine-support updates (plan-rules.json, game verdicts, Maximum suggestions, news; each used only when it
+  verifies with SCSKiller's pinned rules keys, stable channel) and the known-stutter, confirmed-engines and
+  boot-precompile lists; the community manifest, the official recordings marked for everyone and the shared upscaler
+  packs (plain downloads, no token). Signed in (`sharing.signIn`) and entitled, also the community database and the
+  Patreon and backer recordings, automatically. Uploads only with `sharing.setUpload {on: true}`. Never: diagnostics
+  upload, compatibility reports ("Rate this compile"), problem reports ("Report a problem"), the anonymous daily check
+  or update checks. `--safe` reads nothing. Pinned third-party downloads the engine needs to read some games
+  (Oodle/zlib codecs, FromSoftware/RE Engine key tables, public Unreal key lists from GitHub) still happen as in the app.
 
 ## Settings policy
 
@@ -140,7 +142,10 @@ the engine compile by itself: a compile starts only from a request (`game.compil
 | `driverRightAway`, `newShadersRightAway` (1.4.0-beta.1) | `false`: the "right away" variants of the automatic modes above, which the policy doesn't use |
 | `traversal`, `traversalAsked` (1.4.1-alpha.1) | not touched: off by default, the official app's choice (and its one-time question) where it made one, else `settings.setTraversal`, which also marks the question answered |
 | `compileNewGames` | `false`: a game never compiled waits for Compile like every other |
-| `scanAtStart`, `recordAllGames` | `true` |
+| `scanAtStart` | `true` |
+| `recordAllGames` | `recorder.auto` (`exo-consent.json`): `false` until Exo asks. An earlier Exo Shaders wrote `true` without asking, so settings.json's value counts for nothing. The first run under this policy also clears "on" switches from before consent, so recorders nobody asked for leave |
+| `useCommunityDb` | `true`: what a sign-in entitles downloads by itself |
+| `shareRecordings` | `sharing.setUpload` (`exo-consent.json`): `false` until asked. The uploader asks the consent file itself at each call |
 | `recordAntiCheatGames` | `false` |
 | `recordingLimitMB` | the engine default (1024) |
 | `keepCachesAside` | `false`: keeping an AMD cache aside needs the engine running as each game starts, to put it back. Turning it off (from an earlier policy's `true`) first puts every kept cache, of listed and hidden games, back into the driver's cache (`game.putBackKept` for each), then the kept copies are dropped; a service that exits in between hasn't turned it off yet and does it again at its next run. Kept for another driver, or after the driver's cache was reset, they're dropped as before |
@@ -150,14 +155,13 @@ the engine compile by itself: a compile starts only from a request (`game.compil
 | `beforeAfter*`, `theme`, `startWithWindows`, `shareDiagnostics` | not touched |
 
 Per game: the traversal fix's override isn't touched (`game.setTraversal`). API override cleared (Auto: a game that ships both DirectX 11 and 12 is planned for both), new-shaders mode
-and ray tracing back to the global values, "left out of compile all ready" off, a recorder turned off goes back to the
-default (anti-cheat games are never recorded), careful compile on whenever the engine offers it (AMD), Maximum on
+and ray tracing back to the global values, "left out of compile all ready" off, careful compile on whenever the engine offers it (AMD), Maximum on
 exactly for the games the engine's list suggests it for on this GPU vendor.
 
 The methods that set these options are refused with `"Exo Shaders sets this itself: there is no option for it"`:
 `settings.set`, `game.setApi`, `game.setNewShaders`, `game.setCareful`, `game.setRayTracing`, `game.setMaximum`,
 `game.setLeftOutOfAddAll`, `game.compileMax`, `queue.addWhenIdle`, `driverStale.whenIdle`, `library.addAllRecommended`,
-`recorder.set`, `recorder.install`, `recorder.uninstall`, `recorder.alongside`, `recorder.offline`,
+`recorder.install`, `recorder.uninstall`, `recorder.alongside`, `recorder.offline`,
 `recorder.startOffline`, `recorder.checkRisk`, `recorder.startRisk`, `driver.setAutoShader`.
 
 ## Snapshot
@@ -170,6 +174,8 @@ type Snapshot = {
   hidden: {id: string, name: string, store: string}[]   // "Show hidden" list
   queue: Queue
   settings: Settings
+  recorder: {auto: boolean}   // recorder.auto
+  sharing: Sharing            // see Community and Patreon
   policy: Policy
   manualFolders: string[] // folders the library looks for games in ("Add a folder of games")
 }
@@ -183,6 +189,7 @@ type Policy = {                 // what the settings policy does, for the page's
 
 type App = {
   status: "scanning" | "compiling" | "paused" | "checking" | "idle"
+  verifying?: string            // game.verify's game while its check runs (status doesn't change for it)
       // compiling/paused = the queue's running item; checking = only plan checks run; scanning = a library scan runs
   statusLine: string            // tray tooltip line: "Idle", "Compiling Cyberpunk 2077, 42%", "Paused: X", "Preparing X"
   scanning: boolean
@@ -302,7 +309,13 @@ type Game = {
   noStutter?: string            // "no shader stutter" verdict text
   antiCheat: {kind: "none" | "easyAntiCheat" | "battlEye" | "other", name?: string,  // name (absent for none): ScsKiller.AntiCheatName(game), e.g. "EasyAntiCheat"
                chip: string, tip: string}
+  needsFirstLaunch: boolean,    // game.verify found a compile doesn't reach it on this driver and build: game.compile is refused, queue.add leaves it out; its own first launch fills what it reads
+  community?: {psos: number, downloadedAt: string, withLocalRecording: boolean, otherVersion: boolean}   // a community recording in use
   recorder: {
+    on: boolean,                // records now: this copy's recorder, wanted, nothing refusing it
+    canSet: boolean,            // recorder.set {on: true} can work (anti-cheat, VAC, Riot and the engine's skips can't)
+    refusal?: string,           // why not, in a line: "Riot game: never recorded", "Valve Anti-Cheat: never recorded", "<anti-cheat>: never recorded", an engine skip, or what the proxy said at the last launch
+    newPipelines: number,       // pipelines the recorder found that aren't compiled yet
     installed: boolean, effective: boolean,        // effective = what "Record while I play" shows on
     override: "default" | "on" | "off", foreign: boolean,
     skip?: string, note?: string, refused?: string,
@@ -499,12 +512,78 @@ runs: the moment one fails, the work pauses (a compile) or stops to start over l
 
 ### Recorder
 
-Recording follows the settings policy (every game that can be recorded, never anti-cheat games); the recorder
-switches, offline and risk sessions are refused (see Settings policy).
+Nothing records until Exo asks once (`recorder.auto`) or for one game (`recorder.set`). All anti-cheat layers are
+unchanged: anti-cheat games, VAC and Riot are refused at every layer, and the offline and risk sessions stay refused
+(see Settings policy).
+
+**Another SCSKiller copy on the PC** (a portable official app with its own data folder): a recorder's marker
+(`scskiller.ledger`) says whose it is, and its proxy finds that copy's `recorder.key` through it. Exo's engine never
+takes one because it "wants" it, updates it, stamps it, empties it or imports from it, and turning a game off here
+leaves it alone: the snapshot reads `recorder.foreign: true`, `on: false`. Only `recorder.set {on: true, takeOver: true}`
+takes it, once. Expect: the official app with "Record all games" on takes every recorder it wants each time it runs,
+Exo's included, and records to its own data folder, so those games stop reaching Exo's recording; turn that setting off
+there to leave them to Exo. The official app and Exo's engine never run together: the engine refuses to start while a
+process named SCSKiller runs (exit 3), and steps aside with a `conflict` notice if one starts on its data folder. Both
+compile into the same driver cache, so a compile by one can read as a changed cache to the other.
 
 | method | params | semantics |
 |---|---|---|
+| `recorder.auto` | `{on: boolean}` | Exo's one consent, persisted. On: every eligible game records from then on. Off: the recorders this engine placed leave (their recording imported first), and only those, once each game has exited. Snapshot: `recorder.auto`. |
+| `recorder.set` | `{id, on: boolean, takeOver?: boolean}` | One game, either way, whatever `recorder.auto` says. On is refused with `recorder.refusal` for what can't record, and for another copy's recorder without `takeOver`. |
 | `recorder.clear` | `{id}` | "Clear recording". Error `"Nothing was cleared: no recording of this game was found."` when there is none. Confirm first with `CLEAR_RECORDING_CONFIRM`. |
+
+### Diagnostics and the check
+
+| method | params | result |
+|---|---|---|
+| `game.diagnostics` | `{id}` | Small numbers from the game's local session data; nothing leaves the PC, and a Riot game's are never read. `{creates, known, tupleKnown, unknown, stateObjects, stateObjectsWarmed, knownMedianMs?, unknownMedianMs?, over20Share, running, firstLaunchKnownMedianMs?, firstLaunchKnown, lastPlayed?, verdict: "helped" \| "partly" \| "missed" \| "noData", needsFirstLaunch, recorderForeign, verify?: {at, sampled, hitRate, playedHitRate?, unplayedHitRate?, reaches?, cause?}}`. The counts and medians are the last launch's (library loads left out; `known` is inside `tupleKnown`; medians of PSOs, each pipeline's first create, RayQuery PSOs left out; `running`: that launch still goes). The verdict judges the first launch after the compile that has ended, without what earlier launches created: a later launch runs on what the game's own run left in the cache. A launch with no `#end` has ended once no process of its exe runs. `recorderForeign`: another copy's recorder writes this session data, so `known` is against its compile. |
+| `game.verify` | `{id}` | `{ok: true, started: true}` at once, or an error saying why not (no compile yet, another driver's compile, a game or compile running, a mod in the way, Riot, a Vulkan plan, or NVIDIA 621 and later, whose warm output is staged). Re-creates at most 1,200 of the plan's pipelines, half of them ones the game played, on 4 threads at idle priority, within 5 minutes; no replay of the plan, and no record of the compile changes. Each create is timed: under 20 ms the cache served it. Ends with a `verifyDone` or `verifyFailed` notice; `app.verifying` holds the game's id meanwhile, and the service stays up. Exo decides when (PC idle). A game or compile starting stops it. |
+| `game.verifyStop` | – | Stops a running check gracefully and waits for it (the driver writes what it compiled). |
+
+`verify.cause`: `none` (both groups served), `retention` (what only the warm compiled is gone), `lookup` (what the game
+compiled isn't served to the warm: different keys), `cacheLost` (neither), `unplayed` (only the warm's own were tested);
+absent: too mixed to say. `verify.reaches: false` makes `needsFirstLaunch` true for that driver and build.
+
+### Community and Patreon
+
+The sign-in is SCSKiller's own (`Account`): the browser opens `/v1/auth/start?provider=patreon` on the API with a PKCE
+challenge and a loopback port; the server redirects to Patreon and back to `http://127.0.0.1:<port>/cb` with a one-time
+code; the engine exchanges it for a device token. The device token is kept in `auth.dat` in the data folder under
+DPAPI (CurrentUser), and a 24-hour access token only in memory; each goes only in an `Authorization` header to the API
+and neither is ever in a reply, snapshot, event, log or file Exo reads. Each data folder signs in as its own device of
+the account (the server keeps a limited number; unused 90 days, one drops off).
+
+| method | params | result |
+|---|---|---|
+| `sharing.status` | – | `Sharing` (below), also in every snapshot as `sharing`. |
+| `sharing.signIn` | – | `{ok: true, started: true}`: opens the default browser, waits up to 5 minutes; the snapshot's `sharing` says how it went. Downloads then start by themselves. |
+| `sharing.cancelSignIn` | – | Ends a waiting sign-in. |
+| `sharing.refresh` | – | `Sharing`: a new access token, with the current entitlements. |
+| `sharing.signOut` | – | `Sharing`: revokes this device at the server and forgets it here. What was downloaded stays. |
+| `sharing.setUpload` | `{on: boolean}` | `Sharing`: the upload switch, off by default, persisted. Signing in never turns it on. Show `uploadSends` first. |
+| `sharing.preview` | `{id}` | `{records, pipelines, stateObjects, bytes, meta?, sends: string[]}`: what sharing this game's own recording would send now; `meta` is the upload's header in full (store build key, content hash, engine, GPU vendor and model, driver, app version, upscaler DLL names and hashes, plan check). Reads only local files. |
+
+```ts
+type Sharing = {
+  signedIn: boolean, signingIn: boolean, busy: boolean,
+  supporter: boolean,           // the last token carries "db": community recordings download
+  benefits?: string, until?: string, problem?: string,
+  downloadsOn: boolean, uploadOn: boolean, uploadProblem?: string,
+  uploadSends: string[]         // the switch's disclosure, one line each
+}
+```
+
+### Network hosts
+
+For Exo's PRIVACY.md and NetworkDestinations. The engine contacts these, none in `--safe`:
+
+| host | when | what goes |
+|---|---|---|
+| `api.scskiller.com` (Cloudflare), falling back to `api.scskiller.io` | content lists after a scan; `/v1/manifest/*`, `/v1/o/*`, `/v1/p/*` downloads; signed in: `/healthz`, `/v1/auth/exchange`, `/v1/token`, `/v1/auth/logout`; upload switch on: `/v1/devices`, `/v1/upload`, `/v1/report` | User-Agent `ExoShaders/<engine version> (<channel>; Windows <build>)`; the bearer tokens above; with the upload switch, `uploadSends` |
+| Patreon, in the user's own browser, through `api.scskiller.com/v1/auth/start` | `sharing.signIn` only | Whatever the user enters there; the engine never sees it |
+| `127.0.0.1` (a random port from 49152) | during a sign-in only | The browser's one-time code to the engine's loopback listener |
+| `github.com`, `raw.githubusercontent.com` | pinned codecs and key tables, some games only | Nothing of the user's |
+| `api.nuget.org` | a pinned D3D12 tool package for precompiled databases | Nothing of the user's |
 
 ### Per-game actions
 

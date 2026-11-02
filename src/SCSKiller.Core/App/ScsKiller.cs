@@ -437,6 +437,9 @@ public sealed partial class ScsKiller : IScsKiller
     public Task CommunitySync { get; private set; } = Task.CompletedTask;
     /// <summary>Anonymous uploads of this PC's recordings while Settings.ShareRecordings is on (the app sets it); null = none.</summary>
     public Sharing? Sharing { get; set; }
+    /// <summary>Signed out: what a sign-in entitled stops being asked for. Downloads stay on disk, as the official app's do.</summary>
+    public void DismissCommunity() { foreach (var s in Games) Refresh(s.Game); }
+
     /// <summary>The queued sharing passes (<see cref="StartSharing"/>), one at a time.</summary>
     public Task SharingPass { get; private set; } = Task.CompletedTask;
     /// <summary>A compile's diagnostics while Settings.ShareDiagnostics is on (the app sets it); null = none.</summary>

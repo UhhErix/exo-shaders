@@ -36,7 +36,7 @@ internal sealed class ViewContext
 
 internal sealed class GameView(GameState state, ViewContext ctx)
 {
-    // Exo Shaders never offers the community database (a Patreon feature): the engine still reads the public manifest (for
+    // Exo Shaders doesn't advertise the community database on a game (the Patreon sign-in is on its page): the engine still reads the public manifest (for
     // the official recordings for everyone), so its "in the community database" facts are left out of every view, as the
     // app leaves them out for a user it shows the Patreon teaser instead.
     private readonly GameState s = state with { InCommunityDb = null, CommunityDbPsos = 0 };
@@ -1073,6 +1073,7 @@ internal sealed class GameView(GameState state, ViewContext ctx)
             knownStutter = s.KnownStutter is { } ks ? new { severity = Fmt.Camel(ks.Severity.ToString()), reason = ks.Reason, source = ks.Source, date = ks.Date, tip = Fmt.StutterTip(s) } : null,
             noStutter = s.NoStutter,
             antiCheat = new { kind = Fmt.AntiCheatKey(s.AntiCheat), name = NoAntiCheat ? null : ScsKiller.AntiCheatName(s), chip = AntiCheatChip, tip = AntiCheatTip },
+            community = s.Community is { } downloaded ? new { psos = downloaded.Psos, downloadedAt = Fmt.Iso(downloaded.DownloadedAt), withLocalRecording = downloaded.WithLocalRecording, otherVersion = downloaded.OtherVersion } : null,
             needsFirstLaunch = s.NeedsFirstLaunch,   // a compile doesn't reach it on this driver (game.verify): compiling is refused, its first launch is what helps
             recorder = new
             {

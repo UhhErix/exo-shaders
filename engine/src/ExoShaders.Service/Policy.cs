@@ -67,6 +67,7 @@ internal sealed partial class Host
             // it) aren't the policy's: off by default, the official app's choice where it made one, settings.setTraversal
             // and game.setTraversal otherwise. Never in an anti-cheat game (TraversalFix.Applies).
             ScanAtStart = true,
+            UseCommunityDb = true,       // what a sign-in entitles comes down by itself: the sign-in is the consent
             ShareRecordings = Consent.ShareUpload,   // sharing.setUpload: off until asked; nothing else turns uploads on
             RecordAllGames = Consent.RecorderAuto,   // recorder.auto: Exo asks once; an earlier Exo Shaders wrote true without asking
             RecordAntiCheatGames = false,

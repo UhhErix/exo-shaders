@@ -249,6 +249,52 @@ public class AccountTests : IDisposable
         File.WriteAllBytes(Path.Combine(_dir, "auth.dat"), Dpapi.Protect(JsonSerializer.SerializeToUtf8Bytes(new { Member = token })));
     }
 
+    /// <summary>Exo's page reads SharingStatus: whatever the sign-in holds, its JSON names no token, and the log gets none. What
+    /// could fail: a token in a DTO, the device id, or a server's error text passed on with one in it.</summary>
+    [Fact]
+    public async Task What_Exo_sees_of_a_sign_in_holds_no_token()
+    {
+        var fake = new Fake(r => r.RequestUri!.AbsolutePath switch
+        {
+            "/healthz" => Ours(),
+            "/v1/auth/exchange" => Ours(json: new { device_token = "sd1_secretdevice", device_id = "d1", access_token = "v4.public.secretaccess", exp = "2026-09-28T12:00:00+00:00", ent = new[] { "db" }, until = (string?)null }),
+            _ => Ours(HttpStatusCode.NotFound),
+        });
+        Task? browser = null;
+        var account = new Account(_dir, Routes(fake), url =>
+        {
+            var q = HttpUtility.ParseQueryString(url.Query);
+            browser = Browse($"http://127.0.0.1:{q["port"]}/cb?code=O&state={q["state"]}");
+        }, _clock);
+        Assert.True(await account.SignInAsync(), account.Problem);
+        await browser!;
+        var json = JsonSerializer.Serialize(ExoSharing.Status(account, true, false, null, null));
+        Assert.Contains("\"SignedIn\":true", json);
+        Assert.Contains("\"Supporter\":true", json);
+        Assert.DoesNotContain("secret", json);
+        Assert.DoesNotContain("sd1_", json);
+        Assert.DoesNotContain("v4.public", json);
+        Assert.DoesNotContain("d1", json);
+        Assert.Equal(-1, File.ReadAllBytes(Path.Combine(_dir, "auth.dat")).AsSpan().IndexOf("sd1_"u8));
+        Assert.False(JsonSerializer.Deserialize<ExoConsent>(JsonSerializer.Serialize(new ExoConsent()))!.ShareUpload);   // signing in turns no upload on
+    }
+
+    /// <summary>Upload is its own switch: Exo's consent off, a recording to share and the setting's value change nothing, and no
+    /// request of any kind goes, device registration included.</summary>
+    [Fact]
+    public async Task With_the_upload_switch_off_sharing_sends_nothing()
+    {
+        var fake = new Fake(_ => Ours(HttpStatusCode.Accepted, new { upload_id = "u", records = 1, new_records = 1 }));
+        var consent = new ExoConsent();
+        var sharing = new Sharing(_dir, () => consent.ShareUpload, Routes(fake), _clock);
+        Directory.CreateDirectory(_dir);
+        File.WriteAllBytes(Path.Combine(_dir, "recording.db"), []);
+        Assert.Null(await sharing.ShareAsync(_dir, new string('a', 40), () => new UploadMeta("x@1", new string('a', 40))));
+        Assert.False(await sharing.AcceptsAsync("vulkan"));
+        Assert.False(await sharing.ReportAsync(_dir, "warm", () => null));
+        Assert.Empty(fake.Log);
+    }
+
     [Fact]
     public async Task Sign_in_runs_the_loopback_flow_and_stores_the_device_token_under_dpapi()
     {

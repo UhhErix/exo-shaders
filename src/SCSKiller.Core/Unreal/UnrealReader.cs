@@ -561,7 +561,7 @@ public sealed partial class UnrealReader(string? dataDir = null) : IEngineReader
             {
                 log?.Report(StablePipelineCache.Version(bytes) is > StablePipelineCache.NewestVersion and var v
                     ? $"{f.Name}: pipeline cache version {v}, newer than Unreal {NewestVersion}'s ({StablePipelineCache.NewestVersion}): its pipelines aren't compiled from it"
-                    : $"{f.Name}: not a pipeline cache this reads, skipped");
+                    : $"{f.Name}: not a pipeline cache this reads, skipped ({StablePipelineCache.Describe(bytes)})");
                 continue;
             }
             maps.AddRange(Pipelines(f.Name, f.NameWithoutExtension, "PipelineCache", psos, byHash, log));

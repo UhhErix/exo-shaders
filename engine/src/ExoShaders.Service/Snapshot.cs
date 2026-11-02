@@ -140,6 +140,7 @@ internal sealed partial class Host
             queue = QueueDto(games, queue, atRest),
             settings = SettingsDto(),
             recorder = new { auto = Consent.RecorderAuto },
+            sharing = SharingDto(),
             policy = PolicyDto(),
             manualFolders = k.Manual?.Folders ?? [],
         };

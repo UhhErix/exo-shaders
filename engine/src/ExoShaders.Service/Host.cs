@@ -7,8 +7,8 @@
 // version, with the additional permission in LICENSE-EXCEPTION.txt. It is distributed WITHOUT ANY WARRANTY; see LICENSE.
 //
 // Hosts one ScsKiller the way the SCSKiller 1.3.0-beta.1 app does (SCSKiller.App.App.Launch / QuitAsync), minus the
-// window, the tray, the updater and every SCSKiller server feature that needs an account or sends anything (community
-// database, sharing, diagnostics, problem reports, the active check, the Patreon account): see Start.
+// window, the tray, the updater, and the server features that send anything unasked (diagnostics, problem reports, the
+// active check): see Start.
 
 using System.Collections.Concurrent;
 using SCSKiller.Core;
@@ -102,21 +102,21 @@ internal sealed partial class Host
         _log.Report($"[exo] Exo Shaders service {Program.ServiceVersion} (SCSKiller {AppVersion.Current} engine) started on Windows {Environment.OSVersion.Version}, {k.Vendor.Gpu.Name}, driver {k.Vendor.Gpu.DriverVersion}{(_opt.Safe ? ", safe mode" : "")}");
 
         // The app wires Community, Sharing, Diagnostics, ContentRoutes, ChannelAccess, UserFetch and ActiveCheck to
-        // SCSKiller's servers and the Patreon account here. Exo Shaders reads what SCSKiller's app reads signed out, and
-        // sends nothing:
+        // SCSKiller's servers and the Patreon account here. Exo Shaders:
         // - ContentRoutes: after a scan, at most about daily, the engine-support updates (plan-rules.json, game verdicts,
         //   Maximum suggestions and news, each used only when signed with SCSKiller's pinned rules keys, ContentTrust)
         //   and the known-stutter, confirmed-engines and boot-precompile lists. Stable channel only (no ChannelAccess).
-        // - Community, with no token: the manifest, the official recordings marked for everyone and the shared upscaler
-        //   packs, all plain downloads. Patreon and backer recordings and the community database need a token: never.
-        // Sharing (uploads), Diagnostics, ActiveCheck (the daily check), UserFetch (the account and the app's updater)
-        // and Report a problem stay unset. No Patreon entitlement.
+        // - Community (Sharing.cs): signed out, the manifest, the official recordings marked for everyone and the shared
+        //   upscaler packs. Signed in with Patreon (sharing.signIn) and entitled, the community database and the Patreon
+        //   and backer recordings too, automatically.
+        // - Sharing (uploads): wired, and silent until sharing.setUpload turns it on.
+        // Diagnostics, ActiveCheck (the daily check), UserFetch (the account and the app's updater) and Report a problem stay unset.
+        k.DbEntitled = () => false;
         if (!_opt.Safe)
         {
             k.ContentRoutes = RouteFailover.Default;
-            k.Community = new Community(AppStore.DefaultDir, (_, _) => Task.FromResult<string?>(null));
+            WireSharing(k);
         }
-        k.DbEntitled = () => false;
         k.ManageRecorders = !_opt.Safe;
         k.RecordOnlyWithConsent = true;
         k.CleanupHelper = _opt.Safe ? null : Environment.ProcessPath;
