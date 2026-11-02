@@ -4277,7 +4277,7 @@ public partial class AppTests : IDisposable
         Assert.Null(r.Crashed);   // skipped for this compile only: no crash key
         Assert.Contains(stderr, l => l.Contains("the warm process died (exit code 0xC0000005)") && l.Contains("created alone first"));
         Assert.Contains(stderr, l => l.Contains("the warm process died (exit code 0xC0000005): a new process goes on from item ") && l.Contains("1 item in flight skipped"));
-        Assert.Contains("recovering from a GPU driver crash", notes);
+        Assert.Contains(notes, n => n?.StartsWith("recovering from a GPU driver crash", StringComparison.Ordinal) == true);
     }
 
     sealed class Sync<T>(Action<T> a) : IProgress<T> { public void Report(T value) => a(value); }
@@ -13175,7 +13175,7 @@ public partial class AppTests : IDisposable
         var notes = new System.Collections.Concurrent.ConcurrentQueue<string>();
         k.QueueChanged += q => { if (q.Note != null) notes.Enqueue(q.Note); };
         await k.ScanAsync(default);
-        async Task Compile()
+        async Task Compile(string note)
         {
             notes.Clear();
             k.Enqueue(game.Id);
@@ -13185,17 +13185,17 @@ public partial class AppTests : IDisposable
             Assert.True(q.Stage == QueueStage.Done, $"{q.Stage} {q.Error}\n{warmer.Log}");
             Assert.True((warmer.Result!.Done, warmer.Result.Total, warmer.Result.Failed) == (40L, 40L, 0L), $"{warmer.Result}\n{warmer.Log}");   // the other 39 compiled
             Assert.Equal(keys[K], Assert.Single(warmer.Result.Crashed!));
-            Assert.Equal("1 skipped (it crashes the GPU driver)", q.Note);
+            Assert.Equal(note, q.Note);
         }
 
-        await Compile();
-        Assert.Contains("recovering from a GPU driver crash", notes);
+        await Compile("1 skipped (it crashes the GPU driver)");
+        Assert.Contains(notes, n => n?.StartsWith("recovering from a GPU driver crash", StringComparison.Ordinal) == true);
         Assert.Contains($"warm: item {K} blamed: 'C' (compute), key {keys[K]}", File.ReadAllText(Path.Combine(k.Store.GameDir(game.Id), ScsKiller.LastWarmLog)));
         Assert.Equal([keys[K]], k.Store.LoadGame(game.Id).CrashKeys);
         Assert.Equal(1, k.Games.Single().LastWarmCrashed);
 
-        await Compile();   // the hook is still set: a create of K would remove the device again
-        Assert.DoesNotContain("recovering from a GPU driver crash", notes);
+        await Compile(ScsKiller.KnownNote(1));   // the hook is still set: a create of K would remove the device again
+        Assert.DoesNotContain(notes, n => n?.StartsWith("recovering from a GPU driver crash", StringComparison.Ordinal) == true);
         Assert.Contains("1 items skipped: they removed the device in an earlier run", warmer.Log);
         Assert.DoesNotContain("the device was removed", warmer.Log);
     }
@@ -13221,7 +13221,7 @@ public partial class AppTests : IDisposable
         var notes = new System.Collections.Concurrent.ConcurrentQueue<string>();
         k.QueueChanged += q => { if (q.Note != null) notes.Enqueue(q.Note); };
         await k.ScanAsync(default);
-        async Task Compile()
+        async Task Compile(string note)
         {
             notes.Clear();
             k.Enqueue(game.Id);
@@ -13231,11 +13231,11 @@ public partial class AppTests : IDisposable
             Assert.True(q.Stage == QueueStage.Done, $"{q.Stage} {q.Error}\n{warmer.Log}");
             Assert.True((warmer.Result!.Done, warmer.Result.Total, warmer.Result.Failed) == (40L, 40L, 0L), $"{warmer.Result}\n{warmer.Log}");
             Assert.Equal(new[] { keys[R], keys[F] }.Order(), warmer.Result.Crashed!.Order());
-            Assert.Equal("2 skipped (they crash the GPU driver)", q.Note);
+            Assert.Equal(note, q.Note);
         }
 
-        await Compile();
-        Assert.Contains("recovering from a GPU driver crash", notes);
+        await Compile("2 skipped (they crash the GPU driver)");
+        Assert.Contains(notes, n => n?.StartsWith("recovering from a GPU driver crash", StringComparison.Ordinal) == true);
         var log = File.ReadAllText(Path.Combine(k.Store.GameDir(game.Id), ScsKiller.LastWarmLog));
         Assert.Contains($"warm: exception 0xc0000005 replaying item {F}: the replay stops, a new process goes on", log);
         Assert.Contains($"warm: retry from item {F} after an exception (0xc0000005): ", log);
@@ -13244,8 +13244,8 @@ public partial class AppTests : IDisposable
         Assert.Contains($"warm: item {R} blamed: 'C' (compute), key {keys[R]}", log);
         Assert.Equal(new[] { keys[R], keys[F] }.Order(), k.Store.LoadGame(game.Id).CrashKeys.Order());
 
-        await Compile();   // the hooks are still set: a create of F would fault again
-        Assert.DoesNotContain("recovering from a GPU driver crash", notes);
+        await Compile(ScsKiller.KnownNote(2));   // the hooks are still set: a create of F would fault again
+        Assert.DoesNotContain(notes, n => n?.StartsWith("recovering from a GPU driver crash", StringComparison.Ordinal) == true);
         Assert.Contains("2 items skipped: they removed the device in an earlier run", warmer.Log);
         Assert.DoesNotContain("warm: exception", warmer.Log);
     }
@@ -13288,12 +13288,12 @@ public partial class AppTests : IDisposable
         }
 
         await Compile();
-        Assert.Contains("recovering from a GPU driver crash", notes);
+        Assert.Contains(notes, n => n?.StartsWith("recovering from a GPU driver crash", StringComparison.Ordinal) == true);
         Assert.Contains("careful compile: the plan's other pipelines at full speed", notes);   // the passes after it ran
         Assert.Equal([keys[K]], k.Store.LoadGame(game.Id).CrashKeys);
 
         await Compile();   // the hook is still set: a create of K would remove the device again
-        Assert.DoesNotContain("recovering from a GPU driver crash", notes);
+        Assert.DoesNotContain(notes, n => n?.StartsWith("recovering from a GPU driver crash", StringComparison.Ordinal) == true);
         Assert.True(k.Store.LoadGame(game.Id).WarmedCareful);
     }
 
