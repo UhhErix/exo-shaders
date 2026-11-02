@@ -1,7 +1,9 @@
+using System.Diagnostics;
 using SCSKiller.Core;
 using SCSKiller.Core.App;
 using SCSKiller.Core.Games;
 using SCSKiller.Core.Planning;
+using SCSKiller.Core.Warming;
 
 namespace SCSKiller.Tests.Platform;
 
@@ -257,5 +259,105 @@ public partial class AppTests
         Assert.Null(k.Store.LoadGame(_game.Id).Verify);
         Assert.False(k.Verifying);
         Assert.Throws<ArgumentException>(() => k.VerifyRefusal("no such game"));
+    }
+
+    /// <summary>The check's warm runs under the game's exe name from its stage folder, which on Phantom Blade Zero stopped the
+    /// check before its first create (0 timed): the watcher took it for the game playing, and GameRunning(g), a guard of the game's
+    /// folder, counts a staged warm as the game. The real watcher and process checks run here, on a faked process list: the warm
+    /// goes on and nothing plays, until the real game starts from its folder.</summary>
+    [Fact]
+    public async Task The_check_does_not_take_its_own_warm_for_the_game_but_stops_for_the_game()
+    {
+        var plan = Pipelines(10);
+        var warmer = new ControlledWarmer();
+        var k = Killer(new FakeReader(Unreal), new FakePlanner(genDb: DbOf(plan), records: plan), warmer, game: _game);
+        var exe = Path.GetFileName(_game.ExePath);
+        await k.ScanAsync(default);
+        k.Enqueue(_game.Id);
+        k.StartQueue();
+        await warmer.WhenStarted();
+        warmer.Run!.Finish();
+        await k.WhenQueueIdle().WaitAsync(TimeSpan.FromSeconds(10));
+        k.Remove(_game.Id);
+        var staged = Path.Combine(k.Store.GameDir(_game.Id), ScsKiller.VerifyWork, "stage-4343-1", "Fake", "Binaries", "Win64", exe);
+        List<(int Pid, int Parent, string Exe)> now = [];
+        k.Processes = _ => now;
+        k.ProcessNames = () => now.Select(p => Path.GetFileNameWithoutExtension(p.Exe)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        k.ProcessPath = pid => pid == 4343 ? staged : pid == 4242 ? _game.ExePath : null;
+        k.WatchInterval = TimeSpan.FromMilliseconds(20);
+        using var stop = new CancellationTokenSource();
+        var watching = k.WatchGames(stop.Token);
+        var check = k.VerifyAsync(_game.Id);
+        await warmer.WhenStarted(2);
+        now = [(4343, 1, exe)];
+        await Task.Delay(TimeSpan.FromSeconds(2.5));   // past two turns of the check's loop and many of the watcher's
+        Assert.False(warmer.Run!.Stopped);
+        Assert.False(k.Games.Single().Playing);
+        now = [(4343, 1, exe), (4242, 1, exe)];
+        await Until(() => warmer.Run!.Stopped);
+        Assert.Null(await check);
+        stop.Cancel();
+        await watching;
+    }
+
+    /// <summary>The whole check with the real warm on WARP, the real process list and the real watcher, as a game's check runs:
+    /// created pipelines are timed, what was played and what wasn't both counted. Needs this checkout's proxy built.</summary>
+    [Fact]
+    public async Task The_check_times_a_real_warm_on_WARP_to_its_end()
+    {
+        if (OwnWarmExe() is not { } warmExe) return;
+        var luid = Process.Start(new ProcessStartInfo(Path.Combine(Path.GetDirectoryName(warmExe)!, "selftest.exe"), "warpluid") { RedirectStandardOutput = true, Environment = { ["SCSKILLER_SELFTEST_UNARMED"] = "1" } })!
+            .StandardOutput.ReadToEnd().Trim();
+        var warp = new FakeVendor(Gpu with { AdapterLuid = Convert.ToInt64(luid, 16) });
+        var rsBlob = Carved.Hlsl.RootSignature("DescriptorTable(UAV(u0))");
+        var rs = PsoDb.Hex(System.Security.Cryptography.SHA1.HashData(rsBlob));
+        var plan = new List<PsoDb.Rec>();
+        using var db = new MemoryStream();
+        PsoDb.WriteBlob(db, rs, rsBlob);
+        foreach (var seed in Enumerable.Range(1, 300))
+        {
+            var cs = Carved.Hlsl.Cs(seed);
+            var hash = PsoDb.Hex(System.Security.Cryptography.SHA1.HashData(cs));
+            PsoDb.WriteBlob(db, hash, cs);
+            plan.Add(new('C', PsoDb.Compute(rs, hash)));
+        }
+        foreach (var r in plan) PsoDb.Write(db, r.Tag, r.Payload);
+        var k = Killer(new FakeReader(Unreal), new FakePlanner(genDb: db.ToArray(), records: plan), new Warmer(warp, warmExe), game: _game, vendor: warp);
+        k.WatchInterval = TimeSpan.FromMilliseconds(50);
+        await k.ScanAsync(default);
+        k.Enqueue(_game.Id);
+        k.StartQueue();
+        await k.WhenQueueIdle().WaitAsync(TimeSpan.FromMinutes(2));
+        Assert.Equal(QueueStage.Done, k.Queue.Single().Stage);
+        k.Remove(_game.Id);
+        File.WriteAllBytes(Path.Combine(k.Store.GameDir(_game.Id), "recording.db"), [.. db.ToArray()]);   // the game played them all
+        using var stop = new CancellationTokenSource();
+        var watching = k.WatchGames(stop.Token);
+        var played = false;
+        var check = k.VerifyAsync(_game.Id);
+        while (!check.IsCompleted)
+        {
+            played |= k.Games.Single().Playing;
+            await Task.WhenAny(check, Task.Delay(10));
+        }
+        var found = await check;
+        stop.Cancel();
+        await watching;
+        Assert.False(played);
+        Assert.NotNull(found);
+        Assert.Equal(300L, found.Sampled);
+        Assert.NotNull(found.PlayedHitRate);
+        Assert.Equal(found, k.Store.LoadGame(_game.Id).Verify);
+        Assert.False(Directory.Exists(Path.Combine(k.Store.GameDir(_game.Id), ScsKiller.VerifyWork)));
+    }
+
+    /// <summary>A retry's process times in a stage folder of its own: the items of every process count, a later line over an earlier.</summary>
+    [Fact]
+    public void The_check_counts_the_times_of_every_process_of_its_warm()
+    {
+        var (first, second) = (Path.Combine(_root, "first.csv"), Path.Combine(_root, "second.csv"));
+        File.WriteAllLines(first, ["0,2.0,1", "1,140.0,1", "2,140.0,-1"]);
+        File.WriteAllLines(second, ["2,3.0,1", "3,140.0,1"]);
+        Assert.Equal((2L, 4L, 0L, 0L), ScsKiller.ReadTimes([first, second], Pipelines(4), new HashSet<string>()));
     }
 }

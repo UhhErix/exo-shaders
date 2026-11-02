@@ -11500,8 +11500,8 @@ public sealed partial class ScsKiller : IScsKiller
         return fresh ?? throw new IOException($"no work folder can be made in {gameDir}", last);
     }
 
-    /// <summary>work or work-&lt;n&gt;: a folder <see cref="FreshWork"/> makes.</summary>
-    internal static bool IsWorkDir(string name) => name.Equals("work", GameFiles.Names)
+    /// <summary>work or work-&lt;n&gt;: a folder <see cref="FreshWork"/> makes; or the check's (<see cref="VerifyWork"/>). A warm stages right under one.</summary>
+    internal static bool IsWorkDir(string name) => name.Equals("work", GameFiles.Names) || name.Equals(VerifyWork, GameFiles.Names)
         || name.StartsWith("work-", GameFiles.Names) && name.Length > 5 && name[5..].All(char.IsAsciiDigit);
 
     public const string LastWarmLog = "warm-last.log";

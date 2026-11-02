@@ -25,6 +25,10 @@ public sealed partial class ScsKiller
     /// <summary>Fewer created than this says nothing: stopped, no result is kept.</summary>
     public const int VerifyMinimum = 40;
 
+    /// <summary>The check's work folder in the game's. Its warm stages right under it as a compile's does (<see cref="IsWorkDir"/>),
+    /// so the process it runs under the game's exe name is known for ours (<see cref="OurCopy"/>), never the game playing.</summary>
+    internal const string VerifyWork = "verify-work";
+
     int _verifying;
 
     /// <summary>Exo Shaders: a check runs (<see cref="VerifyAsync"/>).</summary>
@@ -66,11 +70,12 @@ public sealed partial class ScsKiller
         if (Interlocked.Exchange(ref _verifying, 1) != 0) throw new InvalidOperationException("a check is running");
         var s = Find(gameId);
         var (g, rec) = (s.Game, Store.LoadGame(gameId));
-        var work = Path.Combine(Store.GameDir(gameId), "verify-work");
+        var work = Path.Combine(Store.GameDir(gameId), VerifyWork);
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
         limit.CancelAfter(VerifyLimit);
         try
         {
+            if (Directory.Exists(work)) Directory.Delete(work, true);   // a check that died left its times there
             Directory.CreateDirectory(work);
             var snap = Snapshot();
             var exeDir = Path.GetDirectoryName(g.ExePath)!;
@@ -79,10 +84,10 @@ public sealed partial class ScsKiller
                 var played = PlayedPairs([RecordingPath(gameId), .. Foreign(exeDir) ? Array.Empty<string>() : [Path.Combine(exeDir, "scskiller.db")]]);
                 var small = rec.Plan! with { FilePath = Path.Combine(work, "sample.bin") };
                 PlanFile.Write(small, SampleOf(PlanFile.Read(rec.Plan!.FilePath).Records, played, VerifySample));
-                _planner.Materialize(small, g, s.Engine!, _reader, null, Path.Combine(work, "w"), limit.Token);
+                _planner.Materialize(small, g, s.Engine!, _reader, null, work, limit.Token);
                 return 0;
             });
-            var items = CompiledItems.Numbered([Path.Combine(work, "w", "scskiller.db"), Path.Combine(work, "w", "scskiller_gen.db")]);
+            var items = CompiledItems.Numbered([Path.Combine(work, "scskiller.db"), Path.Combine(work, "scskiller_gen.db")]);
             if (items.Count == 0) throw new InvalidOperationException("the plan has no pipelines to sample");
             var played2 = PlayedPairs([RecordingPath(gameId), .. Foreign(exeDir) ? Array.Empty<string>() : [Path.Combine(exeDir, "scskiller.db")]]);
             var options = new WarmOptions(Math.Min(VerifyThreads, Math.Max(1, Settings.BackgroundThreads)), WarmPriority.Idle, 0, CompileMemoryGB(Settings) * 1024,
@@ -94,23 +99,26 @@ public sealed partial class ScsKiller
             {
                 var timed = real.Timed();
                 (timed.Log, timed.Ags, timed.Aftermath) = (Log, x => AgsFor(x, rec, recover: true), x => AftermathOf(x, rec, s.Engine).Init);
-                run = timed.Start(staged, Path.Combine(work, "w"), options, null, snap.Gpu);
+                run = timed.Start(staged, work, options, null, snap.Gpu);
             }
-            else run = _warmer.Start(staged, Path.Combine(work, "w"), options, null);
+            else run = _warmer.Start(staged, work, options, null);
             Log?.Report($"{g.Name}: checking the compile with a sample of {items.Count:N0} pipelines");
+            string? stoppedBy = null;
             while (!run.Completion.IsCompleted)
             {
                 bool compiling;
                 lock (_lock) compiling = _current != null;
-                if (limit.IsCancellationRequested || compiling || Games.Any(x => x.Playing) || GameRunning(g)) run.Stop();
+                // GameRunning(), which leaves this check's own warm out: GameRunning(g) guards the game's folder, and counts it as the game
+                stoppedBy ??= limit.IsCancellationRequested ? "stopped or out of time" : compiling ? "a compile started" : GameRunning() ? "a game is running" : null;
+                if (stoppedBy != null) run.Stop();
                 await Task.WhenAny(run.Completion, Task.Delay(1000, CancellationToken.None));
             }
             var result = await run.Completion;
-            var times = Path.Combine(Path.GetDirectoryName(result.LogPath) is { Length: > 0 } stage ? stage : Path.Combine(work, "w", "stage"), "scskiller_warm_times.csv");
-            var (hits, created, playedHits, playedCreated) = ReadTimes(times, items, played2);
+            // every process's: a retry (a driver crash or hang, a restart for memory) goes on in a stage folder of its own
+            var (hits, created, playedHits, playedCreated) = ReadTimes(Directory.EnumerateFiles(work, "scskiller_warm_times.csv", SearchOption.AllDirectories).OrderBy(File.GetLastWriteTimeUtc), items, played2);
             if (created < VerifyMinimum)
             {
-                Log?.Report($"{g.Name}: the check stopped too early to say ({created:N0} pipelines timed)");
+                Log?.Report($"{g.Name}: the check stopped too early to say ({created:N0} pipelines timed{((stoppedBy ?? result.Error) is { } reason ? ": " + reason : "")})");
                 return null;
             }
             var rate = (double)hits / created;
@@ -187,12 +195,12 @@ public sealed partial class ScsKiller
         for (var i = 0; i < n; i++) yield return from[(int)((long)i * from.Count / n)];
     }
 
-    /// <summary>scskiller_warm_times.csv, "item,ms,ok" (an item's last line counts): what was created, what took under
+    /// <summary>scskiller_warm_times.csv of each process in order, "item,ms,ok" (an item's last line counts): what was created, what took under
     /// <see cref="UnreachedMedianMs"/>, and the same of those the game played.</summary>
-    internal static (long Hits, long Created, long PlayedHits, long PlayedCreated) ReadTimes(string file, IReadOnlyList<PsoDb.Rec> items, IReadOnlySet<string> played)
+    internal static (long Hits, long Created, long PlayedHits, long PlayedCreated) ReadTimes(IEnumerable<string> files, IReadOnlyList<PsoDb.Rec> items, IReadOnlySet<string> played)
     {
         var last = new Dictionary<long, (double Ms, int Ok)>();
-        if (File.Exists(file))
+        foreach (var file in files)
             foreach (var line in File.ReadLines(file))
                 if (line.Split(',') is [var i, var m, var o] && long.TryParse(i, CultureInfo.InvariantCulture, out var item)
                     && double.TryParse(m, CultureInfo.InvariantCulture, out var ms) && int.TryParse(o, CultureInfo.InvariantCulture, out var ok))
