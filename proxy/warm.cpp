@@ -96,7 +96,6 @@ static const CLSID CLSID_DesktopAppXActivator = {0x168EB462, 0x775F, 0x42AE, {0x
 static std::wstring beat_name(DWORD parent) { return L"Local\\SCSKiller.Beat." + std::to_wstring(parent); }
 static std::wstring final_name(DWORD parent) { return L"Local\\SCSKiller.Final." + std::to_wstring(parent); }
 static std::wstring started_name(DWORD parent) { return L"Local\\SCSKiller.Started." + std::to_wstring(parent); }
-static std::wstring stop_name(DWORD parent) { return L"Local\\SCSKiller.Stop." + std::to_wstring(parent); }
 static std::wstring loading_name(DWORD parent) { return L"Local\\SCSKiller.Loading." + std::to_wstring(parent); }
 static std::wstring stop_name(DWORD parent) { return L"Local\\SCSKiller.Stop." + std::to_wstring(parent); }
 static std::wstring pipe_name(DWORD parent, int fd) { return L"\\\\.\\pipe\\SCSKiller.Warm." + std::to_wstring(parent) + L"." + std::to_wstring(fd); }
