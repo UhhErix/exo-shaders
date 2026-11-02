@@ -67,7 +67,8 @@ internal sealed partial class Host
             // it) aren't the policy's: off by default, the official app's choice where it made one, settings.setTraversal
             // and game.setTraversal otherwise. Never in an anti-cheat game (TraversalFix.Applies).
             ScanAtStart = true,
-            RecordAllGames = true,
+            ShareRecordings = Consent.ShareUpload,   // sharing.setUpload: off until asked; nothing else turns uploads on
+            RecordAllGames = Consent.RecorderAuto,   // recorder.auto: Exo asks once; an earlier Exo Shaders wrote true without asking
             RecordAntiCheatGames = false,
             RecordingLimitMB = defaults.RecordingLimitMB,
             // AMD: keeping a compiled cache aside needs the engine watching each game start to put it back, and the engine
@@ -179,6 +180,7 @@ internal sealed partial class Host
     private void ApplyPolicy()
     {
         ScsKiller k = _k;
+        ClearOldRecorderSwitches();
         Settings was = k.Settings;
         Settings s = PolicySettings(was);
         if (s != was)
@@ -243,11 +245,6 @@ internal sealed partial class Host
         // Every shader the game can use: no compile size limit (1.4.0-alpha.3's per-game cap).
         if (g.CacheCapGB != null) todo.Add(("compile size limit -> none", () => k.SetGameCacheCap(id, null)));
         if (g.RayTracingOverride != null) todo.Add(($"ray tracing {g.RayTracingOverride} -> default (on)", () => k.SetGameRayTracing(id, null)));
-        // A game whose recording was turned off records again (RecordAllGames); an explicit "on" stays. Anti-cheat
-        // games are never recorded: the engine skips them (RecorderSkip "anti-cheat") and RecordAntiCheatGames is off.
-        if (g.RecorderOverride == RecorderOverride.Off && !g.Playing && g.AntiCheat == AntiCheat.None
-            && k.Store.LoadGame(id).Recorder == RecorderOverride.Off)   // the setter doesn't compare: don't repeat it
-            todo.Add(("recorder off -> default", () => k.SetRecorderOverride(id, RecorderOverride.Default)));
         // AMD: the engine offers the careful compile when a launch still compiled many shaders (IsPartlyWarmed).
         if (ScsKiller.CarefulThreads(k.Vendor.Vendor).HasValue && ScsKiller.IsPartlyWarmed(g) && g.Careful is { On: false })
             todo.Add(("careful compile -> on", () => k.SetCarefulCompile(id, on: true)));
@@ -385,7 +382,7 @@ internal sealed partial class Host
                 "Ray tracing shaders are included",
                 "Compiles only when you press Compile, never by itself",
                 "Shows which games a driver update or a game update needs compiled again",
-                "Records DirectX 12 games while you play, never anti-cheat games",
+                Consent.RecorderAuto ? "Records DirectX 12 games while you play, never anti-cheat games" : "Doesn't record games until you turn recording on",
             },
         };
     }

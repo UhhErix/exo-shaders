@@ -47,6 +47,20 @@ public static class CompiledItems
             .Select(x => nv.GetValueOrDefault(x.Key, x.Key)).ToHashSet();
     }
 
+    /// <summary>The records of a warm's work dbs at their item numbers, as <see cref="Created"/> numbers them: each record key once
+    /// in file order, then the plan items. A number that isn't a pipeline or state object holds a record no timing names.</summary>
+    public static List<Rec> Numbered(IReadOnlyList<string> dbs)
+    {
+        var existing = dbs.Where(System.IO.File.Exists).ToList();
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        var (records, plans) = (new List<Rec>(), new List<Rec>());
+        foreach (var r in existing.SelectMany(db => Read(db).TakeWhile(r => r.Tag != '\0').Where(r => r.Tag != 'B')))
+            if (r.Tag is 'N' or 'W' or 'D' or '1' or '2' or '3') continue;
+            else if (r.Tag == 'P') plans.Add(r);
+            else if (keys.Add(r.Key)) records.Add(r);
+        return [.. records, .. plans];
+    }
+
     public static HashSet<string>? Load(string path)
     {
         try

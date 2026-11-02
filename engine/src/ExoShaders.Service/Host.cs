@@ -118,6 +118,7 @@ internal sealed partial class Host
         }
         k.DbEntitled = () => false;
         k.ManageRecorders = !_opt.Safe;
+        k.RecordOnlyWithConsent = true;
         k.CleanupHelper = _opt.Safe ? null : Environment.ProcessPath;
         k.CheckPlans = !_opt.Safe;
         k.UseChannels(null);   // what the app does while signed out
@@ -315,6 +316,7 @@ internal sealed partial class Host
         }
         if (structural)
         {
+            if (_k.Compiling) _ = StopVerify();   // the check and a compile must not run together: a second process of an exe name gets its own cache files
             MarkState();
             if (q.Stage is QueueStage.Done or QueueStage.Failed or QueueStage.Stopped) RequestCacheInfo(force: false);
             GamingPause();
@@ -633,6 +635,7 @@ internal sealed partial class Host
             try
             {
                 _log.Report($"[exo] stopping ({reason})");
+                await StopVerify();
                 if (_k.Compiling)
                 {
                     StopAll();

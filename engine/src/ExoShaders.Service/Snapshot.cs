@@ -78,6 +78,7 @@ internal sealed partial class Host
             app = new
             {
                 status,
+                verifying = !atRest ? _verifyingId : null,   // game.verify's game while its check runs
                 statusLine = Format.TrayStatus(running, running is null ? null : runningName, !atRest && Quitting).Line,
                 scanning,
                 scanProgress = atRest ? null : k.ScanProgress,
@@ -138,6 +139,7 @@ internal sealed partial class Host
             hidden = k.HiddenGames.Select(g => new { id = g.Id, name = g.Name, store = Fmt.StoreName(g) }),
             queue = QueueDto(games, queue, atRest),
             settings = SettingsDto(),
+            recorder = new { auto = Consent.RecorderAuto },
             policy = PolicyDto(),
             manualFolders = k.Manual?.Folders ?? [],
         };

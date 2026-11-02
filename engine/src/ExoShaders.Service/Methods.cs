@@ -28,8 +28,8 @@ internal sealed partial class Host
     [
         "game.compile", "game.compileMax", "queue.add", "queue.addWhenIdle", "queue.start", "queue.resume",
         "driverStale.compileNow", "driverStale.whenIdle", "library.addAllReady", "library.addAllRecommended",
-        "recorder.install", "recorder.uninstall", "recorder.set", "recorder.alongside", "recorder.offline", "recorder.startOffline",
-        "recorder.startRisk", "recorder.clear", "game.clearCache", "game.putBackKept", "game.dropKept", "game.play",
+        "recorder.install", "recorder.uninstall", "recorder.set", "recorder.auto", "recorder.alongside", "recorder.offline", "recorder.startOffline",
+        "recorder.startRisk", "recorder.clear", "game.verify", "game.clearCache", "game.putBackKept", "game.dropKept", "game.play",
         "games.remove", "games.hide", "cache.delete", "cache.freeOldDriver", "driver.setCacheLimit", "driver.setAutoShader",
         "driver.setCleanupGuard", "game.asdUndo", "ba.start", "ba.launch", "ba.continue", "ba.recordAfterAgain", "ba.cancel",
         "game.setTraversal", "settings.setTraversal",   // a recorder's scskiller.ini is written in the game's folder
@@ -40,7 +40,7 @@ internal sealed partial class Host
     [
         "settings.set", "game.setApi", "game.setNewShaders", "game.setCareful", "game.setRayTracing", "game.setMaximum",
         "game.setLeftOutOfAddAll", "game.compileMax", "queue.addWhenIdle", "driverStale.whenIdle", "library.addAllRecommended",
-        "recorder.set", "recorder.install", "recorder.uninstall", "recorder.alongside", "recorder.offline", "recorder.startOffline",
+        "recorder.install", "recorder.uninstall", "recorder.alongside", "recorder.offline", "recorder.startOffline",
         "recorder.checkRisk", "recorder.startRisk", "driver.setAutoShader",
     ];
 
@@ -149,6 +149,8 @@ internal sealed partial class Host
             case "game.compile":
             {
                 string id = p.ReqStr("id");
+                if (Game(id).NeedsFirstLaunch) throw new ServiceError(ScsKiller.NeedsFirstLaunchReason);
+                await StopVerify();
                 GameView v = new(Game(id), Context());
                 await Act(id, () =>
                 {
@@ -237,20 +239,12 @@ internal sealed partial class Host
                 await Act(id, () => k.UninstallRecorder(id));
                 return Ok;
             }
-            case "recorder.set":
-            {
-                string id = p.ReqStr("id");
-                Game(id);
-                RecorderOverride mode = p.ReqStr("mode") switch
-                {
-                    "on" => RecorderOverride.On,
-                    "off" => RecorderOverride.Off,
-                    "default" => RecorderOverride.Default,
-                    var m => throw new ServiceError($"'{m}' isn't a valid mode: on, off, default"),
-                };
-                await Act(id, () => k.SetRecorderOverride(id, mode));
+            case "recorder.auto":
+                SetRecorderAuto(p.ReqBool("on"));
                 return Ok;
-            }
+            case "recorder.set":
+                await SetGameRecorder(p.ReqStr("id"), p.ReqBool("on"), p.Bool("takeOver") ?? false);
+                return Ok;
             case "recorder.alongside":
             {
                 string id = p.ReqStr("id");
@@ -424,6 +418,20 @@ internal sealed partial class Host
             // ------------------------------------------------------------ game caches
             case "game.caches":
                 return await GameCachesDto(p.ReqStr("id"));
+
+            // ------------------------------------------------------------ diagnostics
+            case "game.diagnostics":
+            {
+                string id = p.ReqStr("id");
+                Game(id);
+                return DiagnosticsDto(await Task.Run(() => k.Diagnose(id)));
+            }
+            case "game.verify":
+                StartVerify(p.ReqStr("id"));
+                return new { ok = true, started = true };
+            case "game.verifyStop":
+                await StopVerify();
+                return Ok;
             case "game.clearCache":
             {
                 string id = p.ReqStr("id");

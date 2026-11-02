@@ -93,6 +93,13 @@ public sealed class Warmer(IGpuVendorBackend vendor, string? warmExe = null) : I
     /// <summary>The Steam folder of the Steam games it warms (null: <see cref="Games.SteamSource.Root"/>).</summary>
     internal string? SteamRoot { get; init; }
 
+    /// <summary>A warmer whose processes time each pipeline into their staging folder (SCSKILLER_WARM_TIMES, the check's measure).</summary>
+    public Warmer Timed() => new(vendor, warmExe)
+    {
+        StuckAfter = StuckAfter, MaxRecoveries = MaxRecoveries, CrashFloor = CrashFloor, Host = Host, SteamRoot = SteamRoot, Log = Log, Ags = Ags, Aftermath = Aftermath, Layer = Layer,
+        Environment = new Dictionary<string, string>(Environment ?? new Dictionary<string, string>()) { ["SCSKILLER_WARM_TIMES"] = "1" },
+    };
+
     /// <summary>Why <paramref name="game"/> can't be warmed here (<see cref="WarmHost.Refusal"/>); null when it can.</summary>
     public string? Refusal(Game game, bool vulkan = false) => WarmHost.Refusal(game, SteamRoot, vulkan, MesaLinux.Is(vendor.Caps));
 

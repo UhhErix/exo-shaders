@@ -465,6 +465,16 @@ internal sealed class GameView(GameState state, ViewContext ctx)
     public bool ShowOffline => s.OfflineEligible || s.RiskEligible;
     private bool Risk => s.RiskEligible;
 
+    /// <summary>Why this game can't record, in a line: an anti-cheat, VAC or Riot refusal, another of the engine's reasons, or
+    /// what the proxy said at its last launch. Another copy's recorder isn't one: <c>foreign</c> says that.</summary>
+    private string? RecorderRefusal =>
+        GameFiles.IsRiot(s.Game) ? "Riot game: never recorded"
+        : s.Vac ? "Valve Anti-Cheat: never recorded"
+        : !NoAntiCheat ? ScsKiller.AntiCheatName(s) + ": never recorded"
+        : s.RecorderSkip ?? s.RecorderRefused;
+
+    public string RefusalLine => RecorderRefusal ?? "This game can't record now.";
+
     public bool RecordOn => ShowOffline ? s.OfflineRecord : !PairFramesOnly && s.RecorderEffective;
 
     public bool CanToggleRecord => ShowOffline ? !s.OfflineRunning : NoAntiCheat && s.RecorderSkip == null && !PairFramesOnly;
@@ -1063,10 +1073,15 @@ internal sealed class GameView(GameState state, ViewContext ctx)
             knownStutter = s.KnownStutter is { } ks ? new { severity = Fmt.Camel(ks.Severity.ToString()), reason = ks.Reason, source = ks.Source, date = ks.Date, tip = Fmt.StutterTip(s) } : null,
             noStutter = s.NoStutter,
             antiCheat = new { kind = Fmt.AntiCheatKey(s.AntiCheat), name = NoAntiCheat ? null : ScsKiller.AntiCheatName(s), chip = AntiCheatChip, tip = AntiCheatTip },
+            needsFirstLaunch = s.NeedsFirstLaunch,   // a compile doesn't reach it on this driver (game.verify): compiling is refused, its first launch is what helps
             recorder = new
             {
                 installed = s.RecorderInstalled,
                 effective = RecordOn,
+                on = s.RecorderEffective && !s.RecorderForeign && RecorderRefusal == null,
+                canSet = NoAntiCheat && s.RecorderSkip == null && !PairFramesOnly,   // recorder.set can turn it on
+                refusal = RecorderRefusal,
+                newPipelines = NewShaders.Count(s),
                 @override = Fmt.Camel(s.RecorderOverride.ToString()),
                 foreign = s.RecorderForeign,
                 skip = s.RecorderSkip,

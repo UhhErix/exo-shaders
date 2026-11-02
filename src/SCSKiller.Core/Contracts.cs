@@ -478,6 +478,9 @@ public sealed record GameState(
 
     /// <summary>A client anti-cheat (any value but None, Other included) or VAC: never recorded outside a confirmed risk or offline session.</summary>
     public bool AnyAntiCheat => AntiCheat != AntiCheat.None || Vac;
+
+    /// <summary>Exo Shaders: the last check says a compile doesn't reach this game on this driver and build (ScsKiller.VerifyAsync): not compiled again, its first launch fills what it reads.</summary>
+    public bool NeedsFirstLaunch { get; init; }
 }
 
 /// <summary>A complete compile kept for a graphics API the game doesn't run now (<see cref="App.ScsKiller.ApiKey"/>), on

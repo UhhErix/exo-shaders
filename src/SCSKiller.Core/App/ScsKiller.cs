@@ -1370,7 +1370,7 @@ public sealed partial class ScsKiller : IScsKiller
         var rayQuery = nvidia ? SessionLog.ReadRayQueryKeys(RayQueryKeysPath(g.Id)) : null;
         var sessionDir = SessionDir(g);
         var frames = Frames(sessionDir, Path.GetFileName(g.ExePath), rayQuery, rec.LastPlay);
-        var (session, marker, first) = SessionLog.Read(Path.Combine(sessionDir, "scskiller_creates.csv"), out var framesMatch, out var agsSeen, Path.GetFileName(g.ExePath), judge, MinJudgedCreates, rayQuery, rec.LastPlay, frames);
+        var (session, marker, first) = SessionLog.Read(Path.Combine(sessionDir, "scskiller_creates.csv"), out var framesMatch, out var agsSeen, Path.GetFileName(g.ExePath), judge, MinJudgedCreates, rayQuery, rec.LastPlay, frames, ExeGone);
         if (session != null && !framesMatch) frames = null;   // another launch's frames: none shown next to this one's counts
         if (frames != null)
             try
@@ -1704,6 +1704,7 @@ public sealed partial class ScsKiller : IScsKiller
         var offline = OfflineEntry(s.Game, s.AntiCheat, s.Engine) != null && GameVerdicts.Current.Unsupported(s.Game, s.Engine) == null;
         var effective = by != null ? shared : RecorderWanted(o, RecordsByDefault(Settings, s), skip, PairFrames11(s.Engine, rec, Vendor.Caps));
         return s with { RecorderOverride = o, RecorderSkip = skip, RecorderEffective = effective,
+            NeedsFirstLaunch = NeedsFirstLaunchRun(s.Game, rec),
             RecorderForeign = elsewhere, RecorderFailure = effective && by == null ? rec.RecorderFailure : null,
             RecorderNote = _recorderNotes.GetValueOrDefault(s.Game.Id)
                 ?? (o == RecorderOverride.Off && rec.RecorderOrphans.Any(File.Exists) ? ModRemovedNote : null), RecorderMod = by != null || vulkan ? null : ModName(exeDir, rec, proxy, dllName),
@@ -6447,6 +6448,24 @@ public sealed partial class ScsKiller : IScsKiller
         }
     }
 
+    /// <summary>Exo Shaders: recording needs Exo's consent, and another SCSKiller copy's recorder is left to it. A copy with
+    /// "Record all games" on (the official app's default) takes every recorder it wants when it runs; taking them back here
+    /// would swap the marker, proxy and stamp at each run of either. So "wanted" never takes one over: only
+    /// <see cref="TakeOverRecorder"/> does, once. Off: upstream's behaviour.</summary>
+    public bool RecordOnlyWithConsent { get; set; }
+
+    readonly ConcurrentDictionary<string, bool> _takeOverOnce = new();
+
+    /// <summary>The user asked for this game's recorder while another copy has it: this copy takes it now, once.</summary>
+    public void TakeOverRecorder(string gameId)
+    {
+        lock (_recorderLock)
+        {
+            _takeOverOnce[gameId] = true;
+            SetRecorderOverride(gameId, RecorderOverride.On);
+        }
+    }
+
     /// <summary>Whether "Record in all compatible games" arms the game.</summary>
     public static bool RecordsByDefault(Settings settings, GameState s) => settings.RecordAllGames && s.NoStutter == null;
 
@@ -7018,7 +7037,8 @@ public sealed partial class ScsKiller : IScsKiller
         // another copy's recorder this copy wants (the switch, Record all games) becomes this copy's
         string? notTaken = null;
         if ((Foreign(g) || Foreign(RecordedAt(g, rec))) && !LeftOut(g)
-            && RecorderWanted(rec.Recorder ?? RecorderOverride.Default, RecordsByDefault(Settings, s), s.RecorderSkip, PairFrames11(s.Engine, rec, Vendor.Caps)))
+            && RecorderWanted(rec.Recorder ?? RecorderOverride.Default, RecordsByDefault(Settings, s), s.RecorderSkip, PairFrames11(s.Engine, rec, Vendor.Caps))
+            && (!RecordOnlyWithConsent || _takeOverOnce.TryRemove(id, out _)))
             try
             {
                 Claim(g, rec, takeOver: true);
@@ -7079,7 +7099,7 @@ public sealed partial class ScsKiller : IScsKiller
         if (rec.Recorder == null)   // not migrated: a recorder the user installed stays theirs
         {
             var found = ours && DefaultCopy && !s.AnyAntiCheat ? FullCheck(g) : AntiCheat.None;
-            rec.Recorder = ours && DefaultCopy && !s.AnyAntiCheat && found == AntiCheat.None ? RecorderOverride.On : RecorderOverride.Default;
+            rec.Recorder = ours && DefaultCopy && !RecordOnlyWithConsent && !s.AnyAntiCheat && found == AntiCheat.None ? RecorderOverride.On : RecorderOverride.Default;
             Store.SaveGame(id, rec);
             changed = true;
             if (found is not AntiCheat.None)
@@ -9003,6 +9023,11 @@ public sealed partial class ScsKiller : IScsKiller
         if (Games.FirstOrDefault(s => s.Game.Id == gameId) is { } riot && GameFiles.IsRiot(riot.Game))
         {
             Log?.Report($"{riot.Game.Name}: not queued: {RiotReason}");
+            return;
+        }
+        if (!planCheck && Games.FirstOrDefault(s => s.Game.Id == gameId) is { NeedsFirstLaunch: true } misses)
+        {
+            Log?.Report($"{misses.Game.Name}: not queued: {NeedsFirstLaunchReason}");
             return;
         }
         if (!planCheck && Games.FirstOrDefault(s => s.Game.Id == gameId) is { } listed

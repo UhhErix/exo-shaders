@@ -65,7 +65,7 @@ internal sealed partial class Host
     private bool Busy()
     {
         ScsKiller k = _k;
-        if (Volatile.Read(ref _inflight) > 0 || Scanning || k.QueueRunning || k.LocalAsdBuilding) return true;
+        if (Volatile.Read(ref _inflight) > 0 || Scanning || k.QueueRunning || k.LocalAsdBuilding || k.Verifying || _verify is { IsCompleted: false }) return true;
         if (k.Compiling && (!k.RunningWhenIdle || k.IdleTime() >= k.IdleAfter)) return true;
         if (Volatile.Read(ref _policyPending) == 1 || _policyGate.CurrentCount == 0 || Volatile.Read(ref _newShadersPending) == 1
             || _newShadersGate.CurrentCount == 0 || Volatile.Read(ref _cacheReading) == 1 || Volatile.Read(ref _elevated) > 0) return true;

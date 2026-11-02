@@ -10,6 +10,7 @@ namespace SCSKiller.Core.App;
 /// <summary>What SCSKiller remembers per game (games\&lt;id&gt;\state.json).</summary>
 public sealed class GameRecord
 {
+    public VerifyRecord? Verify { get; set; }   // Exo Shaders: what the last check found (ScsKiller.VerifyAsync)
     public string? IndexContentHash { get; set; }
     public List<string>? IndexLegacyHashes { get; set; }     // ShaderIndex.LegacyHashes of that index: community entries are looked up by them too
     public string? IndexGameVersion { get; set; }           // Game.Version when IndexContentHash was taken (sharing needs the pair)

@@ -138,9 +138,11 @@ public static class SessionLog
         FrameReport? frames = null) => Read(csvPath, out framesMatch, out _, exeFileName, firstAfter, minCreates, rayQuery, played, frames);
 
     /// <summary>The same, and the game's last AGS registration (<see cref="LastAgs"/>) from the same pass.</summary>
+    /// <param name="exeGone">Exo Shaders: whether no process of that exe name runs now. The last launch without an #end has
+    /// ended then: Unreal terminates its own process, so without this its verdict waited for the next launch.</param>
     public static (SessionStats? Last, LaunchedExe? Exe, LaunchCheck? First) Read(string csvPath, out bool framesMatch, out AgsRegistration? ags,
         string? exeFileName = null, DateTimeOffset? firstAfter = null, long minCreates = 1, IReadOnlySet<string>? rayQuery = null,
-        PlayWindow? played = null, FrameReport? frames = null)
+        PlayWindow? played = null, FrameReport? frames = null, Func<string, bool>? exeGone = null)
     {
         (framesMatch, ags) = (false, null);
         if (!File.Exists(csvPath)) return (null, null, null);
@@ -165,7 +167,7 @@ public static class SessionLog
             if (!other) game = cur;
             if (!other && l.Ags != null) ags = l.Ags;
         }
-        if (cur != null && (cur.End != null || cur.Exited(played))) Ended(cur);
+        if (cur != null && (cur.End != null || cur.Exited(played) || exeGone?.Invoke(cur.Launch.Exe.Length > 0 ? cur.Launch.Exe : exeFileName ?? "") == true)) Ended(cur);
         framesMatch = game != null && frames != null && FrameLog.OwnerOf(launches, frames.LaunchUnixMs) == game.Launch;
         return (game?.Stats(played, rayQuery, framesMatch ? frames : null), exe, first);
     }
