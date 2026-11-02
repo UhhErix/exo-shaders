@@ -540,9 +540,13 @@ compile into the same driver cache, so a compile by one can read as a changed ca
 | `game.verify` | `{id}` | `{ok: true, started: true}` at once, or an error saying why not (no compile yet, another driver's compile, a game or compile running, a mod in the way, Riot, a Vulkan plan, or NVIDIA 621 and later, whose warm output is staged). Re-creates at most 1,200 of the plan's pipelines, half of them ones the game played, on 4 threads at idle priority, within 5 minutes; no replay of the plan, and no record of the compile changes. Each create is timed: under 20 ms the cache served it. Ends with a `verifyDone` or `verifyFailed` notice; `app.verifying` holds the game's id meanwhile, and the service stays up. Exo decides when (PC idle). A game or compile starting stops it. |
 | `game.verifyStop` | – | Stops a running check gracefully and waits for it (the driver writes what it compiled). |
 
-`verify.cause`: `none` (both groups served), `retention` (what only the warm compiled is gone), `lookup` (what the game
-compiled isn't served to the warm: different keys), `cacheLost` (neither), `unplayed` (only the warm's own were tested);
-absent: too mixed to say. `verify.reaches: false` makes `needsFirstLaunch` true for that driver and build.
+`verify.cause`: `none` (both groups served, and no launch says otherwise), `retention` (what only the warm compiled is gone),
+`lookup` (the game and the warm use different keys: what the game compiled isn't served to the warm, or the sample is served
+to the warm while the first launch's warmed pipelines took a median of 20 ms or more), `cacheLost` (neither), `unplayed` (only
+the warm's own were tested); absent: too mixed to say. A warm reads what a warm wrote, so a served sample alone never means
+the compile reaches the game. `verify.reaches: false` makes `needsFirstLaunch` true for that driver and build. A stored
+`verify` that doesn't say false is judged again from its rates whenever the game is evaluated: a launch since can turn it into
+`lookup`, `sampled` and the rates stay as measured.
 
 ### Community and Patreon
 

@@ -3,7 +3,8 @@
 //
 // The check that replaces a 5-minute test by hand: is a game's compile in the cache, and does it reach the game? It compiles a
 // sample of the plan again and times each create. A create the cache serves costs under 20 ms, one it doesn't costs a compile.
-// What it tells comes from comparing pipelines the game itself compiled in play with ones only a warm did: see VerifyCause.
+// What it tells comes from comparing pipelines the game itself compiled in play with ones only a warm did, and with what the
+// game's first launch did: a warm reads what a warm wrote, so only the launch shows the game can't. See GameDiagnostics.Judge.
 
 using System.Globalization;
 using SCSKiller.Core.Games;
@@ -124,10 +125,9 @@ public sealed partial class ScsKiller
             var rate = (double)hits / created;
             double? playedRate = playedCreated > 0 ? (double)playedHits / playedCreated : null;
             double? unplayedRate = created > playedCreated ? (double)(hits - playedHits) / (created - playedCreated) : null;
-            var cause = GameDiagnostics.Cause(playedRate, unplayedRate);
-            var (_, median, known, _, _, _) = GameDiagnostics.Read(Path.Combine(SessionDir(g), "scskiller_creates.csv"), Path.GetFileName(g.ExePath), rec.WarmedAt, ExeGone,
-                OwnDriver == GpuVendor.Nvidia ? SessionLog.ReadRayQueryKeys(RayQueryKeysPath(gameId)) : null);
-            var found = new VerifyRecord(DateTimeOffset.Now, snap.Id, VerifyBuild(g), created, Math.Round(rate, 3), Round(playedRate), Round(unplayedRate), GameDiagnostics.Reaches(cause, median, known), cause);
+            var (median, known) = FirstKnown(g, rec);
+            var (cause, reaches) = GameDiagnostics.Judge(Round(playedRate), Round(unplayedRate), median, known);
+            var found = new VerifyRecord(DateTimeOffset.Now, snap.Id, VerifyBuild(g), created, Math.Round(rate, 3), Round(playedRate), Round(unplayedRate), reaches, cause);
             AppStore.Locked(Path.Combine(Store.GameDir(gameId), "state.json"), () =>
             {
                 var r = Store.LoadGame(gameId);
@@ -147,6 +147,26 @@ public sealed partial class ScsKiller
 
         static double? Round(double? v) => v is { } x ? Math.Round(x, 3) : null;
         static string Text(double? v) => v is { } x ? x.ToString("P0", CultureInfo.InvariantCulture) : "none";
+    }
+
+    (double? Median, long Known) FirstKnown(Game g, GameRecord rec)
+    {
+        var (_, median, known, _, _, _) = GameDiagnostics.Read(Path.Combine(SessionDir(g), "scskiller_creates.csv"), Path.GetFileName(g.ExePath), rec.WarmedAt, ExeGone,
+            OwnDriver == GpuVendor.Nvidia ? SessionLog.ReadRayQueryKeys(RayQueryKeysPath(g.Id)) : null);
+        return (median, known);
+    }
+
+    /// <summary>The last check judged again from its stored rates (<see cref="GameDiagnostics.Judge"/>) and the session data as it
+    /// is now: a launch since, or a verdict of a build that took a served sample for reaching the game. One that says no stands, until a
+    /// new driver or build ends it (<see cref="NeedsFirstLaunchRun"/>).</summary>
+    VerifyRecord? Rejudged(Game g, GameRecord rec)
+    {
+        if (rec.Verify is not { Reaches: not false } v) return rec.Verify;
+        var (median, known) = FirstKnown(g, rec);
+        var (cause, reaches) = GameDiagnostics.Judge(v.PlayedHitRate, v.UnplayedHitRate, median, known);
+        if ((cause, reaches) == (v.Cause, v.Reaches)) return v;
+        Log?.Report($"{g.Name}: the last check judged again: cause {cause ?? "unclear"}, reaches {reaches?.ToString() ?? "not judged"} ({known:N0} warmed pipelines at its first launch, median {median:0} ms)");
+        return v with { Cause = cause, Reaches = reaches };
     }
 
     bool ExeGone(string exe) => !ProcessNames().Contains(Path.GetFileNameWithoutExtension(exe));

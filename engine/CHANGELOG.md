@@ -13,7 +13,13 @@ repository's root `CHANGELOG.md`.
 - `game.diagnostics`: a game's last launch in small numbers and a plain verdict. A launch with no `#end` counts as ended
   once its exe has gone, so Unreal games get a verdict without another launch.
 - `game.verify`: a bounded sample re-compile that tells whether the compile reaches the game. One that doesn't isn't
-  compiled for hours again on that driver and build.
+  compiled for hours again on that driver and build. Its warm stages under `verify-work`, known for ours: before, the
+  watcher took it for the game playing and the check stopped itself at its first pipeline, with nothing timed. A retry's
+  times count, and "stopped too early" says why.
+- A sample served to the warm no longer counts as reaching the game when its first launch still compiled what was warmed:
+  that is `lookup`, `needsFirstLaunch` is true and it isn't queued again. A warm reads what a warm wrote (Phantom Blade Zero:
+  99.8% served at about 1 ms, the first launch's warmed pipelines a median 126 ms). A stored verdict is judged again when
+  the game is next evaluated.
 - Riot games are never read, planned, compiled or recorded, whatever their folder holds or their record said.
 - Patreon sign-in with the community database; downloads follow the sign-in, uploads are their own switch, off by default.
 - Native files are built here from `proxy\` (`prebuilt/SOURCE.md`), with a 20 ms line in the recorder's log. The published

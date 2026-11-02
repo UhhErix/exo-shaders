@@ -1449,7 +1449,9 @@ public sealed partial class ScsKiller : IScsKiller
         }
         try
         {
-            var changed = imported | MergeLaunched(g, rec, marker) | MergeAgsSeen(g, rec, agsSeen) | AdoptDriverId(rec, gpuNow) | first != null | earlier | rec.KeysIndexHash != keysOf | rec.KeysPending != keysPending | rec.RtUnseen != rtUnseenWas | rec.RecordedLong != longWas | PruneGoneKeys(rec);
+            var verifyWas = rec.Verify;
+            rec.Verify = Rejudged(g, rec);
+            var changed = imported | MergeLaunched(g, rec, marker) | MergeAgsSeen(g, rec, agsSeen) | AdoptDriverId(rec, gpuNow) | first != null | earlier | rec.KeysIndexHash != keysOf | rec.KeysPending != keysPending | rec.RtUnseen != rtUnseenWas | rec.RecordedLong != longWas | rec.Verify != verifyWas | PruneGoneKeys(rec);
             abandoned.ThrowIfCancellationRequested();
             if (changed) Store.SaveGame(g.Id, rec);
         }

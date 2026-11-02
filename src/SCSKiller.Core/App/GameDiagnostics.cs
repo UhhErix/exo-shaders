@@ -23,11 +23,13 @@ public sealed record VerifyRecord(DateTimeOffset At, string? DriverId, string? B
 
 public static class VerifyCause
 {
-    /// <summary>The warm's own entries and the game's are both served to a warm: keys match and nothing was lost.</summary>
+    /// <summary>What the sample names is served to a warm, and no launch says otherwise: nothing was lost. A warm reads what a warm
+    /// wrote, so this alone doesn't show the game's lookups match: a first launch that compiled what was warmed makes it <see cref="Lookup"/>.</summary>
     public const string None = "none";
     /// <summary>What the game compiled is served and what only the warm compiled is gone: the cache lost the warm's entries.</summary>
     public const string Retention = "retention";
-    /// <summary>What only the warm compiled is served and what the game compiled isn't: the two use different keys.</summary>
+    /// <summary>The game and the warm use different keys: what only the warm compiled is served and what the game compiled isn't,
+    /// or the sample is served to a warm while the first launch compiled its warmed pipelines (Phantom Blade Zero).</summary>
     public const string Lookup = "lookup";
     /// <summary>Neither is served: nothing here reaches this cache (a reset, or another driver's).</summary>
     public const string CacheLost = "cacheLost";
@@ -144,12 +146,20 @@ public static class GameDiagnostics
         };
     }
 
-    /// <summary>Whether a compile gets to this game: unknown (null) until a launch judged the warm. Its warmed pipelines compiled
-    /// and the sample shows the cache lost them or keys differ: no. Served both ways: yes, whatever the first launch did.</summary>
-    public static bool? Reaches(string? cause, double? firstKnownMedian, long firstKnown)
+    /// <summary>The sample's <see cref="Cause(double?, double?)"/> with the first launch's word on it, and whether a compile gets to
+    /// this game: unknown (null) until a launch judged the warm, unless the sample already shows the cache lost it or keys differ. A
+    /// first launch under <see cref="ScsKiller.UnreachedMedianMs"/>: yes. One at or over it compiled what was warmed: no, and a sample
+    /// served to the warm then means the game looks its pipelines up under other keys, whatever the warm finds.</summary>
+    public static (string? Cause, bool? Reaches) Judge(double? played, double? unplayed, double? firstKnownMedian, long firstKnown)
     {
-        if (firstKnown < ScsKiller.MinJudgedCreates || firstKnownMedian is not { } median) return cause is VerifyCause.CacheLost or VerifyCause.Lookup ? false : null;
-        if (median < ScsKiller.UnreachedMedianMs) return true;
-        return cause is VerifyCause.None ? true : cause is null or VerifyCause.Unplayed ? null : false;
+        var cause = Cause(played, unplayed);
+        if (firstKnown < ScsKiller.MinJudgedCreates || firstKnownMedian is not { } median) return (cause, cause is VerifyCause.CacheLost or VerifyCause.Lookup ? false : null);
+        if (median < ScsKiller.UnreachedMedianMs) return (cause, true);
+        return cause switch
+        {
+            null => (null, null),
+            VerifyCause.None or VerifyCause.Unplayed => (VerifyCause.Lookup, false),
+            _ => (cause, false),
+        };
     }
 }

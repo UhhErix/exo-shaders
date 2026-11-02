@@ -261,6 +261,96 @@ public partial class AppTests
         Assert.Throws<ArgumentException>(() => k.VerifyRefusal("no such game"));
     }
 
+    /// <summary>Phantom Blade Zero as it measured: a warm served 99.8% of the sample at about a millisecond, played or not, while
+    /// its first launch's warmed pipelines took a median 126 ms. A warm reads what a warm wrote, so the sample alone can't see
+    /// the game look them up under other keys, the first launch does: no reach, cause lookup, and no recompile.</summary>
+    [Fact]
+    public async Task A_warm_served_while_the_first_launch_compiled_is_a_lookup_and_is_not_compiled_again()
+    {
+        var (k, warmer, plan) = await Compiled(1200);
+        File.WriteAllBytes(Path.Combine(k.Store.GameDir(_game.Id), "recording.db"), DbOf(plan.Take(600)));
+        FirstLaunch(k, 126);
+        warmer.OnWork = work =>
+        {
+            Directory.CreateDirectory(Path.Combine(work, "stage"));
+            File.WriteAllLines(Path.Combine(work, "stage", "scskiller_warm_times.csv"), Enumerable.Range(0, 1200).Select(i => $"{i},{(i >= 1198 ? 37.6 : 1.05):0.00},1"));
+        };
+        var found = await k.VerifyAsync(_game.Id);
+        Assert.Equal((1200L, 0.998, 1.0, 0.997, false, VerifyCause.Lookup), (found!.Sampled, found.HitRate, found.PlayedHitRate!.Value, found.UnplayedHitRate!.Value, found.Reaches!.Value, found.Cause));
+        Assert.True(k.Games.Single().NeedsFirstLaunch);
+        var d = k.Diagnose(_game.Id);
+        Assert.Equal((WarmVerdict.Missed, true), (d.Verdict, d.NeedsFirstLaunch));
+        var started = warmer.Started.Count;
+        k.Enqueue(_game.Id);
+        k.Compile(_game.Id);
+        Assert.Empty(k.Queue);
+        Assert.Equal(started, warmer.Started.Count);
+    }
+
+    /// <summary>A verdict stored when a served sample meant the compile reaches the game is judged again from its rates on the next
+    /// read, and kept: Phantom Blade Zero's stored reaches true, cause none. A launch since judges one that had none to go by, and a
+    /// first launch that used the compile keeps its yes.</summary>
+    [Theory]
+    [InlineData(126.0, true, false, VerifyCause.Lookup)]
+    [InlineData(126.0, null, false, VerifyCause.Lookup)]
+    [InlineData(5.0, null, true, VerifyCause.None)]
+    [InlineData(5.0, true, true, VerifyCause.None)]
+    public async Task A_stored_verdict_is_judged_again_on_the_next_read(double firstLaunchMs, bool? stored, bool want, string wantCause)
+    {
+        var (k, warmer, plan) = await Compiled(100);
+        File.WriteAllBytes(Path.Combine(k.Store.GameDir(_game.Id), "recording.db"), DbOf(plan.Take(50)));
+        warmer.OnWork = work =>
+        {
+            Directory.CreateDirectory(Path.Combine(work, "stage"));
+            File.WriteAllLines(Path.Combine(work, "stage", "scskiller_warm_times.csv"), Enumerable.Range(0, 100).Select(i => $"{i},1.05,1"));
+        };
+        var measured = await k.VerifyAsync(_game.Id);   // no launch yet: served, not judged, with this driver and build
+        Assert.Equal((null, VerifyCause.None), (measured!.Reaches, measured.Cause));
+        var rec = k.Store.LoadGame(_game.Id);
+        rec.Verify = measured with { Reaches = stored };
+        k.Store.SaveGame(_game.Id, rec);
+        FirstLaunch(k, firstLaunchMs);
+        k.RefreshGame(_game.Id);
+        var v = k.Store.LoadGame(_game.Id).Verify!;
+        Assert.Equal((want, wantCause), (v.Reaches!.Value, v.Cause));
+        Assert.Equal((measured.Sampled, measured.HitRate, measured.At), (v.Sampled, v.HitRate, v.At));   // what was measured stays
+        Assert.Equal(!want, k.Games.Single().NeedsFirstLaunch);
+    }
+
+    [Theory]
+    [InlineData(1.0, 0.997, 126.0, 1800, VerifyCause.Lookup, false)]   // Phantom Blade Zero
+    [InlineData(1.0, 0.997, 5.0, 1800, VerifyCause.None, true)]
+    [InlineData(1.0, 0.997, null, 0, VerifyCause.None, null)]          // no launch judged it yet
+    [InlineData(1.0, 0.997, 126.0, 50, VerifyCause.None, null)]        // too few to judge
+    [InlineData(null, 0.95, 126.0, 1800, VerifyCause.Lookup, false)]   // served, none of it played
+    [InlineData(null, 0.95, null, 0, VerifyCause.Unplayed, null)]
+    [InlineData(0.95, 0.05, 126.0, 1800, VerifyCause.Retention, false)]
+    [InlineData(0.05, 0.95, null, 0, VerifyCause.Lookup, false)]
+    [InlineData(0.05, 0.05, null, 0, VerifyCause.CacheLost, false)]
+    [InlineData(0.5, 0.95, 126.0, 1800, null, null)]                   // the sample says nothing
+    public void The_first_launch_has_the_last_word_on_a_served_sample(double? played, double? unplayed, double? median, long known, string? cause, bool? reaches) =>
+        Assert.Equal((cause, reaches), GameDiagnostics.Judge(played, unplayed, median, known));
+
+    async Task<(ScsKiller K, FakeWarmer Warmer, List<PsoDb.Rec> Plan)> Compiled(int pipelines)
+    {
+        var plan = Pipelines(pipelines);
+        var warmer = new FakeWarmer();
+        var k = Killer(new FakeReader(Unreal), new FakePlanner(genDb: DbOf(plan), records: plan), warmer, game: _game);
+        k.ProcessNames = () => new HashSet<string>();
+        await k.ScanAsync(default);
+        await WarmOnce(k, _game.Id);
+        k.Remove(_game.Id);
+        return (k, warmer, plan);
+    }
+
+    /// <summary>The first launch after the warm: 150 warmed pipelines at <paramref name="ms"/>, its exe gone.</summary>
+    void FirstLaunch(ScsKiller k, double ms)
+    {
+        var after = k.Store.LoadGame(_game.Id).WarmedAt!.Value.AddMinutes(1).ToUnixTimeMilliseconds();
+        File.WriteAllLines(Path.Combine(_exeDir, "scskiller_creates.csv"), [$"#session,{after},{Path.GetFileName(_game.ExePath)}",
+            .. Enumerable.Range(0, 150).Select(i => FormattableString.Invariant($"{i}.0,C,1,1,{ms:0.000},k{i},0,1,0"))]);
+    }
+
     /// <summary>The check's warm runs under the game's exe name from its stage folder, which on Phantom Blade Zero stopped the
     /// check before its first create (0 timed): the watcher took it for the game playing, and GameRunning(g), a guard of the game's
     /// folder, counts a staged warm as the game. The real watcher and process checks run here, on a faked process list: the warm
