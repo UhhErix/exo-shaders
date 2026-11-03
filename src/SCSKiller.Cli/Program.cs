@@ -36,7 +36,6 @@ const string Usage = """
       nvidia-auto-shader off|low|medium|high      switch NVIDIA's Auto Shader Compilation (admin, asks first)
       pipeline-cache-access                       once: let the account read D3D12's pipeline events without admin, so Exo
                                                   measures each game's cache use while it plays (admin, asks first)
-      cleanup-guard [on|off]                      older name for shader-cleanup: on = keep, off = allow, none = read only
         (cache set / nvidia-auto-shader / shader-cleanup, as the app runs them elevated: --yes skips the question, --result <file>
          writes the outcome as a JSON line, --for-user <SID> refuses a different account's elevation)
       record install|uninstall <game>
@@ -113,7 +112,6 @@ try
         CliCommands.NvidiaSnapshot => Stray(1, "nvidia-snapshot") ?? NvidiaSnapshot(),
         CliCommands.NvidiaAutoShader => Stray(2, "nvidia-auto-shader off|low|medium|high") ?? NvidiaAutoShader(),
         "pipeline-cache-access" => PipelineCacheAccess(),
-        "cleanup-guard" => ShaderCleanup(),   // the fork's older name for shader-cleanup
         CliCommands.FetchCodecs => FetchCodecs(args.ElementAtOrDefault(1) ?? throw new ArgumentException("usage: scskiller fetch-codecs <dir>")),
         _ => Fail($"unknown command '{args[0]}'\n{Usage}"),
     };
@@ -895,18 +893,13 @@ int NvidiaAutoShader()
 }
 
 // Windows' automatic disk cleanup and D3DSCache (D3DSCache.KeepFromCleanup): keep|allow, as upstream's app runs it elevated.
-// cleanup-guard [on|off] is the fork's older name for it, kept as an alias (on = keep, off = allow, none = read only).
 int ShaderCleanup()
 {
-    var alias = args[0] == "cleanup-guard";
-    var usage = alias ? "cleanup-guard [on|off]" : "shader-cleanup keep|allow (Windows)";
+    const string usage = "shader-cleanup keep|allow (Windows)";
     bool? keep = args.ElementAtOrDefault(1) switch
     {
-        "keep" when !alias => true,
-        "allow" when !alias => false,
-        "on" when alias => true,
-        "off" when alias => false,
-        null when alias => null,
+        "keep" => true,
+        "allow" => false,
         _ => throw new ArgumentException(usage),
     };
     if (!OperatingSystem.IsWindows()) return Fail(usage);

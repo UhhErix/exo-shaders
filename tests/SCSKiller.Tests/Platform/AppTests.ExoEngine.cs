@@ -287,6 +287,36 @@ public partial class AppTests
         Assert.Equal(started, warmer.Started.Count);
     }
 
+    /// <summary>A no holds for the engine that said it: a new engine may reach the game, so it clears once, as a new driver or game
+    /// build does, the game compiles again and its first launch judges that compile. A record from before engines were kept counts as another's.</summary>
+    [Theory]
+    [InlineData("1.4.3")]
+    [InlineData(null)]
+    public async Task Another_engine_clears_a_no_once_and_the_same_engine_still_refuses(string? engine)
+    {
+        var (k, warmer, plan) = await Compiled(100);
+        File.WriteAllBytes(Path.Combine(k.Store.GameDir(_game.Id), "recording.db"), DbOf(plan.Take(50)));
+        FirstLaunch(k, 126);
+        warmer.OnWork = work =>
+        {
+            Directory.CreateDirectory(Path.Combine(work, "stage"));
+            File.WriteAllLines(Path.Combine(work, "stage", "scskiller_warm_times.csv"), Enumerable.Range(0, 100).Select(i => $"{i},1.05,1"));
+        };
+        var found = await k.VerifyAsync(_game.Id);
+        Assert.Equal((false, AppVersion.Current.ToString()), (found!.Reaches!.Value, found.Engine));
+        Assert.True(k.Games.Single().NeedsFirstLaunch);
+        k.Enqueue(_game.Id);
+        Assert.Empty(k.Queue);   // the same engine still refuses
+        var rec = k.Store.LoadGame(_game.Id);
+        rec.Verify = found with { Engine = engine };
+        k.Store.SaveGame(_game.Id, rec);
+        k.RefreshGame(_game.Id);
+        Assert.False(k.Games.Single().NeedsFirstLaunch);
+        Assert.Null(k.Diagnose(_game.Id).Verify);
+        k.Enqueue(_game.Id);
+        Assert.Single(k.Queue);
+    }
+
     /// <summary>A verdict stored when a served sample meant the compile reaches the game is judged again from its rates on the next
     /// read, and kept: Phantom Blade Zero's stored reaches true, cause none. A launch since judges one that had none to go by, and a
     /// first launch that used the compile keeps its yes.</summary>

@@ -31,10 +31,14 @@ public sealed class GogSource(IEnumerable<(string Id, string? Name, string Dir, 
             try { install = GameFiles.DirKey(at); }
             catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { continue; }
             if (id.Length == 0 || leftOut(install) || !Directory.Exists(install) || dirs.Contains(install) || ids.Contains(id)) continue;
-            if (Read(id, name ?? GameFiles.FolderName(install), install, exeHint) is not { } game) continue;
-            dirs.Add(install);
-            ids.Add(id);
-            games.Add(game);
+            try
+            {
+                if (Read(id, name ?? GameFiles.FolderName(install), install, exeHint) is not { } game) continue;
+                dirs.Add(install);
+                ids.Add(id);
+                games.Add(game);
+            }
+            catch (Exception e) when (e is not OperationCanceledException) { GameFiles.Skip("GOG", $"gog:{id}", e); }   // one game's, never the list's
         }
         return games;
     }

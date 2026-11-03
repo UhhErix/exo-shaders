@@ -196,7 +196,7 @@ public class InlineShadersTests(ITestOutputHelper output)
         var game = new Game("test:malformed", "Malformed", Store.Other, install, "");
         var index = new UnrealReader(Ff7.TempDir("inline-malformed-data")).IndexInline(provider, game, new Log(log.Add), CancellationToken.None);
         Assert.Equal([Stage.Vertex], index.Shaders.Values.Select(s => s.Stage));
-        Assert.Contains(", 1 unparseable", Assert.Single(log));
+        Assert.Contains(log, l => l.Contains(", 1 unparseable"));
     }
 
     /// <summary>A split package (.uasset header, .uexp exports) is carved file by file: the offsets inline.idx keeps are

@@ -12,8 +12,7 @@ public sealed class ShaderCleanupCliTests
 {
     [Theory]
     [InlineData("shader-cleanup", "shader-cleanup keep|allow (Windows)")]
-    [InlineData("cleanup-guard", "cleanup-guard [on|off]")]
-    public void The_cli_refuses_an_argument_it_does_not_know_before_touching_anything(string command, string usage)
+        public void The_cli_refuses_an_argument_it_does_not_know_before_touching_anything(string command, string usage)
     {
         if (!OperatingSystem.IsWindows() || Elevated.CliExe() is not { } cli) return;
         var root = Directory.CreateTempSubdirectory("scskiller-cleanup-").FullName;

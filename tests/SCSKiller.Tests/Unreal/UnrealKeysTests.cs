@@ -128,11 +128,11 @@ public class UnrealKeyScanTests
 
         var other = game with { Id = "steam:2", ExePath = Path.Combine(dir, "other.exe") };
         File.WriteAllBytes(other.ExePath, [.. "MZ"u8, .. new byte[100]]);
-        Assert.Null(keys.Get(other, _ => true, out why));
+        Assert.Empty(keys.Get(other, _ => true, out why));
         Assert.Contains("PE image", why);
         var scan = Path.Combine(data, "games", "steam_2", "aes.scan");
         File.WriteAllLines(scan, [File.ReadAllLines(scan)[0], "remembered"]);
-        Assert.Null(keys.Get(other, _ => true, out var again));
+        Assert.Empty(keys.Get(other, _ => true, out var again));
         Assert.Equal("remembered", again);
 
         var negative = Pe([.. code]);

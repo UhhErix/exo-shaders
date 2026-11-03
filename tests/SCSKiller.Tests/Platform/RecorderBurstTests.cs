@@ -16,13 +16,14 @@ public class RecorderBurstTests(ITestOutputHelper output)
 
     (string Out, string Dir) Burst(string mode)
     {
-        var dir = Directory.CreateTempSubdirectory("scsk-burst-").FullName;
+        var root = Directory.CreateTempSubdirectory("scsk-burst-").FullName;
+        var dir = Directory.CreateDirectory(Path.Combine(root, "game")).FullName;   // the recorder refuses a recorder folder inside the game's
         File.Copy(Path.Combine(Ff7.ProxyBin, "selftest.exe"), Path.Combine(dir, "selftest.exe"));
         File.Copy(Path.Combine(Ff7.ProxyBin, "d3d12.dll"), Path.Combine(dir, "d3d12.dll"));
         var psi = new ProcessStartInfo(Path.Combine(dir, "selftest.exe"), $"burst {N} {Threads} {mode} {Shaders}") { RedirectStandardOutput = true };
-        psi.Environment["SCSKILLER_TEST_RECORDER_DIR"] = Path.Combine(dir, "recorder");
-        psi.Environment["SCSKILLER_TEST_LEDGER_DIR"] = Path.Combine(dir, "ledger");
-        psi.Environment["SCSKILLER_DATA_DIR"] = Path.Combine(dir, "data");
+        psi.Environment["SCSKILLER_TEST_RECORDER_DIR"] = Path.Combine(root, "recorder");
+        psi.Environment["SCSKILLER_TEST_LEDGER_DIR"] = Path.Combine(root, "ledger");
+        psi.Environment["SCSKILLER_DATA_DIR"] = Path.Combine(root, "data");
         using var p = Process.Start(psi)!;
         var o = p.StandardOutput.ReadToEnd();
         p.WaitForExit();

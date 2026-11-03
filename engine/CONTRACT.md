@@ -256,7 +256,7 @@ type Game = {
   id: string                    // "steam:2909400"; stable key for every per-game method
   name: string
   store: string                 // "Steam", "Epic Games", "Xbox / Game Pass", "EA app", "GOG", "Ubisoft Connect", "Battle.net",
-                                // "Amazon Games", "PURPLE", "HoYoPlay", "Gaijin", "Riot Client", "Other", "Added by you", or
+                                // "Amazon Games", "PURPLE", "HoYoPlay", "GRYPHLINK", "WeGame", "Gaijin", "Riot Client", "Other", "Added by you", or
                                 // the label Exo gave the game through exo.library ("itch.io", "Added in Exo", ...)
   manual: boolean               // added by the user (rename / game folder / remove = forget)
   exe: string, exeName: string, installDir: string
@@ -544,7 +544,7 @@ compile into the same driver cache, so a compile by one can read as a changed ca
 `lookup` (the game and the warm use different keys: what the game compiled isn't served to the warm, or the sample is served
 to the warm while the first launch's warmed pipelines took a median of 20 ms or more), `cacheLost` (neither), `unplayed` (only
 the warm's own were tested); absent: too mixed to say. A warm reads what a warm wrote, so a served sample alone never means
-the compile reaches the game. `verify.reaches: false` makes `needsFirstLaunch` true for that driver and build. A stored
+the compile reaches the game. `verify.reaches: false` makes `needsFirstLaunch` true for that driver, game build and engine version: another of any of them clears it once, the game compiles again, and its first launch judges that compile. A stored
 `verify` that doesn't say false is judged again from its rates whenever the game is evaluated: a launch since can turn it into
 `lookup`, `sampled` and the rates stay as measured.
 

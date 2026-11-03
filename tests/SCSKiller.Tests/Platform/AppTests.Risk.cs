@@ -345,7 +345,7 @@ public partial class AppTests
         BattlEyeBeside();
         var k = Killer(new FakeReader(Unreal), new NeedsRecordingPlanner());
         await k.ScanAsync(default);
-        Assert.Equal((GameStatus.Unsupported, "needs a recording, which BattlEye blocks"), (k.Games.Single().Status, k.Games.Single().StatusReason));
+        Assert.Equal((GameStatus.Unsupported, "needs a recording. The game contains anti-cheat: allow the recorder in games with anti-cheat in Settings, at your own risk"), (k.Games.Single().Status, k.Games.Single().StatusReason));
         k.Settings = k.Settings with { RecordAntiCheatGames = true };
         await k.SettingsRefresh;
         var s = k.Games.Single();
@@ -400,7 +400,7 @@ public partial class AppTests
         var s = k.Games.Single();
         Assert.Equal((false, true), (s.RiskEligible, s.RiskNoLaunch));
         Assert.Equal("No recording session: SCSKiller can't start games from HoYoPlay.", ScsKiller.NoLaunchNote("HoYoPlay"));
-        Assert.Equal((GameStatus.Unsupported, "needs a recording, which its anti-cheat blocks", "Blocked by anti-cheat"), (s.Status, s.StatusReason, Format.ShortNote(s)));   // HoYoPlay games count as anti-cheat
+        Assert.Equal((GameStatus.Unsupported, "needs a recording. The game contains anti-cheat", "Contains anti-cheat"), (s.Status, s.StatusReason, Format.ShortNote(s)));   // HoYoPlay games count as anti-cheat
         Assert.Throws<InvalidOperationException>(() => k.SetOfflineRecording(game.Id, true));
         k.Settings = k.Settings with { RecordAntiCheatGames = false };
         await k.SettingsRefresh;

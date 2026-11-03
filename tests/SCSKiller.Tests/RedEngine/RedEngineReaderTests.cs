@@ -501,7 +501,7 @@ public class RedEngineReaderTests
         var nv = recs.Take(199).Select((r, i) => N(r, 12, i < 150 ? 0u : 17u)).ToList();   // one record without a state: 199 of 200
         Assert.Equal(new RtCollections.Nv(12, 1, 0), PlanBuilder.RasterNv(Ff7.Nvidia, "Unreal", recs, nv));
         Assert.Null(PlanBuilder.RasterNv(Ff7.Amd, "Unreal", recs, nv));
-        Assert.Null(PlanBuilder.RasterNv(Ff7.Nvidia, "Unreal", recs, nv.Take(197)));                    // 197 of 200: under 99%
+        Assert.Null(PlanBuilder.RasterNv(Ff7.Nvidia, "Unreal", recs, [.. nv.Take(197), .. recs.Skip(197).Take(2).Select(r => N(r, 5))]));   // 197 of the 199 with a state: under 99%
         Assert.Null(PlanBuilder.RasterNv(Ff7.Nvidia, "Unreal", recs, [.. nv.Take(150), .. recs.Skip(150).Take(49).Select(r => N(r, 5))])); // two slots
         Assert.Null(PlanBuilder.RasterNv(Ff7.Nvidia, "Unreal", recs, [.. nv, .. recs.Select(r => N(r, uint.MaxValue, 17))]));   // each one's last state: no slot
         Assert.Equal(new RtCollections.Nv(12, 1, 0), PlanBuilder.RasterNv(Ff7.Nvidia, "Unreal", recs, [.. recs.Select(r => N(r, 5)), .. nv]));   // nor an earlier one

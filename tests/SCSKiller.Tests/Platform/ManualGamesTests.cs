@@ -138,7 +138,7 @@ public sealed class ManualGamesTests : IDisposable
         Assert.Contains("many programs", ManualSource.RootProblem(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), exe, []));
         var library = Dir("Library");
         foreach (var g in new[] { "One", "Two" }) File.WriteAllBytes(Path.Combine(Dir("Library", g), g + ".exe"), Exe());
-        Assert.Contains("several games", ManualSource.RootProblem(library, exe, []));
+        Assert.Contains("several games", ManualSource.RootProblem(library, Path.Combine(library, "elsewhere", "x.exe"), []));
         var dcs = Dir("DCS World");   // two builds of one program: bin\DCS.exe and bin-mt\DCS.exe
         foreach (var b in new[] { "bin", "bin-mt" }) File.WriteAllBytes(Path.Combine(Dir("DCS World", b), "DCS.exe"), Exe("d3d11.dll"));
         Assert.Null(ManualSource.RootProblem(dcs, Path.Combine(dcs, "bin-mt", "DCS.exe"), []));
@@ -146,7 +146,7 @@ public sealed class ManualGamesTests : IDisposable
         File.WriteAllBytes(Path.Combine(Dir("DCS World", "Third"), "third.exe"), Exe());
         Assert.Contains("several games", ManualSource.RootProblem(dcs, Path.Combine(dcs, "bin-mt", "DCS.exe"), []));
         var listed = new Game("steam:1", "Listed Game", Store.Steam, Dir("Shelf", "Listed"), Path.Combine(_root, "Shelf", "Listed", "l.exe"));
-        Assert.Contains("Listed Game", ManualSource.RootProblem(Path.Combine(_root, "Shelf"), exe, [listed]));
+        Assert.Contains("Listed Game", ManualSource.RootProblem(Path.Combine(_root, "Shelf"), Path.Combine(_root, "Shelf", "Mine", "m.exe"), [listed]));
 
         var (unreal, _, shipping) = UnrealLayout(Path.Combine(_root, "Unreal Game"));
         File.WriteAllBytes(Path.Combine(Dir("Unreal Game", "Engine", "Binaries", "ThirdParty"), "helper.exe"), Exe());

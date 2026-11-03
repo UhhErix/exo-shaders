@@ -57,7 +57,7 @@ public partial class AppTests
     public async Task An_anti_cheat_game_with_no_plan_source_is_unsupported()
     {
         var s = (await AntiCheatGame().ScanAsync(default)).Single();
-        Assert.Equal((GameStatus.Unsupported, "needs a recording, which EasyAntiCheat blocks", true), (s.Status, s.StatusReason, s.NotPlanned));   // "Not supported"
+        Assert.Equal((GameStatus.Unsupported, "needs a recording. The game contains anti-cheat: allow the recorder in games with anti-cheat in Settings, at your own risk", true), (s.Status, s.StatusReason, s.NotPlanned));   // "Not supported"
     }
 
     /// <summary>An EasyAntiCheat game an offline session can record (Games.OfflineEac), with no recording yet: "Needs an offline
@@ -66,7 +66,7 @@ public partial class AppTests
     public Task An_offline_session_game_without_a_recording_needs_one() => Listed(async () =>
     {
         var s = (await AntiCheatGame().ScanAsync(default)).Single();
-        Assert.Equal((GameStatus.NeedsRecording, "EasyAntiCheat blocks the recorder, but you can record at your own risk with an offline session.", false),
+        Assert.Equal((GameStatus.NeedsRecording, ScsKiller.OfflineSessionNote, false),
             (s.Status, s.StatusReason, s.NotPlanned));
         Assert.True(ScsKiller.NeedsOfflineSession(s) && s.OfflineEligible);
         Assert.Equal(s.StatusReason, Format.ShortNote(s));
@@ -135,7 +135,7 @@ public partial class AppTests
         var s = (await k.ScanAsync(default)).Single();
         Assert.Equal((AntiCheat.Other, ScsKiller.SkipAntiCheat, false), (s.AntiCheat, s.RecorderSkip, s.RiskEligible));
         Assert.Equal(stateIndependent ? (GameStatus.Ready, false) : (GameStatus.Unsupported, true), (s.Status, s.NotPlanned));
-        Assert.StartsWith(stateIndependent ? Planner.UntestedNote : "needs a recording, which its anti-cheat blocks", s.StatusReason);
+        Assert.StartsWith(stateIndependent ? Planner.UntestedNote : ScsKiller.AntiCheatNoRecordingStart, s.StatusReason);
 
         k.Settings = k.Settings with { RecordAntiCheatGames = true };
         await k.SettingsRefresh;
@@ -274,7 +274,7 @@ public partial class AppTests
     [Theory]
     [InlineData(GpuVendor.Nvidia, "nvidia-1", "Dx11", "compiles every DirectX 11 shader")]
     [InlineData(GpuVendor.Amd, "amd-1", "Dx11", "compiles every DirectX 11 shader but the vertex shaders")]
-    [InlineData(GpuVendor.Nvidia, "nvidia-1", null, "compiles every DirectX 11 shader (the game may run on either). For DirectX 12, needs a recording, which its anti-cheat blocks")]
+    [InlineData(GpuVendor.Nvidia, "nvidia-1", null, "compiles every DirectX 11 shader (the game may run on either). For DirectX 12, needs a recording. The game contains anti-cheat: allow the recorder in games with anti-cheat in Settings, at your own risk")]
     public async Task Overwatch_on_Steam_compiles_offline_and_never_gets_the_recorder(GpuVendor vendor, string profile, string? api, string reason)
     {
         Tank.TankReaderTests.WriteStorage(_game.InstallDir, Tank.TankReaderTests.VsAndPs, api == null ? null : "GraphicsAPI = " + api);

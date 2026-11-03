@@ -37,10 +37,13 @@ public sealed partial class ScsKiller
 
     string? VerifyBuild(Game g) => g.Version ?? ExeStamp(g);
 
-    /// <summary>The last check says a compile doesn't reach this game, on this driver and build: compiling it again would
-    /// replay everything for nothing. The game's own first launch fills what it reads. A new driver or build ends this.</summary>
-    bool NeedsFirstLaunchRun(Game g, GameRecord r) =>
-        r.Verify is { Reaches: false } v && v.DriverId == Snapshot().Id && v.Build == VerifyBuild(g);
+    /// <summary>The check is about this driver, game build and engine: another of any of them is another compile.</summary>
+    bool VerifyCurrent(Game g, VerifyRecord v) => v.DriverId == Snapshot().Id && v.Build == VerifyBuild(g) && v.Engine == AppVersion.Current.ToString();
+
+    /// <summary>The last check says a compile doesn't reach this game, on this driver, build and engine: compiling it again would
+    /// replay everything for nothing. The game's own first launch fills what it reads. A new driver, build or engine ends this,
+    /// once: the game compiles again and its first launch judges that compile.</summary>
+    bool NeedsFirstLaunchRun(Game g, GameRecord r) => r.Verify is { Reaches: false } v && VerifyCurrent(g, v);
 
     public const string NeedsFirstLaunchReason = "a compile doesn't reach this game on this driver: compiling again wouldn't help. Its first launch builds what it needs";
 
@@ -127,7 +130,7 @@ public sealed partial class ScsKiller
             double? unplayedRate = created > playedCreated ? (double)(hits - playedHits) / (created - playedCreated) : null;
             var (median, known) = FirstKnown(g, rec);
             var (cause, reaches) = GameDiagnostics.Judge(Round(playedRate), Round(unplayedRate), median, known);
-            var found = new VerifyRecord(DateTimeOffset.Now, snap.Id, VerifyBuild(g), created, Math.Round(rate, 3), Round(playedRate), Round(unplayedRate), reaches, cause);
+            var found = new VerifyRecord(DateTimeOffset.Now, snap.Id, VerifyBuild(g), created, Math.Round(rate, 3), Round(playedRate), Round(unplayedRate), reaches, cause, AppVersion.Current.ToString());
             AppStore.Locked(Path.Combine(Store.GameDir(gameId), "state.json"), () =>
             {
                 var r = Store.LoadGame(gameId);
@@ -161,7 +164,7 @@ public sealed partial class ScsKiller
     /// new driver or build ends it (<see cref="NeedsFirstLaunchRun"/>).</summary>
     VerifyRecord? Rejudged(Game g, GameRecord rec)
     {
-        if (rec.Verify is not { Reaches: not false } v) return rec.Verify;
+        if (rec.Verify is not { Reaches: not false } v || !VerifyCurrent(g, v)) return rec.Verify;
         var (median, known) = FirstKnown(g, rec);
         var (cause, reaches) = GameDiagnostics.Judge(v.PlayedHitRate, v.UnplayedHitRate, median, known);
         if ((cause, reaches) == (v.Cause, v.Reaches)) return v;
@@ -248,8 +251,8 @@ public sealed partial class ScsKiller
         var rayQuery = OwnDriver == GpuVendor.Nvidia ? SessionLog.ReadRayQueryKeys(RayQueryKeysPath(gameId)) : null;
         var (last, median, known, coverage, over20, played) = GameDiagnostics.Read(Path.Combine(SessionDir(g), "scskiller_creates.csv"), Path.GetFileName(g.ExePath), rec.WarmedAt, ExeGone, rayQuery);
         if (rec.LastPlay is { } window && (played == null || window.To > played)) played = window.To;
-        // a check of another driver or build says nothing of this compile
-        var verify = rec.Verify is { } v && v.DriverId == Snapshot().Id && v.Build == VerifyBuild(g) ? v : null;
+        // a check of another driver, build or engine says nothing of this compile
+        var verify = rec.Verify is { } v && VerifyCurrent(g, v) ? v : null;
         return new(last, median, known, played, GameDiagnostics.Verdict(rec.WarmedAt != null, IsUnreached(rec), verify?.Reaches, median, known, coverage, over20), verify, NeedsFirstLaunchRun(g, rec), s.RecorderForeign);
     }
 }

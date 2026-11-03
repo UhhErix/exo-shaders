@@ -1263,7 +1263,7 @@ public class WarmerTests : IDisposable
         var r = await new Warmer(Vendor, _exe).Start(Game, Work("nodone"), new WarmOptions(1, WarmPriority.BelowNormal), null).Completion;
         Assert.Equal(WarmOutcome.Failed, r.Outcome);
         Assert.Equal(0, r.Done);   // no item states to go by: where the next compile goes on
-        Assert.False(r.Resumable);   // not a clean point: what it compiled may not be written
+        Assert.True(r.Resumable);   // 1.4.4: its progress stays, compiling again goes on from its first unfinished item
     }
 
     /// <summary>The tree a job takes in and a pause suspends: an older process whose exited parent's pid the warm now has

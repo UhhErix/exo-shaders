@@ -19,7 +19,7 @@ public enum WarmVerdict { NoData, Helped, Partly, Missed }
 /// <see cref="ScsKiller.UnreachedMedianMs"/>; <see cref="PlayedHitRate"/>: of those the game itself compiled in play (what they
 /// name, by stage and root signature, is in its recording); null with none in the sample. <see cref="Reaches"/>: whether a
 /// compile gets to this game; null when no launch judged it yet. <see cref="Cause"/>: <see cref="VerifyCause"/>'s.</summary>
-public sealed record VerifyRecord(DateTimeOffset At, string? DriverId, string? Build, long Sampled, double HitRate, double? PlayedHitRate, double? UnplayedHitRate, bool? Reaches, string? Cause);
+public sealed record VerifyRecord(DateTimeOffset At, string? DriverId, string? Build, long Sampled, double HitRate, double? PlayedHitRate, double? UnplayedHitRate, bool? Reaches, string? Cause, string? Engine = null);
 
 public static class VerifyCause
 {

@@ -26,7 +26,7 @@ repository's root `CHANGELOG.md`.
 - A sample served to the warm no longer counts as reaching the game when its first launch still compiled what was warmed:
   that is `lookup`, `needsFirstLaunch` is true and it isn't queued again. A warm reads what a warm wrote (Phantom Blade Zero:
   99.8% served at about 1 ms, the first launch's warmed pipelines a median 126 ms). A stored verdict is judged again when
-  the game is next evaluated.
+  the game is next evaluated. A new engine version clears a verdict once, as a new driver or game build does.
 - An offline session's cleanup in a folder it can't list keeps the session for a retry. It took such a folder for another
   copy's and dropped the session, leaving the recorder's files with no record.
 - Riot games are never read, planned, compiled or recorded, whatever their folder holds or their record said.

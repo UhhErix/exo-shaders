@@ -71,7 +71,7 @@ public class GameVerdictsTests : IDisposable
             Entry(GameVerdicts.UnsupportedVerdict, "epic:never", "anti-cheat")))!;
         Assert.Equal((Precompiles, (GameVerdicts.Verdict?)null), (list.NoStutter(G("steam:42"), null), list.Unsupported(G("steam:42"), null)));
         Assert.Equal(new GameVerdicts.Verdict(GameVerdicts.UnsupportedYetVerdict, "SCSKiller can't read this game's shaders yet"), list.Unsupported(G("epic:yet"), null));
-        Assert.Equal(new GameVerdicts.Verdict(GameVerdicts.UnsupportedVerdict, "Its anti-cheat doesn't allow it"), list.Unsupported(G("epic:never"), null));
+        Assert.Equal(new GameVerdicts.Verdict(GameVerdicts.UnsupportedVerdict, "The game contains anti-cheat"), list.Unsupported(G("epic:never"), null));
         Assert.Null(list.NoStutter(G("epic:never"), null));
     }
 

@@ -167,7 +167,7 @@ public class StablePipelineCacheTests
     {
         var pos = In("SV_Position", 0, 0, 0xF, 3, 1);
         var vs = Shader("rect-vs", Stage.Vertex, [In("SV_VertexID", 0, 0, 1, 1, 6)], [pos, In("TEXCOORD", 0, 1), In("TEXCOORD", 1, 2)]) with { Counts = new(1, 1, 0, 0) };
-        var ps = Shader("depth-ps", Stage.Pixel, [pos], [new SigElement("SV_Depth", 0, -1, 1, 0, 3)]);
+        var ps = Shader("depth-ps", Stage.Pixel, [pos, In("TEXCOORD", 7, 5)], [new SigElement("SV_Depth", 0, -1, 1, 0, 3)]);   // reads what the VS doesn't write
         var global = new ShaderMap("g", "Global", "PCD3D_SM6", [vs.Sha1, ps.Sha1]);
         var shipped = new ShaderMap("SHf_PCD3D_SM6:00000001", "PipelineCache", "PCD3D_SM6", [vs.Sha1, ps.Sha1], IsPipeline: true);
         var dir = Ff7.TempDir("stable-cache-pair");
