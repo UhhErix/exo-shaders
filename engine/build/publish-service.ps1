@@ -22,11 +22,11 @@
 
 [CmdletBinding()]
 param(
-    # The native files built from proxy\ with -DSCSK_VERSION=1.4.3, kept in prebuilt\.
+    # The native files built from proxy\ with -DSCSK_VERSION=1.4.4, kept in prebuilt\.
     [string]$NativeFrom = (Join-Path $PSScriptRoot '..\prebuilt'),
     [string]$Out,
     # Every assembly's version. Core's test hooks (SCSK_TEST_HOOKS) build in only under 0.0.0-internal, a plain build's.
-    [string]$Version = '1.4.3',
+    [string]$Version = '1.4.4',
     [switch]$SkipCli
 )
 
