@@ -815,9 +815,9 @@ public class UnrealReaderTests(ITestOutputHelper output)
         EncryptedPak(Path.Combine(paks, "B.pak"), KeyBytes(33));
         UnreadableEncryptedToc(Path.Combine(paks, "0.utoc"));
         var game = new Game("test:keys-any", "Keys", Store.Other, install, "");
-        Assert.False(reader.SetKey(game, Key(65)));
-        Assert.True(reader.SetKey(game, Key(33)));
-        Assert.True(reader.SetKey(game, Key(1)));
+        Assert.False(reader.SetKey(game, Key(65)).Stored);
+        Assert.True(reader.SetKey(game, Key(33)).Stored);
+        Assert.True(reader.SetKey(game, Key(1)).Stored);
     }
 
     /// <summary>A readable index with encrypted entries takes any key in CUE4Parse's test: a key counts only when it decrypts
@@ -832,8 +832,8 @@ public class UnrealReaderTests(ITestOutputHelper output)
         PakOfEncryptedEntries(Path.Combine(paks, "P.pak"), KeyBytes(1), ("Proj/Content/a.uasset", package),
             ("Proj/Content/ShaderArchive-Proj-PCD3D_SM5.ushaderbytecode", new byte[32]));
         var game = new Game("test:keys-entries", "Keys", Store.Other, install, "");
-        Assert.False(reader.SetKey(game, Key(65)));
-        Assert.True(reader.SetKey(game, Key(1)));
+        Assert.False(reader.SetKey(game, Key(65)).Stored);
+        Assert.True(reader.SetKey(game, Key(1)).Stored);
     }
 
     /// <summary>A pak whose index is encrypted under a non-zero key GUID (the footer's EncryptionKeyGuid): its key is taken
@@ -853,8 +853,8 @@ public class UnrealReaderTests(ITestOutputHelper output)
         BitConverter.TryWriteBytes(bytes.AsSpan(bytes.Length - 36), 1L << 40);   // the footer's index offset
         File.WriteAllBytes(broken, bytes);
         var game = new Game("test:keys-guid", "Guid", Store.Other, install, "");
-        Assert.False(reader.SetKey(game, Key(65)));
-        Assert.True(reader.SetKey(game, Key(1)));
+        Assert.False(reader.SetKey(game, Key(65)).Stored);
+        Assert.True(reader.SetKey(game, Key(1)).Stored);
         Assert.Single(reader.Index(game, Ue427, null, CancellationToken.None).Shaders);
     }
 
@@ -872,8 +872,8 @@ public class UnrealReaderTests(ITestOutputHelper output)
         EncryptedPak(Path.Combine(paks, "pakchunk0-Windows.pak"), KeyBytes(1), dbd: KeyBytes(100)[..28],
             files: ("DeadByDaylight/Content/ShaderArchive-DeadByDaylight-PCD3D_SM5.ushaderbytecode", PakEraLibrary(vs)));
         var game = new Game("test:keys-dbd", "Dead by Daylight", Store.Other, install, exe);
-        Assert.False(reader.SetKey(game, Key(65)));
-        Assert.True(reader.SetKey(game, Key(1)));
+        Assert.False(reader.SetKey(game, Key(65)).Stored);
+        Assert.True(reader.SetKey(game, Key(1)).Stored);
         var e = reader.Detect(game)!;
         Assert.Equal(nameof(CUE4Parse.UE4.Versions.EGame.GAME_DeadByDaylight), e.Fork);
         Assert.False(e.Encrypted);
@@ -893,7 +893,7 @@ public class UnrealReaderTests(ITestOutputHelper output)
             ("Proj/Content/ShaderArchive-Proj-PCD3D_SM5.ushaderbytecode", PakEraLibrary(vs)));
         var game = new Game("test:keys-readable", "Readable", Store.Other, install, Path.Combine(install, "absent.exe"));
         Assert.True(reader.Detect(game)!.Encrypted);
-        Assert.True(reader.SetKey(game, Key(1)));
+        Assert.True(reader.SetKey(game, Key(1)).Stored);
         Assert.False(reader.Detect(game)!.Encrypted);
         Assert.Single(reader.Index(game, Ue427, null, CancellationToken.None).Shaders);
     }

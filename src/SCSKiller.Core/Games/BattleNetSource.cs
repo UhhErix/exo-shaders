@@ -11,14 +11,16 @@ namespace SCSKiller.Core.Games;
 /// "Blizzard Entertainment" or a "Battle.net Uninstaller" uninstall command, excluding the Battle.net client itself.
 /// The id uses the product code from the entry's own uninstall command (--uid=&lt;code&gt;, e.g. "prometheus" for
 /// Overwatch) when present, since that's Blizzard's own stable per-game id.</summary>
-public sealed class BattleNetSource : IGameSource
+public sealed class BattleNetSource : IGameSource, ILeavesOut
 {
     public Store Store => Store.Other;
 
-    public IReadOnlyList<Game> Discover() => OperatingSystem.IsWindows() ? Installed() : [];
+    public Func<string, bool> LeftOut { get; set; } = _ => false;
+
+    public IReadOnlyList<Game> Discover() => OperatingSystem.IsWindows() ? Installed(LeftOut) : [];
 
     [SupportedOSPlatform("windows")]
-    static List<Game> Installed()
+    static List<Game> Installed(Func<string, bool> leftOut)
     {
         var games = new List<Game>();
         var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -38,7 +40,7 @@ public sealed class BattleNetSource : IGameSource
                         var byAgent = uninst != null && uninst.Contains("Battle.net Uninstaller", StringComparison.OrdinalIgnoreCase);
                         if (key.GetValue("Publisher") as string != "Blizzard Entertainment" && !byAgent) continue;
                         if (key.GetValue("DisplayName") is not string name || name == "Battle.net") continue;
-                        if (key.GetValue("InstallLocation") is not string { Length: > 0 } install || !Directory.Exists(install)) continue;
+                        if (key.GetValue("InstallLocation") is not string { Length: > 0 } install || leftOut(install) || !Directory.Exists(install)) continue;
                         var code = uninst != null ? Regex.Match(uninst, @"--uid=(\S+)").Groups[1].Value.Trim('"') : "";
                         if (code.Length == 0) code = Regex.Replace(name, @"\W+", "").ToLowerInvariant();
                         var dir = GameFiles.DirKey(install);

@@ -9,6 +9,14 @@ public static partial class GameFiles
 
     internal static partial string? SystemFolder(Game game) => Environment.SystemDirectory;
 
+    internal static partial string? PrefixOf(Game game) => null;
+
+    internal static partial LauncherPrefix? AddedPrefix(Game game, out string? why)
+    {
+        why = null;
+        return null;
+    }
+
     public static partial string? VolumeOf(string path) => Path.GetPathRoot(path) is { Length: > 0 } root ? root : null;
 
     /// <summary>The path to open past MAX_PATH, as the proxy's long_path (recorder_key.h): this process isn't long-path aware

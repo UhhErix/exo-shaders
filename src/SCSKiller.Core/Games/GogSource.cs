@@ -11,14 +11,16 @@ namespace SCSKiller.Core.Games;
 /// real game exe (the registry's own "exe" value, and the task marked "launcher", is the prelauncher, not the D3D12
 /// process). An id with no "game"-category task (a DLC or expansion registered under its own id, sharing the base
 /// game's folder) is skipped. One game per install folder.</summary>
-public sealed class GogSource(IEnumerable<(string Id, string? Name, string Dir, string? Exe)>? entries = null) : IGameSource
+public sealed class GogSource(IEnumerable<(string Id, string? Name, string Dir, string? Exe)>? entries = null) : IGameSource, ILeavesOut
 {
     public Store Store => Store.Other;
 
-    public IReadOnlyList<Game> Discover() => OperatingSystem.IsWindows() ? Installed() : [];
+    public Func<string, bool> LeftOut { get; set; } = _ => false;
+
+    public IReadOnlyList<Game> Discover() => OperatingSystem.IsWindows() ? Installed(LeftOut) : [];
 
     [SupportedOSPlatform("windows")]
-    List<Game> Installed()
+    List<Game> Installed(Func<string, bool> leftOut)
     {
         var games = new List<Game>();
         var dirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -28,7 +30,7 @@ public sealed class GogSource(IEnumerable<(string Id, string? Name, string Dir, 
             string install;
             try { install = GameFiles.DirKey(at); }
             catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { continue; }
-            if (id.Length == 0 || !Directory.Exists(install) || dirs.Contains(install) || ids.Contains(id)) continue;
+            if (id.Length == 0 || leftOut(install) || !Directory.Exists(install) || dirs.Contains(install) || ids.Contains(id)) continue;
             if (Read(id, name ?? GameFiles.FolderName(install), install, exeHint) is not { } game) continue;
             dirs.Add(install);
             ids.Add(id);
@@ -151,14 +153,21 @@ public sealed class GogSource(IEnumerable<(string Id, string? Name, string Dir, 
         var name = r.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString()! : fallbackName;
         var version = r.TryGetProperty("buildId", out var b) && b.ValueKind == JsonValueKind.String ? b.GetString() : null;
         string? exe = null;
+        string? script = null;
         if (r.TryGetProperty("playTasks", out var tasks) && tasks.ValueKind == JsonValueKind.Array)
             foreach (var t in tasks.EnumerateArray())
                 if (t.TryGetProperty("category", out var cat) && cat.ValueKind == JsonValueKind.String && cat.GetString() == "game"
                     && t.TryGetProperty("path", out var p) && p.ValueKind == JsonValueKind.String)
                 {
+                    // a .bat/.cmd task (Kenshi's LaunchKenshiGOG.bat) only starts the game's exe
+                    if (Path.GetExtension(p.GetString()!) is var ext && (ext.Equals(".bat", StringComparison.OrdinalIgnoreCase) || ext.Equals(".cmd", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        script ??= Path.GetFullPath(GameFiles.Find(install, p.GetString()!));
+                        continue;
+                    }
                     exe = Path.GetFullPath(GameFiles.Find(install, p.GetString()!));
                     break;
                 }
-        return (name, exe, version);
+        return (name, exe ?? (script == null ? null : GameFiles.FindExe(install) ?? script), version);
     }
 }

@@ -7,9 +7,11 @@ namespace SCSKiller.Core.Games;
 /// (com.epicgames.eglv2, which wins over a leftover .item for the same app), the classic launcher's
 /// %ProgramData%\Epic\EpicGamesLauncher\Data\Manifests\*.item, and Legendary's installed.json (Exo Launcher, Heroic).
 /// Ids epic:&lt;AppName&gt; whichever record it came from; a Legendary install of a folder already listed is left out.</summary>
-public sealed class EpicSource(string? manifestsDir = null, string? launcherDir = null, IEnumerable<string>? legendaryFiles = null) : IGameSource
+public sealed class EpicSource(string? manifestsDir = null, string? launcherDir = null, IEnumerable<string>? legendaryFiles = null) : IGameSource, ILeavesOut
 {
     public Store Store => Store.Epic;
+
+    public Func<string, bool> LeftOut { get; set; } = _ => false;
 
     public static string DefaultManifestsDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
         "Epic", "EpicGamesLauncher", "Data", "Manifests");

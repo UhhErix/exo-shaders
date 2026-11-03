@@ -39,9 +39,9 @@ public class UnrealKeysTests(ITestOutputHelper output)
 
         // manual fallback: a wrong key is refused, the right one is stored
         var other = new UnrealReader(Ff7.TempDir("keys-manual"));
-        Assert.False(other.SetKey(game, "0x" + new string('7', 64)));
-        Assert.False(other.SetKey(game, "not a key"));
-        Assert.True(other.SetKey(game, key));
+        Assert.False(other.SetKey(game, "0x" + new string('7', 64)).Stored);
+        Assert.False(other.SetKey(game, "not a key").Stored);
+        Assert.True(other.SetKey(game, key).Stored);
         Assert.Contains("AES key: stored key", (other.Detect(game, out notes), notes).notes);
     }
 
@@ -121,9 +121,9 @@ public class UnrealKeyScanTests
         var expected = "0x" + Convert.ToHexString(key);
         var data = Ff7.TempDir("keys-anticheat-data");
         var keys = new UnrealKeys(data);
-        Assert.Equal(expected, keys.Get(game, k => k.KeyString == expected, out var why)?.KeyString);
+        Assert.Equal(expected, keys.Get(game, k => k.KeyString == expected, out var why).Single().Aes.KeyString);
         Assert.Contains("found in the exe", why);
-        Assert.Equal(expected, keys.Get(game, _ => true, out why)?.KeyString);
+        Assert.Equal(expected, keys.Get(game, _ => true, out why).Single().Aes.KeyString);
         Assert.Equal("stored key", why);
 
         var other = game with { Id = "steam:2", ExePath = Path.Combine(dir, "other.exe") };

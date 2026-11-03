@@ -276,7 +276,7 @@ internal sealed partial class Host
                 string id = p.ReqStr("id");
                 GameState g = Game(id);
                 AntiCheat shown;
-                try { shown = await k.CheckAntiCheatAsync(id); }
+                try { shown = (await k.CheckAntiCheatAsync(id)).Found; }
                 catch (Exception e) { SetError(id, Fmt.Describe(e)); throw; }
                 GameState with = g with { AntiCheat = shown };
                 _riskShown[id] = shown;
@@ -400,13 +400,14 @@ internal sealed partial class Host
                 string key = p.ReqStr("key").Trim();
                 Game(id);
                 bool ok;
+                IReadOnlyList<string> refused = [];
                 string? problem = null;
-                try { ok = await Task.Run(() => k.SetEncryptionKey(id, key)); }
+                try { (ok, refused) = await Task.Run(() => k.SetEncryptionKey(id, key)); }
                 catch (Exception e) { ok = false; problem = Fmt.Describe(e); }
-                if (!ok) throw new ServiceError("That key didn't work: " + (problem ?? "It doesn't open this game's files."));
+                if (!ok) throw new ServiceError("That key didn't work: " + (problem ?? string.Join("; ", refused)));
                 SetError(id, null);
                 _ = Task.Run(() => { try { k.RefreshGame(id); } catch (Exception e) { Log("refreshing after the key: " + e.Message); } });
-                return Ok;
+                return new { ok = true, refused };
             }
             case "game.play":
             {

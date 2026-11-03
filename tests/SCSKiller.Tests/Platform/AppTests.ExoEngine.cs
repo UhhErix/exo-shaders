@@ -117,7 +117,7 @@ public partial class AppTests
     {
         var at = DateTimeOffset.FromUnixTimeMilliseconds(1_000);
         var csv = Csv("#session,2000,PBZ.exe", "1.0,G,1,1,1.000,a,0,1,0", "2.0,G,1,1,90.000,b,0,1,0");
-        LaunchCheck? First(Func<string, bool>? gone) => SessionLog.Read(csv, out _, out _, "PBZ.exe", at, 1, exeGone: gone).First;
+        LaunchCheck? First(Func<string, bool>? gone) => SessionLog.Read(csv, out _, out _, "PBZ.exe", at, 1, lastEnded: gone == null ? null : () => gone("PBZ.exe")).First;
         Assert.Null(First(null));
         Assert.Null(First(_ => false));
         var first = First(exe => exe == "PBZ.exe");

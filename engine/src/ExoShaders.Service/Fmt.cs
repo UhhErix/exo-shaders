@@ -20,7 +20,7 @@ internal static class Fmt
 {
     public static readonly string[] Stores =
     [
-        "Steam", "Epic Games", "Xbox / Game Pass", "EA app", "GOG", "Ubisoft Connect", "Battle.net", "Amazon Games", "PURPLE", "HoYoPlay",
+        "Steam", "Epic Games", "Xbox / Game Pass", "EA app", "GOG", "Ubisoft Connect", "Battle.net", "Amazon Games", "PURPLE", "HoYoPlay", "GRYPHLINK", "WeGame",
         "Gaijin", "Riot Client", "Other", "Added by you"
     ];
 
@@ -105,6 +105,8 @@ internal static class Fmt
             "battlenet" => "Battle.net",
             "purple" => "PURPLE",
             "hoyoplay" => "HoYoPlay",
+            "gryphline" => "GRYPHLINK",
+            "wegame" => "WeGame",
             "gaijin" => "Gaijin",
             "riot" => "Riot Client",
             "amazon" => "Amazon Games",

@@ -4841,11 +4841,11 @@ public partial class AppTests : IDisposable
         Assert.True(ScsKiller.NeedsAesKey(State()));
         Assert.False(ScsKiller.NeedsAesKey(State() with { Engine = State().Engine! with { Family = "Decima" } }));
 
-        Assert.False(k.SetEncryptionKey(_game.Id, SCSKiller.Tests.Unreal.UnrealReaderTests.Key(65)));
+        Assert.False(k.SetEncryptionKey(_game.Id, SCSKiller.Tests.Unreal.UnrealReaderTests.Key(65)).Stored);
         k.RefreshGame(_game.Id);
         Assert.True(ScsKiller.NeedsAesKey(State()));
 
-        Assert.True(k.SetEncryptionKey(_game.Id, SCSKiller.Tests.Unreal.UnrealReaderTests.Key(1)));
+        Assert.True(k.SetEncryptionKey(_game.Id, SCSKiller.Tests.Unreal.UnrealReaderTests.Key(1)).Stored);
         k.RefreshGame(_game.Id);
         Assert.False(ScsKiller.NeedsAesKey(State()));
         Assert.False(State().Engine!.Encrypted);

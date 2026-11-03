@@ -1262,7 +1262,7 @@ public class WarmerTests : IDisposable
     {
         var r = await new Warmer(Vendor, _exe).Start(Game, Work("nodone"), new WarmOptions(1, WarmPriority.BelowNormal), null).Completion;
         Assert.Equal(WarmOutcome.Failed, r.Outcome);
-        Assert.Equal(10, r.Done);
+        Assert.Equal(0, r.Done);   // no item states to go by: where the next compile goes on
         Assert.False(r.Resumable);   // not a clean point: what it compiled may not be written
     }
 

@@ -686,9 +686,9 @@ public class RtCollectionTests(Xunit.Abstractions.ITestOutputHelper output)
     {
         var cols = Enumerable.Range(0, 200).Select(i => new Rec('R', [(byte)i, 1, 2, 3])).ToList();
         var nv = cols.Select(c => new NvState(c.Key, 0, 1001, 2, 0).ToRec()).ToList();
-        Assert.Equal(new RtCollections.Nv(0, 1001, 0), RtCollections.LearnedNv(cols, nv));
-        Assert.Null(RtCollections.LearnedNv(cols, nv.Skip(10)));  // 95%: not the game's rule
-        Assert.Null(RtCollections.LearnedNv(cols, []));
+        Assert.Equal([new RtCollections.Nv(0, 1001, 0)], RtCollections.LearnedNvs(cols, nv, 0));
+        Assert.Equal([new RtCollections.Nv(uint.MaxValue, 0, 0), new RtCollections.Nv(0, 1001, 0)], RtCollections.LearnedNvs(cols, nv.Skip(150), 0));  // each state at least 10% of them has, the most common first
+        Assert.Empty(RtCollections.LearnedNvs(cols, [], 0));
         Assert.Equal(NvState.Parse(nv[0]), NvState.Parse(NvState.Parse(nv[0]).ToRec()));
 
         var hit = Lib("nv-hit", new Binding("srv", 4, 0, -1));
@@ -748,7 +748,7 @@ public class RtCollectionTests(Xunit.Abstractions.ITestOutputHelper output)
         new Planner().Materialize(plan, Ff7.Game, Ue427, new Shaders(new() { [hit.Sha1] = HitLib }), new Recording(recording), Path.Combine(dir, "work"), CancellationToken.None);
         var gen = Read(Path.Combine(dir, "work", "scskiller_gen.db")).ToList();
         var collection = Assert.Single(gen, r => r.Tag == 'R');
-        Assert.Equal([new NvState(material.Key, uint.MaxValue, 0, 0, 0x11), new NvState(other.Key, 12, 1, 1, 0x11), new NvState(collection.Key, 0, 1001, 2, 0x11)],
+        Assert.Equal([new NvState(material.Key, uint.MaxValue, 0, 0, 0x11), new NvState(other.Key, 12, 1, 1, 0x11), new NvState(collection.Key, 0, 1001, 2, 0)],
             gen.Where(r => r.Tag == 'N').Select(NvState.Parse));
 
         // the 'R' with the options isn't in this install (nor what builds on it): the rest still takes its options
@@ -759,7 +759,7 @@ public class RtCollectionTests(Xunit.Abstractions.ITestOutputHelper output)
         }
         new Planner().Materialize(plan, Ff7.Game, Ue427, new Shaders(new() { [hit.Sha1] = HitLib }), new Recording(recording), Path.Combine(dir, "work2"), CancellationToken.None);
         Assert.DoesNotContain(Read(Path.Combine(dir, "work2", "scskiller.db")), r => r.Key == occlusion.Key || r.Key == material.Key);
-        Assert.Equal([new NvState(other.Key, 12, 1, 1, 0x11), new NvState(collection.Key, 0, 1001, 2, 0x11)],
+        Assert.Equal([new NvState(other.Key, 12, 1, 1, 0x11), new NvState(collection.Key, 0, 1001, 2, 0)],
             Read(Path.Combine(dir, "work2", "scskiller_gen.db")).Where(r => r.Tag == 'N').Select(NvState.Parse));
     }
 

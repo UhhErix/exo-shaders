@@ -8,9 +8,11 @@ namespace SCSKiller.Core.Games;
 /// uninstall entry's (HKCU "Riot Game &lt;product&gt;.&lt;patchline&gt;"), else the product's known one. Every Riot game counts
 /// as anti-cheat (<see cref="GameFiles.DetectAntiCheat"/>): Vanguard installs outside the game folder. Exo Shaders: its folder
 /// is never listed or read (<see cref="GameFiles.IsRiot"/>): a product's exe is the known name, or one made of its product's.</summary>
-public sealed class RiotSource(string? metadataDir = null, Func<string, string?>? registry = null) : IGameSource
+public sealed class RiotSource(string? metadataDir = null, Func<string, string?>? registry = null) : IGameSource, ILeavesOut
 {
     public Store Store => Store.Other;
+
+    public Func<string, bool> LeftOut { get; set; } = _ => false;
 
     public static string DefaultMetadataDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Riot Games", "Metadata");
 
@@ -39,6 +41,7 @@ public sealed class RiotSource(string? metadataDir = null, Func<string, string?>
                 {
                     if (InstallPath.Match(File.ReadAllText(Path.Combine(sub, key + ".product_settings.yaml"))) is not { Success: true } m || m.Groups[1].Value.Length == 0) continue;
                     install = GameFiles.DirKey(m.Groups[1].Value);
+                    if (LeftOut(install)) continue;
                     if (!File.Exists(exe = Path.Combine(install, known.Exe ?? product + ".exe")) && known.Exe != null) continue;   // still installing
                     if (!Directory.Exists(install)) continue;
                 }

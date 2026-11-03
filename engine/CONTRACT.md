@@ -596,7 +596,7 @@ to the settings policy; their setters are refused.
 
 | method | params |
 |---|---|
-| `game.setAesKey` | `{id, key: string}` → `{ok: true}` or error `"That key didn't work: It doesn't open this game's files."` (the key is "0x followed by 64 hex digits"; verified, kept locally). The game is rescanned after a good key. |
+| `game.setAesKey` | `{id, key: string}` → `{ok: true, refused: string[]}` or error `"That key didn't work: it doesn't open this game's files"` (one key per line, each "0x followed by 64 hex digits", optionally after the GUID of the archives it opens; verified, kept locally). `refused`: each line not kept and why, never its text. The game is rescanned after a good key. |
 | `game.play` | `{id}` → `{ok: true}` or error: puts a kept-aside cache back, then starts the game through its store (or arms/launches the before/after run). Error e.g. `"Start X from its own launcher"`. |
 | `game.setTraversal` | `{id, value: "default" \| "on" \| "off"}` → `{ok: true}`: the traversal stutter fix for this game (1.4.1-alpha.1, experimental). Not the policy's. Error `"The traversal stutter fix doesn't apply to this game."` where `traversal` is absent (never an anti-cheat game). The recorder's ini is written again (when the game exits, if it runs). Refused in `--safe`. |
 

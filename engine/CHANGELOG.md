@@ -6,6 +6,13 @@ repository's root `CHANGELOG.md`.
 
 ## [Unreleased]
 
+**SCSKiller 1.4.4 (engine 1.4.4)**
+
+- Merged from its published source. On Windows: WeGame games are found, GRYPHLINK games get their own section upstream, Unreal
+  benchmark tools on Steam are listed and compiled like games, and compile, Aftermath, ray tracing, VAC and memory fixes,
+  many of them for Phantom Blade Zero. Most of the rest is Linux. Its notes are in the repository's root `CHANGELOG.md`.
+- `game.setAesKey` takes one key per line, optionally after a GUID, and answers which lines it refused.
+
 **Consent, diagnostics, the check, Riot, community**
 
 - The recorder goes into no game until Exo asks once (`recorder.auto`) or for one game (`recorder.set`). Without consent

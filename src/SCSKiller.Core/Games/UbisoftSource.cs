@@ -8,14 +8,16 @@ namespace SCSKiller.Core.Games;
 /// 64- and 32-bit views (as Exo Launcher reads them), titled from the launcher's "Uplay Install &lt;id&gt;" uninstall
 /// entry; the exe is picked from the install dir the same heuristic way Steam/Epic do (Connect doesn't keep a per-game
 /// manifest as convenient as GOG's or Epic's, just the install path).</summary>
-public sealed class UbisoftSource : IGameSource
+public sealed class UbisoftSource : IGameSource, ILeavesOut
 {
     public Store Store => Store.Other;
 
-    public IReadOnlyList<Game> Discover() => OperatingSystem.IsWindows() ? Installed() : [];
+    public Func<string, bool> LeftOut { get; set; } = _ => false;
+
+    public IReadOnlyList<Game> Discover() => OperatingSystem.IsWindows() ? Installed(LeftOut) : [];
 
     [SupportedOSPlatform("windows")]
-    static List<Game> Installed()
+    static List<Game> Installed(Func<string, bool> leftOut)
     {
         var games = new List<Game>();
         var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -30,7 +32,7 @@ public sealed class UbisoftSource : IGameSource
                     foreach (var id in root.GetSubKeyNames())
                     {
                         using var key = root.OpenSubKey(id);
-                        if (key?.GetValue("InstallDir") is not string { Length: > 0 } install || !Directory.Exists(install) || ids.Contains(id)) continue;
+                        if (key?.GetValue("InstallDir") is not string { Length: > 0 } install || leftOut(install) || !Directory.Exists(install) || ids.Contains(id)) continue;
                         var dir = GameFiles.DirKey(install);
                         if (dirs.Contains(dir) || GameFiles.FindExe(install) is not { } exe) continue;
                         ids.Add(id);
