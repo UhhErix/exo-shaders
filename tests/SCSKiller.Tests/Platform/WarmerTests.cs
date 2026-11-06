@@ -228,7 +228,8 @@ public class WarmerTests : IDisposable
         var warmer = new Warmer(Vendor, _exe) { Log = new Progress(log.Add) };
         await warmer.Start(Game with { ExePath = @"C:\elsewhere\Fake-Win64-Shipping.exe" }, work, new WarmOptions(1, WarmPriority.BelowNormal), null).Completion;
         Assert.DoesNotContain("--stage-path", File.ReadAllLines(Path.Combine(work, "args.txt")));
-        Assert.Equal([@"Fake: the compile runs without the install's folder layout: C:\elsewhere\Fake-Win64-Shipping.exe is outside C:\nowhere"], log);
+        // upstream's "the compile ran N processes" line (Warmer) follows the reason
+        Assert.Equal([@"Fake: the compile runs without the install's folder layout: C:\elsewhere\Fake-Win64-Shipping.exe is outside C:\nowhere", "Fake: the compile ran 1 process"], log);
     }
 
     sealed class Progress(Action<string> a) : IProgress<string> { public void Report(string s) { lock (a) a(s); } }

@@ -73,7 +73,8 @@ public sealed record ShaderInfo(string Sha1, Stage Stage, string ShaderModel, in
     bool InlineRayTracing = false,   // traces rays inline (RayQuery: Dxbc.InlineRayTracing)
     byte[]? EngineHeader = null,   // the engine's own header stored beside the shader, read by its root-signature rule (Dagor: dxil::ShaderHeader)
     int Payload = 0,   // amplification shaders: the payload bytes they send; mesh shaders: the bytes they take (PSV0); the runtime rejects a pair that differs
-    bool ViewId = false);   // reads SV_ViewID (Dxbc.ViewId): the game creates it with view instancing
+    bool ViewId = false,   // reads SV_ViewID (Dxbc.ViewId): the game creates it with view instancing
+    bool RayGeneration = false);   // a DXIL library exporting a ray generation shader (RDAT): its collection takes the ray generation local root signature
 
 /// <summary>A group of shaders that can combine. <see cref="IsPipeline"/>: the game shipped this exact stage set as one
 /// pipeline (e.g. a PSO cache record), so no pairing is needed. <see cref="RootSignature"/>: the root signature the game
@@ -234,6 +235,9 @@ public sealed record Recording(string DbPath)
     /// <summary>The ray tracing state objects only the community recording has (<see cref="Planning.Planner.CommunityLeftOut"/>);
     /// null: none, or a GPU whose driver caches whole state objects only.</summary>
     public IReadOnlySet<string>? CommunityStateObjects { get; init; }
+    /// <summary>A top-up's recording, never written out: its records, without the shaders it names by hash. Each call reads them
+    /// anew. Set, DbPath isn't the recording (Planner.MaterializeTopUp).</summary>
+    public Func<IEnumerable<Planning.PsoDb.Rec>>? Lazy { get; init; }
     /// <summary>This PC's recorded texture filtering settings (sampler sets, hex), last recorded first
     /// (<see cref="Planning.SamplerVariants.Ordered"/>), and how many of them a plan compiles; null: every one the recording has.</summary>
     public (IReadOnlyList<string> Sets, int Keep)? Filtering { get; init; }
@@ -318,7 +322,8 @@ public sealed record WarmProgress(long Done, long Total, long Failed, double Per
     long Invalid = 0,          // see WarmResult.Invalid
     long Unsupported = 0,      // see WarmResult.Unsupported
     double SteadyPerSecond = 0,   // Exo Shaders: the rate over the last minutes (RecentRate.Steady), for time left; 0 = not known yet
-    long Unbuilt = 0);         // of Failed: the running process's D3D11 items SCSKiller can't build yet (ScsKiller.Unbuilt11), at most its own failures (read a moment apart)
+    long Unbuilt = 0,          // of Failed: the running process's D3D11 items SCSKiller can't build yet (ScsKiller.Unbuilt11), at most its own failures (read a moment apart)
+    double WholePerSecond = 0); // the compile's rate since it started, pauses left out, for the time left: a slow stretch's recent rate isn't the rest's; 0 = none yet
 public enum WarmOutcome { Completed, Stopped, Failed }
 /// <param name="Failed">PSOs the driver rejected</param>
 /// <param name="Skipped">PSOs not replayed: a shader not in this install (see <see cref="WarmProgress.Skipped"/>)</param>
@@ -352,7 +357,8 @@ public sealed record WarmResult(WarmOutcome Outcome, long Done, long Total, long
     bool Unclean = false,   // its last process died, exited without a done, reported an error, held its output or stalled (ended for it): never one we stopped or ended otherwise
     long? DiedAt = null,    // an ended or unclean last process's first unfinished item, by its own item states; null: none to go by
     bool DiedUnnamed = false,   // a process died and was retried: what it failed or skipped below the retry is in no failed-keys file
-    IReadOnlyList<string>? Stderr = null);   // a failed warm's last stderr lines
+    IReadOnlyList<string>? Stderr = null,   // a failed warm's last stderr lines
+    long SteamLeft = 0);   // Steam's pipelines the replay didn't reach for want of room, counted in Done, which is a resume's position
 
 public interface IWarmRun
 {
@@ -474,6 +480,7 @@ public sealed record GameState(
     long? LastWarmInvalid = null,   // ...and Vulkan pipelines whose shaders fail SPIR-V validation (WarmResult.Invalid)
     long? LastWarmUnsupported = null,   // ...and pipelines needing a feature the GPU lacks (WarmResult.Unsupported)
     long? LastWarmTried = null,     // ...of the items it replayed (GameRecord.LastWarmTried); null = not known
+    long? WarmedRoomLeft = null,    // ...the items it didn't reach, the compile's cache full (GameRecord.WarmedRoomLeft)
     int? LastWarmFailedBy = null,   // ...what most of its failures were (ScsKiller.TopFailKind); null = not known
     bool Dxvk = false,              // DXVK as its d3d11.dll or dxgi.dll (Games.ReShade.Dxvk): it runs on Vulkan, a compile isn't used
     bool DxvkCompiled = false,      // ... except DXVK's d3d11.dll on NVIDIA, and on AMD for a Steam game: the warm runs through it (Warmer.DxvkDll)
@@ -492,6 +499,9 @@ public sealed record GameState(
     bool EstimateLearned = false,   // EstimatedWarmTime is from this game's own compile on this driver (App.CompileEstimate.RateFor), not a stand-in rate
     bool LastWarmCold = false)      // LastWarmTime is a compile that started cold, not a rewarm onto a cache that held the game (App.GameRecord.LastWarmCold)
 {
+    /// <summary>A reason of <see cref="App.ScsKiller.D3DSCachePendingReason"/> shown as Warmed: only a run of the game is still owed.</summary>
+    public bool LaunchChecks { get; init; }
+
     /// <summary>What its compiled cache takes on disk: the driver's part and Windows'. Null = unknown.</summary>
     public long? DiskBytes => CacheOnDisk is null && WindowsCache is null ? null : (CacheOnDisk ?? 0) + (WindowsCache ?? 0);
 
@@ -685,7 +695,10 @@ public sealed record Settings(int Threads, WarmPriority Priority, DriverUpdateMo
     IReadOnlyList<string>? HddDrives = null,   // HddMode for the games on these drives only (GameFiles.DriveOf); HddMode on = every drive
     TraversalMode Traversal = TraversalMode.Off,   // the traversal stutter fix's games, unless a game's TraversalOverride says otherwise (TraversalFix)
     bool TraversalAsked = false,   // its one-time question was answered (TraversalFix.Asks): never asked again
-    bool CompactUi = false);   // the Library's summary as two slim tiles instead of the cards
+    bool CompactUi = false,   // the Library's summary as two slim tiles instead of the cards
+    DateTimeOffset? SupportFirstUse = null,   // the first window shown with this field known: an update starts the count like a new install (SupportPopup)
+    int SupportAsks = 0,   // times the support popup showed; SupportPopup.MaxAsks once answered
+    DateTimeOffset? SupportAskedAt = null);   // the last time it showed
 
 /// <summary>Merging: a finished warm's dbs go into the game's D3DSCache folder (NVIDIA from 621), its progress in the bytes its checks and inserts read.</summary>
 public enum QueueStage { Waiting, Indexing, Planning, Materializing, Warming, Merging, Paused, Done, Failed, Stopped, Saving, Finishing }
@@ -738,6 +751,8 @@ public interface IScsKiller
     void Enqueue(string gameId);
     /// <summary>Runs the waiting items in order until the queue is empty, then the queue stops.</summary>
     void StartQueue();
+    /// <summary><see cref="StartQueue"/> a person asked for: its first compile asks what <see cref="Compile"/> asks.</summary>
+    void StartQueueByUser() => StartQueue();
     /// <summary>The game page's compile button: <see cref="Enqueue"/>, and if the queue isn't running, run its waiting items.
     /// Unlike <see cref="StartQueue"/>, finished items stay listed and stopped ones stay stopped.</summary>
     void Compile(string gameId);

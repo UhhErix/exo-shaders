@@ -154,11 +154,12 @@ public class PerStagePlanTests(ITestOutputHelper output)
         Assert.Equal(planned, PlanBuilder.MaximumExtras(Ff7.Amd, planned));
         Assert.Equal(amd.Stats.Generated + planned, amdMax.Stats.Generated);   // 7 x 9 stage sets: the cap binds
         Assert.Contains(log, l => l.Contains("per-stage (amd)") && l.Contains($"more left out, at most {planned} for this game"));
-        Assert.DoesNotContain(log, l => l.Contains("per-stage (nvidia)") && l.Contains("left out"));
+        // upstream (PlanBuilder.MaximumExtras): NVIDIA's cache isn't keyed by state, so a pairing of stages cached in other
+        // stage sets is an exact hit and Maximum adds none there; the earlier unlimited NVIDIA expectation was Exo's.
         var nv = Build(nvidia, false);
-        Assert.True(nvMax.Stats.Generated - nv.Stats.Generated > nv.Stats.Generated + nv.Stats.Recorded);   // not capped
+        Assert.Equal(nv.Stats.Generated, nvMax.Stats.Generated);
         Assert.Equal((int)(PlanBuilder.ExtraBudget / PlanBuilder.ExtraBytes), PlanBuilder.MaximumExtras(Ff7.Amd, int.MaxValue));
-        Assert.Equal(int.MaxValue, PlanBuilder.MaximumExtras(nvidia, 10));
+        Assert.Equal(0, PlanBuilder.MaximumExtras(nvidia, 10));
     }
 
     /// <summary>An AMD plan over its cache budget keeps the recorded PSOs, then a unit of every shader, then the VS units of

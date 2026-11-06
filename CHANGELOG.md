@@ -4,6 +4,103 @@ All notable changes to the SCSKiller app and command line. Versions follow [Sema
 
 ## [Unreleased]
 
+## [1.4.6] - 2026-11-06
+
+**Improved**
+
+- A compile writes far less to disk. A small top-up writes a few MB where it rewrote the whole plan, and the plan stays in
+  RAM when there's room.
+- The question about deleting a game's old shader cache comes before a compile you start, not after it ends, and it no
+  longer recommends deleting. Keep it is the default, and a compile nobody answers for goes on.
+- SCSKiller asks once whether you'd like to support it on Patreon, after 3 days of use and a compile that did its job,
+  never during a compile, with a game open or when signed in with Patreon.
+
+**Improved on Windows**
+
+- A game whose compile only waits for one run of the game shows as Warmed, with a line telling you to launch it once and
+  close it.
+- A running game whose compile waits for its exit shows as Warmed with "Close the game first", and a damaged compile
+  shows as Needs rebuilding.
+- The background shader read after a compile stays within the background memory limit.
+
+**Fixed**
+
+- A compile no longer restarts forever around one spot when memory runs short.
+- A compile whose process is killed from outside goes on from where it stopped.
+- Stopping a compile ends it cleanly instead of showing it as failed.
+- A compile with plenty of free RAM no longer restarts to free memory, and a restart no longer repeats what it finished.
+- A small plan change after an update no longer marks a compiled game Needs rebuilding. Fewer new pipelines than 1% of its
+  plan, at least 500, wait for its next compile.
+
+**Fixed on Windows**
+
+- With NVIDIA, a first compile of Hogwarts Legacy without a recording reaches the game from its first launch.
+- With AMD, a compile with nothing to do no longer makes a working game show Needs rebuilding after its next launch.
+- With NVIDIA, a first launch after a first compile without a recording no longer reads Stale for pipelines the compile
+  already made.
+- An AMD game no longer stays Not compatible after one launch. It offers a compile again, and Clear cache always does.
+- With NVIDIA driver 621 or later, a game whose compile is working no longer shows as Not compatible.
+- With NVIDIA driver 621 or later, a lost compile shows as gone on Windows 10 and Windows 11 23H2 instead of staying
+  compiled.
+- A shader cache restored from a backup or copied across drives no longer shows as partly gone.
+- On Hades II, the recorder goes beside the exe Steam starts.
+- The game page's "in use" figure no longer counts a shader cache file another process holds as full.
+- A game whose store entry names a launcher or Epic's bootstrapper is detected by its real exe.
+- The Cache page no longer names an old entry on a game's rows when the game now lists under another store, and deleting
+  that row keeps the old entry's own data.
+- Remove recorders no longer warns about Vulkan registrations on a PC that never used the Vulkan recorder.
+
+**Fixed on Linux**
+
+- Clear cache removes what a compile placed in Steam's files and every set in the game's folder, and a game launched after
+  its compile keeps its own cache working.
+- A compile goes on after pipelines hang the NVIDIA driver, where it ended with its cache half used, and the game page says
+  how many pipelines weren't compiled when a compile ends early.
+- A compile too large for Steam's files no longer writes its whole placement twice.
+- A Faugus game on Proton-CachyOS compiles without Steam's copy of the Steam Linux Runtime.
+- The game page says Steam reads a game's cache only after a launch confirms it. With Steam's Shader Pre-caching off, the
+  note to turn it on shows during the launch.
+- Turning off Steam's Shader Pre-caching no longer makes the next compile replay everything.
+- A compile that runs out of room during Steam's pipelines counts only the ones it reached, so its coverage is no longer
+  overstated.
+
+## [1.4.5] - 2026-11-04
+
+**Improved**
+
+- On Windows with NVIDIA, Maximum mode no longer adds pipeline pairings the driver already has, so plans and compiles
+  with it on are much smaller.
+- The time left on a compile follows the compile's overall speed, so a slow stretch no longer shows hours or days left.
+- On Windows, Fortnite's graphics choice is Normal or Performance, both on DirectX 12, and Performance compiles the
+  shaders Performance mode runs.
+- The Settings account card shows a short line with a Join for free link when you're signed in and not on the SCSKiller
+  Patreon.
+- On Linux, the app runs on .NET 10.0.14, which has the latest security fixes.
+- Games with anti-cheat can be added from the server, by store id or exe name, without an app update. SCSKiller takes its
+  recorder out of them.
+
+**Fixed**
+
+- Path of Exile and Path of Exile 2 are marked as games with anti-cheat. Enabling the recorder in a game with anti-cheat
+  is at your own risk, and SCSKiller isn't responsible for bans.
+- Marvel Rivals, FragPunk, Sword of Justice, NARAKA: BLADEPOINT, THE FINALS, Dark and Darker and Call of Duty are marked
+  as games with anti-cheat in any copy, also added by hand or from another store, so SCSKiller takes its recorder out of
+  them. Enabling the recorder in a game with anti-cheat is at your own risk, and SCSKiller isn't responsible for bans.
+- A game added by hand from an exe outside its Unreal project folder, such as Phantom Blade Zero's
+  `platform\steam\PBZ.exe`, gets the game's whole folder, so its shaders are found. Games added that way before move to
+  it on their own.
+- The compile leaves out ray tracing shaders the game's root signatures can't bind, so Phantom Blade Zero no longer
+  reports 25 pipelines the driver refused.
+- A game played on 1.4.3 since its last compile no longer compiles every pipeline again.
+- On Windows, heavy ray tracing pipelines no longer get skipped as GPU driver hangs when the compile runs them on many
+  threads.
+- A compile that keeps restarting to free memory through a stretch of heavy pipelines runs it on fewer threads, so it
+  gets through instead of stalling.
+- On Windows with NVIDIA, DirectX 12 games no longer crash at start with the recorder on under the newest DirectX
+  runtime of Windows Insider builds.
+- On Linux with AMD, games that last ran on Proton Experimental or GE-Proton11-12 compile again instead of stopping with
+  a Proton prefix error.
+
 ## [1.4.4] - 2026-11-02
 
 Linux support is no longer experimental: Heroic, Lutris and Faugus Launcher join Steam. Get the AppImage from the

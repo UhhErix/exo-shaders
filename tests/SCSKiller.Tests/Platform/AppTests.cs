@@ -11050,6 +11050,9 @@ public partial class AppTests : IDisposable
             Assert.Equal((GameStatus.Warmed, "7f303a45"), (k.Games.Single().Status, string.Join(",", k.Store.LoadGame(game.Id).WarmedKeys!)));
             return;
         }
+        // upstream: one missed launch is Stale (CantReach needs MissedTwice): the next complete warm missing the same key makes it Unsupported
+        Assert.Equal((GameStatus.Stale, ScsKiller.MissesGameReason), (k.Games.Single().Status, k.Games.Single().StatusReason));
+        await Warm();
         Assert.Equal((GameStatus.Unsupported, ScsKiller.CantReachReason), (k.Games.Single().Status, k.Games.Single().StatusReason));
         k.Enqueue(game.Id);   // the command line's compile queues through it too
         Assert.Equal(QueueStage.Done, Assert.Single(k.Queue).Stage);   // the first compile's, not queued again
@@ -11061,9 +11064,10 @@ public partial class AppTests : IDisposable
         {
             k.ProcessNames = () => new HashSet<string>();   // the game is named like this test process
             Assert.True(k.ClearGameCache(game.Id));
-            Assert.Equal((GameStatus.Unsupported, ScsKiller.CantReachReason), (k.Games.Single().Status, k.Games.Single().StatusReason));
+            // upstream: Clear cache always offers a compile again (ResetWarm clears MissedTwice), so it is no longer Unsupported
+            Assert.NotEqual(GameStatus.Unsupported, k.Games.Single().Status);
             await newer.ScanAsync(default);
-            Assert.NotEqual(GameStatus.Unsupported, newer.Games.Single().Status);   // the miss's driver outlives Clear cache
+            Assert.NotEqual(GameStatus.Unsupported, newer.Games.Single().Status);
             return;
         }
 

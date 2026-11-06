@@ -97,7 +97,7 @@ public sealed class DetailVm(string id) : Bindable
         _ when s.Engine?.Encrypted == true => "needs the game's AES key",   // the title: "Encrypted game files"
         _ => HasDbTeaser ? NoDbNote(s.StatusReason) : s.StatusReason,
     })
-        + (IsPartlyCompiled || s.CompileUnreached ? "." : "") + Format.ModNote(s);
+        + (ScsKiller.LaunchLine(s) is { } launch ? ". " + launch : "") + (IsPartlyCompiled || s.CompileUnreached ? "." : "") + Format.ModNote(s);
     static string NoDbNote(string r) => r.Replace(". " + Sentence(ScsKiller.InDbSupportersNote), "").Replace(". " + Sentence(ScsKiller.InDbNote), "");
     public bool IsPartlyCompiled => ScsKiller.IsPartlyCompiled(s);
     public bool NeedsAesKey => ScsKiller.NeedsAesKey(s);
@@ -378,12 +378,13 @@ public sealed class DetailVm(string id) : Bindable
     // or a carved game whose API nothing tells, packed shaders too: it may run Vulkan at run time (SDL)
     public bool ShowApiPicker => s is { ApiDetected: not null } or { ApiOverride: not null } && s.Engine is { Unsupported: null, Encrypted: false }
         || s.Engine is { Encrypted: false } e && Core.Carved.CarvedReader.Carved(e) && s.ApiDetected == Core.Unreal.UnrealRhi.Ambiguous;
+    public string ApiTip => id == ScsKiller.FortniteId ? "The Fortnite mode SCSKiller compiles for." : "The DirectX SCSKiller compiles for. Auto uses the detected one.";
     public bool? ApiPending { get; set; }
     public bool CanPickApi => ApiPending == null && !Host.Core.Queue.Any(q => q.GameId == id && Format.Running(q));   // its plan check too: the core refuses a change meanwhile
     IReadOnlyList<DxApi> ApiChoices => ScsKiller.ApiChoices(s, Host.Core.Vendor.Caps);
-    public int ApiIndex => s.ApiOverride is { } a ? ApiChoices.ToList().IndexOf(a) + 1 : 0;
+    public int ApiIndex => id == ScsKiller.FortniteId ? (ScsKiller.FortnitePerformance(s) ? 1 : 0) : s.ApiOverride is { } a ? ApiChoices.ToList().IndexOf(a) + 1 : 0;
     /// <summary>The API of the picker's item <paramref name="i"/>; null = Auto.</summary>
-    public DxApi? ApiAt(int i) => i <= 0 ? null : ApiChoices[i - 1];
+    public DxApi? ApiAt(int i) => id == ScsKiller.FortniteId ? (i == 1 ? DxApi.D3D11 : DxApi.D3D12) : i <= 0 ? null : ApiChoices[i - 1];
     string[]? apiItems;
     public string[] ApiItems
     {
@@ -392,7 +393,7 @@ public sealed class DetailVm(string id) : Bindable
             var auto = s.Engine?.GraphicsApi.EndsWith(ScsKiller.RecordingSuffix, StringComparison.Ordinal) == true ? $"Auto ({Dx(s.Engine.GraphicsApi)} from your recording)"
                 : s.ApiDetected == Core.Unreal.UnrealRhi.Ambiguous ? "Auto (DirectX 11 and 12)"
                 : s.ApiDetected is { } d ? $"Auto ({Dx(d)})" : "Auto";
-            string[] items = [auto, .. ApiChoices.Select(ScsKiller.ApiName)];
+            string[] items = id == ScsKiller.FortniteId ? ["Normal", "Performance"] : [auto, .. ApiChoices.Select(ScsKiller.ApiName)];
             if (apiItems == null || !apiItems.SequenceEqual(items)) apiItems = items;   // the same array while the labels hold: a new one resets the selection
             return apiItems;
         }
@@ -445,9 +446,12 @@ public sealed class DetailVm(string id) : Bindable
     // left and what helps; every count in Details. No plan yet on a game that can compile: the card says when it's measured.
     PlanStats? P => s.Plan;
     // a compile that didn't help: the ring is greyed out, nothing of it counts for the game
-    int? Pct => DriverChanged ? null : ScsKiller.ShownPercent(s);
+    int? Pct => PagePercent(s);
+    /// <summary>The coverage the game's page shows.</summary>
+    public static int? PagePercent(GameState s) => OnOldDriver(s) ? null : ScsKiller.ShownPercent(s);
     // the last compile filled the old driver's cache, which the new driver doesn't use
-    bool DriverChanged => s.Status == GameStatus.Stale && s.StatusReason.StartsWith("driver changed:", StringComparison.Ordinal);
+    bool DriverChanged => OnOldDriver(s);
+    static bool OnOldDriver(GameState s) => s.Status == GameStatus.Stale && s.StatusReason.StartsWith("driver changed:", StringComparison.Ordinal);
     public bool HasCoverageCard => ScsKiller.ShowsCoverage(s) || CanCompile;
     public bool HasPlan => P != null;
     public bool HasMeter => Pct != null;
