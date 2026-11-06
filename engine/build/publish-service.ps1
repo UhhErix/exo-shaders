@@ -26,7 +26,7 @@ param(
     [string]$NativeFrom = (Join-Path $PSScriptRoot '..\prebuilt'),
     [string]$Out,
     # Every assembly's version. Core's test hooks (SCSK_TEST_HOOKS) build in only under 0.0.0-internal, a plain build's.
-    [string]$Version = '1.4.4',
+    [string]$Version = '1.4.6-exo.1',
     [switch]$SkipCli
 )
 
@@ -67,18 +67,21 @@ function Invoke-Dotnet([string[]]$Arguments) {
 if (Test-Path $Out) { Remove-Item -Recurse -Force $Out }
 New-Item -ItemType Directory -Force $Out | Out-Null
 
+# Every program published here is the Exo build: they share SCSKiller.Core.dll in $Out, and the last publish wins.
+$exoBuild = '-p:ExoBuild=true'
+
 # The service
 Invoke-Dotnet @('publish', (Join-Path $engine 'src\ExoShaders.Service\ExoShaders.Service.csproj'),
-    '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $Out, '-p:DebugType=none', '-p:PublishReadyToRun=true', "-p:Version=$Version")
+    '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $Out, '-p:DebugType=none', '-p:PublishReadyToRun=true', "-p:Version=$Version", $exoBuild)
 
 # The CLI the engine starts for the scheduled task and elevated driver settings: published into the same folder, so
 # all three programs run on one copy of the .NET runtime (same version, same SCSKiller.Core).
 if (-not $SkipCli) {
     $cliProj = Join-Path $repo 'src\SCSKiller.Cli\SCSKiller.Cli.csproj'
-    Invoke-Dotnet @('publish', $cliProj, '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $Out, '-p:DebugType=none', '-p:PublishReadyToRun=true', "-p:Version=$Version")
+    Invoke-Dotnet @('publish', $cliProj, '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $Out, '-p:DebugType=none', '-p:PublishReadyToRun=true', "-p:Version=$Version", $exoBuild)
     # scskillerw.exe: the same program without a console window (what the scheduled task runs), same dependencies
     Invoke-Dotnet @('publish', (Join-Path $engine 'src\SCSKiller.CliW\SCSKiller.CliW.csproj'),
-        '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $Out, '-p:DebugType=none', '-p:PublishReadyToRun=true', "-p:Version=$Version")
+        '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $Out, '-p:DebugType=none', '-p:PublishReadyToRun=true', "-p:Version=$Version", $exoBuild)
 }
 
 # Native files, in the app's layout
@@ -92,6 +95,16 @@ Copy-Item $zlib (Join-Path $Out 'zlib-ng2.dll') -Force
 # Licence and notices (GPL-3.0 with SCSKiller's additional permission), and the protocol contract
 foreach ($f in 'LICENSE', 'LICENSE-EXCEPTION.txt', 'THIRD-PARTY-NOTICES.md', 'CONTRACT.md') {
     Copy-Item (Join-Path $engine $f) (Join-Path $Out $f) -Force
+}
+
+# Post-publish check: every shipped SCSKiller.Core must be the Exo build (its ExoBuild.Enabled is a constant, read here
+# without loading the file, as tools/Build-Release.ps1 does in the launcher). An upstream Core would send requests to
+# SCSKiller's servers and Patreon.
+$cores = @(Get-ChildItem -Recurse -File -Filter SCSKiller.Core.dll -Path $Out)
+if ($cores.Count -eq 0) { throw "no SCSKiller.Core.dll in $Out" }
+foreach ($core in $cores) {
+    $enabled = [Reflection.Assembly]::Load([IO.File]::ReadAllBytes($core.FullName)).GetType('SCSKiller.Core.App.ExoBuild').GetField('Enabled').GetRawConstantValue()
+    if ($enabled -ne $true) { throw "$($core.FullName) is not the Exo build (ExoBuild.Enabled is off): publish with -p:ExoBuild=true" }
 }
 
 $size = (Get-ChildItem -Recurse -File $Out | Measure-Object -Sum Length).Sum
