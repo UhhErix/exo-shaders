@@ -34,19 +34,27 @@ inline char warm_memory_tick(WarmMemory& m, double mb, double held, bool low, do
 }
 
 // A fresh process frees what the driver keeps per pipeline (NVIDIA: all of it until exit): the warm ends and a new process
-// goes on from its first unfinished item once this process grew by a third of the PC's RAM since its start, or once the PC is
-// low on memory while it grew by a third of its budget and is still above where it was 5-10 min before (a process that
-// stopped growing never restarts). Measured: Counter-Strike 2's D3D11 warm on AMD, 48 GB shared with the GPU, grows 0.55 GB
-// per 1,000 items to 27.6 GB private / 35.7 GB working set with 6 GB free at ~48k of 140,906 items; Marvel Rivals on 32 GB,
-// 7.7 -> 29 GB private and 0.4-4 GB free over 9 h.
+// goes on from its first unfinished item once the PC's free RAM is under a floor (warm_restart_floor_mb) and still falling
+// over the last ~30 s, while this process grew by a third of its budget and is still above where it was 5-10 min before (a
+// process that stopped growing never restarts). A process restarts for memory no sooner than 5 min after it started. Measured:
+// Counter-Strike 2's D3D11 warm on AMD, 48 GB shared with the GPU, grows 0.55 GB per 1,000 items to 27.6 GB private / 35.7 GB
+// working set with 6 GB free at ~48k of 140,906 items; Marvel Rivals on 32 GB, 7.7 -> 29 GB private and 0.4-4 GB free over
+// 9 h. Phantom Blade Zero on 16 GB restarted 25 times at a third of RAM with 2-5 GB free, and 16 of those restarts moved 39
+// items: the RAM a restart frees is what a PC short of RAM needs back, not a fixed share of the process.
 struct WarmRestart {
-    double mark_mb = -1, mark_t = 0, was_mb = -1;
+    double mark_mb = -1, mark_t = 0, was_mb = -1;  // private memory 5-10 min apart
+    double free_ref = -1, free_t = 0;              // free RAM ~30 s ago: the trend
 };
 
-// plenty: free RAM and commit are well above a quarter of the PC's: the third of RAM doesn't count, as a restart throws away
-// the kept state objects the next process rebuilds.
-inline bool warm_restart_tick(WarmRestart& r, double mb, double start_mb, double budget, double ram_mb, bool low, bool plenty, double now) {
+// The free RAM under which a memory restart may happen: max(1.5 GB, a tenth of the PC's RAM).
+inline double warm_restart_floor_mb(double ram_mb) { return std::max(1536.0, ram_mb / 10); }
+
+// One supervisor tick. uptime_ms: how long this process has run. The 60% bound is the caller's, not a restart rule.
+inline bool warm_restart_tick(WarmRestart& r, double mb, double start_mb, double budget, double ram_mb, double free_mb, double uptime_ms, double now) {
     if (r.mark_mb < 0 || now - r.mark_t >= 300000) r.was_mb = now - r.mark_t < 600000 ? r.mark_mb : -1, r.mark_mb = mb, r.mark_t = now;  // older: a pause
-    double grown = mb - start_mb;
-    return (ram_mb > 0 && !plenty && grown >= ram_mb / 3) || (low && grown >= budget / 3 && r.was_mb >= 0 && mb > r.was_mb);
+    const bool falling = r.free_ref >= 0 && free_mb < r.free_ref;
+    if (r.free_ref < 0 || now - r.free_t >= 30000) r.free_ref = free_mb, r.free_t = now;  // the next comparison is with one 0-30 s old
+    const double grown = mb - start_mb;
+    return ram_mb > 0 && free_mb < warm_restart_floor_mb(ram_mb) && falling && grown >= budget / 3 && uptime_ms >= 300000 &&
+           r.was_mb >= 0 && mb > r.was_mb;
 }

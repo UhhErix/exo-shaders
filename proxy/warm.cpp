@@ -76,6 +76,22 @@
 #include "fossilize_external_replayer.hpp"
 #include "warm_items.h"
 #include "gen_mem.h"
+#include "warm_watch.h"
+#include <psapi.h>
+
+// The start watchdog's progress of a child: its CPU time, I/O bytes and page faults summed, each only rises (warm_watch.h
+// says what a rise means). A counter the handle doesn't answer adds nothing.
+static uint64_t child_work(HANDLE h) {
+    FILETIME c, e, k, u;
+    IO_COUNTERS io = {};
+    PROCESS_MEMORY_COUNTERS m = {sizeof m};
+    auto ft = [](const FILETIME& f) { return uint64_t(f.dwHighDateTime) << 32 | f.dwLowDateTime; };
+    uint64_t w = 0;
+    if (GetProcessTimes(h, &c, &e, &k, &u)) w += ft(k) + ft(u);
+    if (GetProcessIoCounters(h, &io)) w += io.ReadTransferCount + io.WriteTransferCount;
+    if (K32GetProcessMemoryInfo(h, &m, sizeof m)) w += m.PageFaultCount;
+    return w;
+}
 
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "ole32.lib")
@@ -1438,7 +1454,9 @@ static int parent(int argc, wchar_t** argv, bool vulkan) {
     HANDLE stop = o.stop_file.empty() && o.alive_file.empty() ? nullptr : CreateEventW(nullptr, TRUE, FALSE, (o.stop_event.empty() ? stop_name(me) : o.stop_event).c_str());
     if (!stop && (!o.stop_file.empty() || !o.alive_file.empty())) return fail(L"stop event setup failed (error " + std::to_wstring(GetLastError()) + L")");
     auto stop_file = [&] { return !o.stop_file.empty() && GetFileAttributesW(o.stop_file.c_str()) != INVALID_FILE_ATTRIBUTES; };
+    StartWatch watch;  // kept over the children: the start timeouts in a row
     for (;;) {  // twice when the game's D3D12 runtime makes no device: then on the system's
+        start_watch_child(watch);
         std::wstring args = L"--child " + std::to_wstring(me);
         for (int i = 3; i + 1 < argc; i += 2)
             if (!host_only(argv[i])) args += L" " + quoted(argv[i]) + L" " + quoted(argv[i + 1]);
@@ -1496,7 +1514,7 @@ static int parent(int argc, wchar_t** argv, bool vulkan) {
             if (SUCCEEDED(hr) && h) {
                 pi.dwProcessId = GetProcessId(h);
                 CloseHandle(h);
-                pi.hProcess = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SET_QUOTA, FALSE, pi.dwProcessId);
+                pi.hProcess = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_QUERY_INFORMATION | PROCESS_TERMINATE | PROCESS_SET_QUOTA, FALSE, pi.dwProcessId);
                 // the activator's process isn't in our caller's job: it dies with this process instead
                 HANDLE job = CreateJobObjectW(nullptr, nullptr);
                 JOBOBJECT_EXTENDED_LIMIT_INFORMATION li = {};
@@ -1520,16 +1538,21 @@ static int parent(int argc, wchar_t** argv, bool vulkan) {
         wchar_t lim[16] = {};
         // counted in this loop's turns, not wall time: the caller suspends this process to pause the warm
         uint64_t exit_turns = 10ull * (GetEnvironmentVariableW(L"SCSKILLER_WARM_EXIT_S", lim, 16) ? std::max(1, _wtoi(lim)) : 600), final_turn = 0;
-        uint64_t start_turns = 10ull * (GetEnvironmentVariableW(L"SCSKILLER_WARM_START_S", lim, 16) ? _wtoi(lim) : 180), turns = 0, waited = 0;
-        bool killed = false, stuck = false, orphaned = false;
+        // the start limit: no progress for this long ends the child, which is started again from its journal; SCSKILLER_WARM_START_S
+        // is set by the caller from the last db step (Warmer.cs: 3x it, 3 to 15 min), 180 s by default
+        const double start_ms = 1000.0 * (GetEnvironmentVariableW(L"SCSKILLER_WARM_START_S", lim, 16) ? _wtoi(lim) : 180);
+        uint64_t turns = 0;
+        bool killed = false, stuck = false, orphaned = false, relaunch = false;
         FILETIME alive = {};
         uint64_t alive_turn = 0;  // the turn the alive file's write time last changed
         while (WaitForSingleObject(pi.hProcess, 100) == WAIT_TIMEOUT) {
             InterlockedIncrement(beat);
             ++turns;
-            if (!loading || WaitForSingleObject(loading, 0) == WAIT_TIMEOUT) ++waited;
-            if (waited > start_turns && started && WaitForSingleObject(started, 0) == WAIT_TIMEOUT) {
-                TerminateProcess(pi.hProcess, 1), stuck = true;
+            const bool is_started = !started || WaitForSingleObject(started, 0) == WAIT_OBJECT_0;
+            const bool is_loading = loading && WaitForSingleObject(loading, 0) == WAIT_OBJECT_0;
+            const StartStep step = start_watch_tick(watch, child_work(pi.hProcess), is_started, is_loading, start_ms, 100);
+            if (step != StartStep::wait) {
+                TerminateProcess(pi.hProcess, 1), relaunch = step == StartStep::relaunch, stuck = step == StartStep::give_up;
                 WaitForSingleObject(pi.hProcess, 5000);
                 break;
             }
@@ -1555,8 +1578,16 @@ static int parent(int argc, wchar_t** argv, bool vulkan) {
             }
         }
         relays.join();
+        if (relaunch) {  // no progress for the start limit: the next child goes on from its journal, as after the SDK retry
+            err_printf(L"the warm process made no progress for %.0f s before it started replaying: ended, and started again from its journal (%d of %d)\n",
+                       start_ms / 1000, watch.stalls, kStartStalls);
+            CloseHandle(pi.hProcess);
+            if (pi.hThread) CloseHandle(pi.hThread);
+            continue;
+        }
         if (stuck)
-            return fail(L"the warm process didn't start replaying within " + std::to_wstring(start_turns / 10) + L" s" +
+            return fail(L"the warm process made no progress for " + std::to_wstring((int)(start_ms / 1000)) + L" s on " + std::to_wstring(kStartStalls) +
+                        L" starts in a row, before it started replaying" +
                         (o.layer.empty() ? L"" : L" (an add-on of the game's layer may hang outside the game)") + L", so it was ended");
         if (orphaned)
             return fail(L"the alive file " + o.alive_file + L" stayed unchanged for " + std::to_wstring(((uint64_t)o.alive_turns + exit_turns) / 10) + L" s: ended the warm process");

@@ -2953,10 +2953,8 @@ static void warm_main() {
         const double ram_mb = got ? (g_test_ram_mb ? g_test_ram_mb : sys.ullTotalPhys / 1048576.0) : 0;
         // past 60% of RAM the PC pages: the process stops for a new one, whatever its restart setting
         const bool hard = g_mem_mb && ram_mb > 0 && mb > 0.6 * ram_mb && work_left();
-        // a quarter of RAM is what the plan's own memory check leaves free, 1 GB covers what's in flight when a stop lands
-        const bool plenty = got && !g_test_ram_mb && free_mb > ram_mb / 4 + 1024 && sys.ullAvailPageFile / 1048576.0 > ram_mb / 4 + 1024;
         if (g_state == RUN && g_mem_mb && (!restart_said || hard && !may_restart) &&
-            (hard || !hard_only && warm_restart_tick(wr, mb, g_start_mb, g_mem_mb, ram_mb, low, plenty, now_ms()) || (restart_at && warm_done() >= restart_at))) {
+            (hard || !hard_only && warm_restart_tick(wr, mb, g_start_mb, g_mem_mb, ram_mb, free_mb, now_ms() - t0, now_ms()) || (restart_at && warm_done() >= restart_at))) {
             int run = RUN;
             if (!may_restart && !hard) {
                 if (!restart_said) restart_said = true, logf("warm: private memory %.0f MB (%.0f MB at the start), %.0f MB of RAM free: its restarts are off, this process goes on until 60%% of RAM", mb, g_start_mb, free_mb);

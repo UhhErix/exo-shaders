@@ -53,6 +53,7 @@
 #include "overlay.h"
 #include "admission.h"
 #include "warm_memory.h"
+#include "warm_watch.h"
 #include "sys_dxgi.h"
 #include <algorithm>
 #include <array>
@@ -1802,6 +1803,97 @@ static int warm_memory_rules() {
         if (char c = warm_memory_tick(m, 1600 - 50 * (8 - m.allowed), 0, false, t)) (c == 'd' ? last_drop : kept_at) = t;
     CHECK(m.allowed == 1 && kept_at - last_drop > 30000 && m.kept == 1250 - 700);
     printf("warmmemory OK\n");
+    return 0;
+}
+
+// `selftest warmrestart` (no GPU, no proxy): the memory restart rule on a fake clock and a fake memory feed. The owner's PC
+// has 16 GB of RAM: a warm process starts at 680 MB and grows ~50 MB/s, and the PC had 2-4.5 GB free while the old rule (a
+// third of RAM grown) restarted it at 6.1 GB, 25 times, moving 39 items in 16 of them.
+static int warm_restart_rules() {
+    const double ram = 16384, budget = 6000, start = 680, turn = 100;
+    // the owner's feed: 2-4.5 GB free, moving within it. No restart for memory: a process runs to the 60% bound, then the next one
+    int memory = 0, bound = 0;
+    double t = 0;
+    for (int proc = 0; proc < 4; ++proc) {
+        WarmRestart r;
+        const double at = t;
+        double mb = start;
+        for (;; t += turn, mb += 5) {  // 5 MB per 100 ms = 50 MB/s
+            const double free = ((long long)((t - at) / 60000) & 1) ? 4500 : 2000;  // 2.0 and 4.5 GB, a minute each
+            if (mb > 0.6 * ram) { ++bound; break; }
+            if (warm_restart_tick(r, mb, start, budget, ram, free, t - at, t)) { ++memory; break; }
+        }
+    }
+    CHECK(memory == 0 && bound == 4);
+    // falling under the floor (1638 MB) from the start: a restart waits for the 5-min uptime, then goes at once; the next process's
+    // first one waits its own 5 min
+    WarmRestart r;
+    double mb = 4000, free = 2000;
+    int first = -1;
+    for (double at = 0; at < 700000 && first < 0; at += turn) {
+        mb += 5, free -= 0.2;  // falling 2 MB/s from 2000 MB free: under the floor after 3 min, the 5-min uptime comes first
+        if (warm_restart_tick(r, mb, start, budget, ram, free, at, at)) first = int(at);
+    }
+    CHECK(first == 300000);
+    // a process that is small (not a third of the budget grown) doesn't restart, however low the PC is
+    WarmRestart tiny;
+    bool any = false;
+    for (double at = 0; at < 600000; at += turn) any |= warm_restart_tick(tiny, 1200, start, budget, ram, 1000 - at / 1000, at, at);
+    CHECK(!any);
+    // rising free RAM under the floor (the PC recovering): no restart
+    WarmRestart rising;
+    any = false;
+    mb = 9000;
+    for (double at = 0; at < 600000; at += turn) any |= warm_restart_tick(rising, mb + at / 10, start, budget, ram, 1000 + at / 1000, at, at);
+    CHECK(!any);
+    printf("warmrestart OK\n");
+    return 0;
+}
+
+// `selftest warmwatch` (no GPU, no proxy): the start watchdog on a fake clock. A db step of 181 s that keeps computing survives;
+// a silent start is ended after 180 s and started again, and three silent starts in a row fail the warm.
+static int warm_watch_rules() {
+    const double limit = 180000, turn = 100;
+    StartWatch w;
+    uint64_t work = 1;
+    // a db step that runs 181 s, its CPU time and page faults rising every turn: no timeout, then the started event
+    for (double t = 0; t < 181000; t += turn, work += 7)
+        CHECK(start_watch_tick(w, work, false, false, limit, turn) == StartStep::wait);
+    CHECK(start_watch_tick(w, work, true, false, limit, turn) == StartStep::wait && w.stalls == 0);
+    // silent starts: each is ended after 180 s (1800 turns of its 100 ms, the first reading its baseline), the third in a row fails
+    StartWatch s;
+    for (int k = 1; k <= kStartStalls; ++k) {
+        start_watch_child(s);
+        int waits = 0;
+        StartStep st;
+        while ((st = start_watch_tick(s, 5, false, false, limit, turn)) == StartStep::wait) ++waits;
+        CHECK(waits == 1800 && st == (k < kStartStalls ? StartStep::relaunch : StartStep::give_up) && s.stalls == k);
+    }
+    // a start that comes after two timeouts clears them: the next silence is a relaunch, not the give-up
+    StartWatch c;
+    start_watch_child(c);
+    StartStep st;
+    while ((st = start_watch_tick(c, 5, false, false, limit, turn)) == StartStep::wait) {}
+    start_watch_child(c);
+    while ((st = start_watch_tick(c, 5, false, false, limit, turn)) == StartStep::wait) {}
+    CHECK(st == StartStep::relaunch && c.stalls == 2);
+    CHECK(start_watch_tick(c, 9, true, false, limit, turn) == StartStep::wait && c.stalls == 0);
+    start_watch_child(c);
+    while ((st = start_watch_tick(c, 5, false, false, limit, turn)) == StartStep::wait) {}
+    CHECK(st == StartStep::relaunch && c.stalls == 1);
+    // loading the dbs isn't counted, however long: the watch starts when the load ends
+    StartWatch l;
+    start_watch_child(l);
+    for (double t = 0; t < 600000; t += turn) CHECK(start_watch_tick(l, 3, false, true, limit, turn) == StartStep::wait);
+    CHECK(l.stalls == 0);
+    // progress, then silence: the 180 s run from the last progress
+    StartWatch p;
+    start_watch_child(p);
+    for (int i = 0; i < 500; ++i) start_watch_tick(p, 10 + i, false, false, limit, turn);
+    int waits = 0;  // silent from its last reading (509): 1799 waits, the 1800th turn is the timeout
+    while (start_watch_tick(p, 509, false, false, limit, turn) == StartStep::wait) ++waits;
+    CHECK(waits == 1799 && p.stalls == 1);
+    printf("warmwatch OK\n");
     return 0;
 }
 
@@ -7557,7 +7649,13 @@ int wmain(int argc, wchar_t** argv) {
     if (argc > 1 && !wcscmp(argv[1], L"sysdxgi")) return sys_dxgi_rows();  // no proxy: never stamped
     if (argc > 1 && !wcscmp(argv[1], L"load")) return LoadLibraryW((dir + L"d3d12.dll").c_str()) ? 0 : 1;  // the proxy beside it, no device: never stamped
     if (argc > 1 && !wcscmp(argv[1], L"admission")) return admission_rules();  // no proxy: values only
-    if (argc > 1 && !wcscmp(argv[1], L"warmmemory")) return warm_memory_rules();  // no proxy: values only
+    if (argc > 1 && !wcscmp(argv[1], L"warmmemory")) {  // no proxy: values only
+        int rc = warm_memory_rules();
+        if (!rc) rc = warm_restart_rules();
+        if (!rc) rc = warm_watch_rules();
+        return rc;
+    }
+    if (argc > 1 && !wcscmp(argv[1], L"warmwatch")) return warm_watch_rules();  // no proxy: values only
     // The proxy records only for the exe the app checked (its stamp in scskiller.ini); here the selftest is the app. None
     // with SCSKILLER_SELFTEST_UNARMED set.
     // run by hand, outside the tests: its recorder key and the proxy's refusals go to a temp folder, never the user's
