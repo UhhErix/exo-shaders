@@ -310,18 +310,31 @@ static void err_printf(const wchar_t* fmt, ...) {
     fflush(stderr);
 }
 
-// The first item the journal (scskiller_items.bin) of the child with this pid left unfinished: where a new child goes on.
-// The child is ended before this is read, so its writes are all in the file.
-static bool journal_from(const std::wstring& file, DWORD pid, uint64_t& from) {
+// The child's journal (scskiller_items.bin), mapped as the child writes it (ReadFile isn't guaranteed to see a view's writes),
+// given to parse with its bytes. False: no journal, or parse said no (not this child's, or torn).
+template <class Parse>
+static bool with_journal(const std::wstring& file, Parse parse) {
     HANDLE f = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
     if (f == INVALID_HANDLE_VALUE) return false;
     LARGE_INTEGER size{};
-    DWORD n = 0;
-    std::vector<uint8_t> b;
     bool ok = GetFileSizeEx(f, &size) && size.QuadPart >= (LONGLONG)sizeof(ItemsHeader) && size.QuadPart < (LONGLONG)1 << 31;
-    if (ok) b.resize((size_t)size.QuadPart), ok = ReadFile(f, b.data(), (DWORD)b.size(), &n, nullptr) && n == b.size();
+    HANDLE m = ok ? CreateFileMappingW(f, nullptr, PAGE_READONLY, 0, 0, nullptr) : nullptr;
+    auto* v = m ? (const uint8_t*)MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0) : nullptr;
+    if (m) CloseHandle(m);
     CloseHandle(f);
-    return ok && journal_first_unfinished(b.data(), b.size(), pid, from);
+    bool r = v && parse(v, (uint64_t)size.QuadPart);
+    if (v) UnmapViewOfFile(v);
+    return r;
+}
+
+// The first item the child with this pid left unfinished in its journal: where a new child goes on. The child is ended first.
+static bool journal_from(const std::wstring& file, DWORD pid, uint64_t& from) {
+    return with_journal(file, [&](const uint8_t* b, uint64_t n) { return journal_first_unfinished(b, n, pid, from); });
+}
+
+// The finished items in the child's journal, sampled by the start watchdog while the child replays.
+static bool journal_finished(const std::wstring& file, DWORD pid, uint64_t& count) {
+    return with_journal(file, [&](const uint8_t* b, uint64_t n) { return journal_finished_count(b, n, pid, count); });
 }
 
 // The child died without a last line: the retry it couldn't print, from its item states (warm_items.h). The items in flight
@@ -1469,6 +1482,7 @@ static int parent(int argc, wchar_t** argv, bool vulkan) {
     if (!stop && (!o.stop_file.empty() || !o.alive_file.empty())) return fail(L"stop event setup failed (error " + std::to_wstring(GetLastError()) + L")");
     auto stop_file = [&] { return !o.stop_file.empty() && GetFileAttributesW(o.stop_file.c_str()) != INVALID_FILE_ATTRIBUTES; };
     StartWatch watch;  // kept over the children: the start timeouts in a row
+    HardWatch hard;    // the absolute limits; its one resume is kept over the children too
     uint64_t resume = 0;  // a child ended for no progress goes on from the first item its journal left unfinished
     bool resumed = false;
     for (;;) {  // twice when the game's D3D12 runtime makes no device: then on the system's
@@ -1558,8 +1572,10 @@ static int parent(int argc, wchar_t** argv, bool vulkan) {
         // the start limit: no progress for this long ends the child, which is started again from its journal; SCSKILLER_WARM_START_S
         // is set by the caller from the last db step (Warmer.cs: 3x it, 3 to 15 min), 180 s by default
         const double start_ms = 1000.0 * (GetEnvironmentVariableW(L"SCSKILLER_WARM_START_S", lim, 16) ? _wtoi(lim) : 180);
-        uint64_t turns = 0;
-        bool killed = false, stuck = false, orphaned = false, relaunch = false;
+        uint64_t turns = 0, finished = 0;  // finished: the child's journal's finished items, sampled every 5 s
+        bool killed = false, stuck = false, orphaned = false, relaunch = false, hard_started = false;
+        HardStep hard_trip = HardStep::ok;
+        hard_watch_child(hard);
         FILETIME alive = {};
         uint64_t alive_turn = 0;  // the turn the alive file's write time last changed
         while (WaitForSingleObject(pi.hProcess, 100) == WAIT_TIMEOUT) {
@@ -1570,6 +1586,13 @@ static int parent(int argc, wchar_t** argv, bool vulkan) {
             const StartStep step = start_watch_tick(watch, child_work(pi.hProcess), is_started, is_loading, start_ms, 100);
             if (step != StartStep::wait) {
                 TerminateProcess(pi.hProcess, 1), relaunch = step == StartStep::relaunch, stuck = step == StartStep::give_up;
+                WaitForSingleObject(pi.hProcess, 5000);
+                break;
+            }
+            // the hard limits: they count the clock and the finished items, not CPU, so a child that spins is still ended
+            if (is_started && turns % 50 == 0) journal_finished(stage + kItemsFile, pi.dwProcessId, finished);
+            if (const HardStep hs = hard_watch_tick(hard, is_started, finished, 100); hs != HardStep::ok) {
+                TerminateProcess(pi.hProcess, 1), hard_trip = hs, hard_started = is_started;
                 WaitForSingleObject(pi.hProcess, 5000);
                 break;
             }
@@ -1595,10 +1618,18 @@ static int parent(int argc, wchar_t** argv, bool vulkan) {
             }
         }
         relays.join();
-        if (relaunch) {  // no progress for the start limit: the next child goes on from the first item its journal left unfinished
+        if (hard_trip == HardStep::fail)
+            return fail(std::wstring(hard_started ? L"no item finished for 20 min after the warm process started replaying"
+                                                  : L"the warm process didn't start replaying within 30 min of its launch") +
+                        L" (and again after its one resume from the journal), so it was ended");
+        if (relaunch || hard_trip == HardStep::resume) {  // the next child goes on from the first item its journal left unfinished
             if (journal_from(stage + kItemsFile, pi.dwProcessId, resume)) resumed = true;  // unreadable: the last resume point stands
-            if (resumed) err_printf(L"the warm process made no progress for %.0f s before it started replaying: ended, and a new one goes on from item %llu (%d of %d)\n",
-                                    start_ms / 1000, (unsigned long long)resume, watch.stalls, kStartStalls);
+            if (hard_trip == HardStep::resume)
+                err_printf(L"%ls: ended, and a new one %ls (its one resume)\n",
+                           hard_started ? L"no item finished for 20 min after the warm process started replaying" : L"the warm process didn't start replaying within 30 min of its launch",
+                           resumed ? (L"goes on from item " + std::to_wstring(resume) + L" in its journal").c_str() : L"starts again from its first item");
+            else if (resumed) err_printf(L"the warm process made no progress for %.0f s before it started replaying: ended, and a new one goes on from item %llu (%d of %d)\n",
+                                         start_ms / 1000, (unsigned long long)resume, watch.stalls, kStartStalls);
             else err_printf(L"the warm process made no progress for %.0f s before it started replaying: ended, and a new one starts again (%d of %d)\n",
                             start_ms / 1000, watch.stalls, kStartStalls);
             CloseHandle(pi.hProcess);

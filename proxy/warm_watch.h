@@ -31,3 +31,35 @@ inline StartStep start_watch_tick(StartWatch& w, uint64_t work, bool started, bo
 
 // A relaunched child: its counters start again, and the timeouts before it still count.
 inline void start_watch_child(StartWatch& w) { w.seen = false, w.quiet = 0; }
+
+// The hard limits, over the progress rules: a child that spins CPU counts as progress, so these look only at the clock and at
+// the finished items. Before the start event: no start within kStartDeadlineMs of the launch. After it: no finished item for
+// kItemStallMs. Either one trips the first time to a resume from the journal, and again to a failure: one resume for the warm.
+constexpr double kStartDeadlineMs = 30 * 60 * 1000.0;
+constexpr double kItemStallMs = 20 * 60 * 1000.0;
+
+struct HardWatch {
+    double age = 0;        // ms since the child launched
+    double idle = 0;       // ms since the finished count last moved, after the start event
+    uint64_t items = 0;    // the finished count at the last check
+    bool resumed = false;  // the warm's one resume is used, kept over the children
+};
+
+enum class HardStep { ok, resume, fail };
+
+inline void hard_watch_child(HardWatch& h) { h.age = 0, h.idle = 0, h.items = 0; }
+
+// finished: the journal's finished count (read by the caller every few turns). turn_ms: the loop's turn.
+inline HardStep hard_watch_tick(HardWatch& h, bool started, uint64_t finished, double turn_ms) {
+    h.age += turn_ms;
+    bool trip;
+    if (!started) trip = h.age >= kStartDeadlineMs;
+    else {
+        if (finished != h.items) h.items = finished, h.idle = 0;
+        else h.idle += turn_ms;
+        trip = h.idle >= kItemStallMs;
+    }
+    if (!trip) return HardStep::ok;
+    if (h.resumed) return HardStep::fail;
+    return h.resumed = true, HardStep::resume;
+}

@@ -1905,6 +1905,57 @@ static int warm_watch_rules() {
         uint64_t from = 99;
         CHECK(journal_first_unfinished(b, sizeof b, 7, from) && from == 3);
         CHECK(!journal_first_unfinished(b, sizeof b, 8, from) && !journal_first_unfinished(b, sizeof b - 1, 7, from));
+        uint64_t finished = 99;
+        CHECK(journal_finished_count(b, sizeof b, 7, finished) && finished == 3 && !journal_finished_count(b, sizeof b, 8, finished));
+    }
+    // the hard limits: a child that spins (its CPU counts as progress) and never starts is resumed once at 30 min, then failed
+    // at the next 30 min
+    {
+        HardWatch h;
+        hard_watch_child(h);
+        int waits = 0;
+        HardStep st;
+        while ((st = hard_watch_tick(h, false, 0, turn)) == HardStep::ok) ++waits;
+        CHECK(st == HardStep::resume && waits == 17999);
+        hard_watch_child(h);
+        waits = 0;
+        while ((st = hard_watch_tick(h, false, 0, turn)) == HardStep::ok) ++waits;
+        CHECK(st == HardStep::fail && waits == 17999);
+    }
+    // a start within 30 min of the launch is no trip, however late; after the start, the finished items keep the watch
+    {
+        HardWatch h;
+        hard_watch_child(h);
+        int waits = 0;
+        while (hard_watch_tick(h, false, 0, turn) == HardStep::ok && ++waits < 17000) {}  // 28.3 min to launch
+        CHECK(hard_watch_tick(h, true, 1, turn) == HardStep::ok);
+        uint64_t fin = 1;
+        for (int t = 0; t < 3 * 3600 * 10; ++t) {  // three hours of an item every 5 s: never tripped
+            if (t % 50 == 0) ++fin;
+            CHECK(hard_watch_tick(h, true, fin, turn) == HardStep::ok);
+        }
+    }
+    // no finished item for 20 min after the start: resumed once, then failed when the next child goes as silent
+    {
+        HardWatch h;
+        hard_watch_child(h);
+        int waits = 0;
+        HardStep st;
+        while ((st = hard_watch_tick(h, true, 5, turn)) == HardStep::ok) ++waits;  // the first call moves the count from 0 to 5
+        CHECK(st == HardStep::resume && waits == 11999 + 1);
+        hard_watch_child(h);
+        waits = 0;
+        while ((st = hard_watch_tick(h, true, 0, turn)) == HardStep::ok) ++waits;
+        CHECK(st == HardStep::fail && waits == 11999);
+    }
+    // 19 min without an item is no trip: the next one resets it
+    {
+        HardWatch h;
+        hard_watch_child(h);
+        CHECK(hard_watch_tick(h, true, 0, turn) == HardStep::ok);
+        for (int t = 0; t < 11400; ++t) CHECK(hard_watch_tick(h, true, 0, turn) == HardStep::ok);
+        CHECK(hard_watch_tick(h, true, 1, turn) == HardStep::ok);
+        for (int t = 0; t < 11400; ++t) CHECK(hard_watch_tick(h, true, 1, turn) == HardStep::ok);
     }
     printf("warmwatch OK\n");
     return 0;
