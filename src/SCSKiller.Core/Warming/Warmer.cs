@@ -491,12 +491,9 @@ sealed class WarmRun : IWarmRun
     static readonly TimeSpan StalledAfter = TimeSpan.FromSeconds(int.TryParse(Environment.GetEnvironmentVariable("SCSKILLER_TEST_STALLED_S"), out var s) ? s : 600);
     // Known state objects skipped in one compile before the retries lower the ray tracing threads too (a crash storm).
     const int MaxKnownSkips = 8;
-    const string StuckVariable = "SCSKILLER_WARM_STUCK_S";
+    const string StuckVariable = "SCSKILLER_WARM_STUCK_S", StartVariable = "SCSKILLER_WARM_START_S";
     // under StalledAfter: an item given up on still moves the warm before the app calls it stalled
     const int MaxStuckS = 300;
-    // a memory restart whose process moved fewer items grew back from what the next items build on (NVIDIA frees a state
-    // object only at exit): the next process restarts only at the 60% bound
-    const int MinRestartItems = 1000;   // also the items a halved process runs before all workers again (proxy.cpp)
     IWarmProcess _p = null!;
     readonly IWarmHost _host;
     readonly object _lock = new();
@@ -535,10 +532,11 @@ sealed class WarmRun : IWarmRun
         var rt = 0;   // the ray tracing threads of the last process
         IReadOnlyList<long> isolated = [];   // the items it created alone first
         var hardOnly = false;   // the next process restarts for memory only at the 60% bound
-        long creptTo = -1;   // where the last memory restart went on from, when that moved the resume point under MinRestartItems
+        var restarts = new MemoryRestarts();
+        long launchedAt = 0;   // the current process's launch (Stopwatch timestamp), and its db step: launch to its start event
+        double? dbSeconds = null;
         int band = 0, ran = 0;   // the workers the next process alone starts with for its first 1,000 items (0: all), the last one's
         bool one = false, single = false;   // the next process runs one thread, the last one ran one
-        long completed = 0;
         // the proxy's per-item limit: hung items that compile alone were slow on many threads (Phantom Blade Zero on NVIDIA)
         var stuckS = int.TryParse(System.Environment.GetEnvironmentVariable(StuckVariable), out var s0) && s0 > 0 ? s0 : 60;
         long Whole(long done) => passes?.Overall(pass, done) ?? done;
@@ -546,6 +544,7 @@ sealed class WarmRun : IWarmRun
         IWarmProcess Launch(long start, int rtThreads, List<long> skip, IReadOnlyList<long> isolate)
         {
             processes++;
+            launchedAt = Stopwatch.GetTimestamp();
             (from, rt, isolated) = (start, rtThreads, isolate);
             _retried = false;
             var threads = one ? 1 : passes != null && !passes.IsFast(pass) && o.CarefulThreads > 0 ? o.CarefulThreads : o.Threads;
@@ -579,6 +578,8 @@ sealed class WarmRun : IWarmRun
             if (isolate.Count > 0) { args.Add("--isolate"); args.Add(string.Join(',', isolate)); }
             if (passes != null) { args.Add("--pass"); args.Add(passes.Number(pass).ToString()); }
             var all = new Dictionary<string, string>(env ?? new Dictionary<string, string>()) { [StuckVariable] = stuckS.ToString() };
+            // the start watchdog (proxy/warm.cpp) allows three times the last db step, 3 to 15 min: no progress for that long ends a start
+            if (dbSeconds is { } db) all[StartVariable] = StartLimit.For(db).ToString();
             if (band > 0) all["SCSKILLER_WARM_BAND_WORKERS"] = band.ToString();
             band = 0;
             return host.Start(exe, args, all,
@@ -642,10 +643,9 @@ sealed class WarmRun : IWarmRun
                 var report = progress == null ? null : new Adjusted(progress, carried, carriedSkips, note, noteTill, passNote, passes?.Total);
                 var lastPass = passes == null || pass == passes.Count - 1;
                 stage = null;   // this process's, never an earlier one's
-                completed = from;
                 (last, done, error) = await WarmOutput.Pump(_p.Output, report, Growth, ReportEvery,
                     () => { if (lastPass || _stopping) _doneSeen.TrySetResult(); }, Whole, s => stage = host.HostPath(s), _p.Exited, OutputHeldAfter,
-                    o.Vulkan ? TimeSpan.Zero : StalledAfter, () => _paused || _stopping, () => Volatile.Read(ref _resumed), c => culprits.UnionWith(c), () => _retried = true, d => completed = d);
+                    o.Vulkan ? TimeSpan.Zero : StalledAfter, () => _paused || _stopping, () => Volatile.Read(ref _resumed), c => culprits.UnionWith(c), () => _retried = true, onStart: () => dbSeconds = (Stopwatch.GetTimestamp() - launchedAt) / (double)Stopwatch.Frequency);
                 if (error == Warmer.StalledError)
                 {
                     _ended = error;
@@ -765,18 +765,14 @@ sealed class WarmRun : IWarmRun
                     }
                     if (freed)
                     {
-                        // what the process completed (its last progress, the retry event's Done is From): an unfinished item early on holds the resume point back
-                        // one that resumes where it started with nothing in flight to create alone would only restart there again
-                        var creeping = r.From - from < MinRestartItems;
-                        // slow items in flight keep the resume point back while the other workers run ahead into the budget: twice running, nothing else ends it
-                        var little = r.From == from && !aloneFirst || Math.Max(completed, r.From) - from < MinRestartItems || creeping && creptTo == from;
-                        creptTo = creeping ? r.From : -1;
-                        // memory held by heavy compiles in flight grows back on every thread: half the workers each time, the 60% bound only at one
-                        (band, hardOnly) = little ? (ran == 1 ? 0 : Math.Max(1, ran / 2), ran == 1) : (0, false);
+                        // measured per restart against the resume point its process started from (MemoryRestarts): a few restarts in a row
+                        // that move nothing stop the restarts for memory, and the workers halve
+                        restarts.Restart(r.From - from, ran);
+                        (band, hardOnly) = (restarts.Band, restarts.HardOnly);
                         log?.Report($"{game.Name}: compile: restarted to free memory (private memory {r.PrivateMB:N0} MB, {r.FreeMB:N0} MB of RAM free), going on from item {Whole(r.From):N0}"
                             + (stuck ? $", item {Whole(r.From):N0} skipped for this compile: it made no progress on one thread either" : one ? ", the next process on one thread" : "")
                             + (aloneFirst ? $", the {r.Isolate!.Count:N0} pipelines in flight first, each alone" : "")
-                            + (little && !hardOnly ? $", the next process on {band} workers for its first 1,000 items" : "")
+                            + (band > 0 ? $", the next process on {band} workers for its first 1,000 items" : "")
                             + (hardOnly && System.Environment.GetEnvironmentVariable("SCSKILLER_TEST_WARM_MEM_RESTART_AT") == null ? ", the next restart only at 60% of RAM" : ""));   // the hook restarts whatever the bound (proxy.cpp)
                     }
                     note = removed ? (r.Reason == "died" ? "continuing after the compile process stopped" : "recovering from a GPU driver crash") + (crashed.Count > 0 ? $", {crashed.Count:N0} skipped so far" : "")
@@ -1021,11 +1017,11 @@ public static class WarmOutput
     /// or error event, a process whose done and failed counts don't move for <paramref name="stalled"/> (zero: never) while not
     /// <paramref name="paused"/> (counted from the last <paramref name="resumed"/> too) is given up on the same way, with <see cref="Warmer.StalledError"/>: the caller ends it.
     /// <paramref name="onCulprits"/> gets each event's <see cref="WarmEvent.Culprits"/>, an error's too. <paramref name="onRetry"/>
-    /// runs on the retry event.</summary>
+    /// runs on the retry event, <paramref name="onStart"/> on the start event.</summary>
     public static async Task<(WarmEvent? Last, WarmEvent? Done, string? Error)> Pump(TextReader stdout, IProgress<WarmProgress>? progress,
         Func<long> cacheGrowth, TimeSpan every, Action? onDone = null, Func<long, long>? whole = null, Action<string>? onStage = null,
         Task? exited = null, TimeSpan held = default, TimeSpan stalled = default, Func<bool>? paused = null, Func<long>? resumed = null,
-        Action<IReadOnlyList<string>>? onCulprits = null, Action? onRetry = null, Action<long>? onProgress = null)
+        Action<IReadOnlyList<string>>? onCulprits = null, Action? onRetry = null, Action<long>? onProgress = null, Action? onStart = null)
     {
         whole ??= d => d;
         WarmEvent? last = null, done = null, latest = null;
@@ -1049,7 +1045,7 @@ public static class WarmOutput
                 if (e.Event is "done" or "stopping") onDone?.Invoke();
                 if (e.Event == "retry") onRetry?.Invoke();
                 if (e is { Event: "stage", Stage: { Length: > 0 } st }) onStage?.Invoke(st);
-                if (e.Event == "start") Volatile.Write(ref moved, Stopwatch.GetTimestamp());
+                if (e.Event == "start") { Volatile.Write(ref moved, Stopwatch.GetTimestamp()); onStart?.Invoke(); }
                 else if (e.Event is "done" or "retry" or "stopping" or "error") Volatile.Write(ref moved, 0);
                 else if (e.Event == "progress" && counts != (counts = (e.Done, e.Failed, e.Work)) && Volatile.Read(ref moved) != 0) Volatile.Write(ref moved, Stopwatch.GetTimestamp());
                 if (e.Event is "start" or "progress" or "done" or "retry") last = e;

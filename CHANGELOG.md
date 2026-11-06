@@ -4,6 +4,15 @@ All notable changes to the SCSKiller app and command line. Versions follow [Sema
 
 ## [Unreleased]
 
+**Fixed on Windows**
+
+- A warm whose db step takes a long time (180 s and more) is no longer ended as failed while it makes progress. A start
+  with no progress for three times the last db step (3 to 15 min) is started again from where it stopped, and the compile
+  fails only after three such starts in a row.
+- A PC short of RAM no longer restarts a warm for memory at a third of its RAM grown while 2-5 GB stay free. A restart
+  needs free RAM under a floor (1.5 GB, or a tenth of RAM) and falling, and at most one per 5 min. Restarts that move
+  fewer than 500 items each halve the workers, down to one, instead of restarting again and again.
+
 ## [1.4.6] - 2026-11-06
 
 **Improved**
