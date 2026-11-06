@@ -72,16 +72,16 @@ $exoBuild = '-p:ExoBuild=true'
 
 # The service
 Invoke-Dotnet @('publish', (Join-Path $engine 'src\ExoShaders.Service\ExoShaders.Service.csproj'),
-    '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $Out, '-p:DebugType=none', '-p:PublishReadyToRun=true', "-p:Version=$Version", $exoBuild)
+    '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $Out, '-p:DebugType=none', '-p:PublishReadyToRun=true', "-p:Version=$Version", '-p:IncludeSourceRevisionInInformationalVersion=false', $exoBuild)
 
 # The CLI the engine starts for the scheduled task and elevated driver settings: published into the same folder, so
 # all three programs run on one copy of the .NET runtime (same version, same SCSKiller.Core).
 if (-not $SkipCli) {
     $cliProj = Join-Path $repo 'src\SCSKiller.Cli\SCSKiller.Cli.csproj'
-    Invoke-Dotnet @('publish', $cliProj, '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $Out, '-p:DebugType=none', '-p:PublishReadyToRun=true', "-p:Version=$Version", $exoBuild)
+    Invoke-Dotnet @('publish', $cliProj, '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $Out, '-p:DebugType=none', '-p:PublishReadyToRun=true', "-p:Version=$Version", '-p:IncludeSourceRevisionInInformationalVersion=false', $exoBuild)
     # scskillerw.exe: the same program without a console window (what the scheduled task runs), same dependencies
     Invoke-Dotnet @('publish', (Join-Path $engine 'src\SCSKiller.CliW\SCSKiller.CliW.csproj'),
-        '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $Out, '-p:DebugType=none', '-p:PublishReadyToRun=true', "-p:Version=$Version", $exoBuild)
+        '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', $Out, '-p:DebugType=none', '-p:PublishReadyToRun=true', "-p:Version=$Version", '-p:IncludeSourceRevisionInInformationalVersion=false', $exoBuild)
 }
 
 # Native files, in the app's layout
