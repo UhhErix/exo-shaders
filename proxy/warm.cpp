@@ -310,6 +310,20 @@ static void err_printf(const wchar_t* fmt, ...) {
     fflush(stderr);
 }
 
+// The first item the journal (scskiller_items.bin) of the child with this pid left unfinished: where a new child goes on.
+// The child is ended before this is read, so its writes are all in the file.
+static bool journal_from(const std::wstring& file, DWORD pid, uint64_t& from) {
+    HANDLE f = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER size{};
+    DWORD n = 0;
+    std::vector<uint8_t> b;
+    bool ok = GetFileSizeEx(f, &size) && size.QuadPart >= (LONGLONG)sizeof(ItemsHeader) && size.QuadPart < (LONGLONG)1 << 31;
+    if (ok) b.resize((size_t)size.QuadPart), ok = ReadFile(f, b.data(), (DWORD)b.size(), &n, nullptr) && n == b.size();
+    CloseHandle(f);
+    return ok && journal_first_unfinished(b.data(), b.size(), pid, from);
+}
+
 // The child died without a last line: the retry it couldn't print, from its item states (warm_items.h). The items in flight
 // are created alone first; one that dies again alone is skipped for this compile (never a crash key: the death may not be
 // its own). False: no states to go by (it died before its items).
@@ -1455,11 +1469,14 @@ static int parent(int argc, wchar_t** argv, bool vulkan) {
     if (!stop && (!o.stop_file.empty() || !o.alive_file.empty())) return fail(L"stop event setup failed (error " + std::to_wstring(GetLastError()) + L")");
     auto stop_file = [&] { return !o.stop_file.empty() && GetFileAttributesW(o.stop_file.c_str()) != INVALID_FILE_ATTRIBUTES; };
     StartWatch watch;  // kept over the children: the start timeouts in a row
+    uint64_t resume = 0;  // a child ended for no progress goes on from the first item its journal left unfinished
+    bool resumed = false;
     for (;;) {  // twice when the game's D3D12 runtime makes no device: then on the system's
         start_watch_child(watch);
         std::wstring args = L"--child " + std::to_wstring(me);
         for (int i = 3; i + 1 < argc; i += 2)
             if (!host_only(argv[i])) args += L" " + quoted(argv[i]) + L" " + quoted(argv[i + 1]);
+        if (resumed) args += L" --start " + std::to_wstring(resume);  // the last --start wins
         if (stop && o.stop_event.empty()) args += L" --stop-event " + quoted(stop_name(me));
         if (sdk) args += L" --sdk " + std::to_wstring(sdk);
         if (stop_file()) SetEvent(stop);
@@ -1578,9 +1595,12 @@ static int parent(int argc, wchar_t** argv, bool vulkan) {
             }
         }
         relays.join();
-        if (relaunch) {  // no progress for the start limit: the next child goes on from its journal, as after the SDK retry
-            err_printf(L"the warm process made no progress for %.0f s before it started replaying: ended, and started again from its journal (%d of %d)\n",
-                       start_ms / 1000, watch.stalls, kStartStalls);
+        if (relaunch) {  // no progress for the start limit: the next child goes on from the first item its journal left unfinished
+            if (journal_from(stage + kItemsFile, pi.dwProcessId, resume)) resumed = true;  // unreadable: the last resume point stands
+            if (resumed) err_printf(L"the warm process made no progress for %.0f s before it started replaying: ended, and a new one goes on from item %llu (%d of %d)\n",
+                                    start_ms / 1000, (unsigned long long)resume, watch.stalls, kStartStalls);
+            else err_printf(L"the warm process made no progress for %.0f s before it started replaying: ended, and a new one starts again (%d of %d)\n",
+                            start_ms / 1000, watch.stalls, kStartStalls);
             CloseHandle(pi.hProcess);
             if (pi.hThread) CloseHandle(pi.hThread);
             continue;

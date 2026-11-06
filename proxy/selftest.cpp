@@ -54,6 +54,7 @@
 #include "admission.h"
 #include "warm_memory.h"
 #include "warm_watch.h"
+#include "warm_items.h"
 #include "sys_dxgi.h"
 #include <algorithm>
 #include <array>
@@ -1893,6 +1894,18 @@ static int warm_watch_rules() {
     int waits = 0;  // silent from its last reading (509): 1799 waits, the 1800th turn is the timeout
     while (start_watch_tick(p, 509, false, false, limit, turn) == StartStep::wait) ++waits;
     CHECK(waits == 1799 && p.stalls == 1);
+    // the journal a stalled child leaves: items 0-1 created, 2 failed, 3 in flight: the next child goes on from 3, and a
+    // journal of another pid, or a torn one, is no resume point
+    {
+        uint8_t b[sizeof(ItemsHeader) + 6] = {};
+        const ItemsHeader h{kItemsMagic, 7, 0, 6, 6};
+        const uint8_t states[6] = {1, 1, 2, kItemInFlight, 0, 0};
+        for (size_t i = 0; i < sizeof h; ++i) b[i] = ((const uint8_t*)&h)[i];
+        for (size_t i = 0; i < 6; ++i) b[sizeof h + i] = states[i];
+        uint64_t from = 99;
+        CHECK(journal_first_unfinished(b, sizeof b, 7, from) && from == 3);
+        CHECK(!journal_first_unfinished(b, sizeof b, 8, from) && !journal_first_unfinished(b, sizeof b - 1, 7, from));
+    }
     printf("warmwatch OK\n");
     return 0;
 }
