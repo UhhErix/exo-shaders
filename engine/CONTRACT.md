@@ -109,15 +109,19 @@ ExoShaders.Service.exe --asd-remove-all              (Exo Shaders' uninstall: ta
   `exitWhenIdle`, `shutdown`, `logs.subscribe`, `whatsNew*`, `settings.get`, `policy.preview`,
   `app.dismissGpuNotice`, `scan`, `exo.library` and the cache page's reads) waits for that first list, at most a
   minute, so a page showing the last state can act on its games while the service starts.
-- Reads from SCSKiller's servers (see Network hosts) what the official app reads signed out: after a scan, at most about
-  daily, the engine-support updates (plan-rules.json, game verdicts, Maximum suggestions, news; each used only when it
-  verifies with SCSKiller's pinned rules keys, stable channel) and the known-stutter, confirmed-engines and
-  boot-precompile lists; the community manifest, the official recordings marked for everyone and the shared upscaler
-  packs (plain downloads, no token). Signed in (`sharing.signIn`) and entitled, also the community database and the
-  Patreon and backer recordings, automatically. Uploads only with `sharing.setUpload {on: true}`. Never: diagnostics
-  upload, compatibility reports ("Rate this compile"), problem reports ("Report a problem"), the anonymous daily check
-  or update checks. `--safe` reads nothing. Pinned third-party downloads the engine needs to read some games
-  (Oodle/zlib codecs, FromSoftware/RE Engine key tables, public Unreal key lists from GitHub) still happen as in the app.
+- Local-only. The Exo build sends no request to SCSKiller's servers (scskiller.com, scskiller.io, scskiller.xyz) or to
+  Patreon: not the engine-support updates, the community database, the recordings, sign-in, sharing or uploads, the
+  diagnostics, compatibility or problem reports, the daily check or update checks. The engine-support lists it uses are
+  the ones built into the Core. This is enforced in SCSKiller.Core (App/ExoBuild.cs, `RouteFailover`), compiled with
+  `EXO_BUILD` (`ExoBuild=true` on the engine project): a request to those hosts fails before it is sent, and
+  `sharing.*` methods refuse. `--safe` reads nothing.
+- Pinned third-party downloads from GitHub stay, all of them third-party and licensed by their authors: the Oodle codec
+  (WorkingRobot/OodleUE release, Oodle's own licence), the zlib codec, FromSoftware and RE Engine key tables, and the public
+  Unreal key lists. Each is fetched at a pinned version when a game needs it.
+- Anti-cheat: a game whose folder holds a known anti-cheat module is never recorded or injected into, in this build. The
+  modules, by file name: EasyAntiCheat, BEService, BEClient, BattlEye, vgk, vgc, FACEIT, GameGuard, Ricochet, mhyprot,
+  XIGNCODE (App/ExoBuild.cs, `AntiCheatModules`; searched two folders down). Offline sessions without EasyAntiCheat and
+  "at your own risk" sessions are removed from this build.
 
 ## Settings policy
 

@@ -11,6 +11,11 @@
     <InternalsVisibleTo Include="SCSKiller.Tests" />
   </ItemGroup>
 
+  <!-- ExoBuild=true (engine/src/ExoShaders.Service passes it): the Exo build, local-only (App/ExoBuild.cs). Upstream: off. -->
+  <PropertyGroup Condition="'$(ExoBuild)' == 'true'">
+    <DefineConstants>$(DefineConstants);EXO_BUILD</DefineConstants>
+  </PropertyGroup>
+
   <!-- A platform's own code: *.Windows.cs for the Windows build, *.Linux.cs for the net10.0 one, *.Mac.cs for what that
        build does differently on macOS -->
   <ItemGroup Condition="'$([MSBuild]::GetTargetPlatformIdentifier($(TargetFramework)))' != 'windows'">

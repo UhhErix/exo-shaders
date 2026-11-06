@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using SCSKiller.Core.App;
 using SCSKiller.Core.Carved;
 
 namespace SCSKiller.Core.Games;
@@ -859,6 +860,8 @@ public static partial class GameFiles
         string? steamRoot = null, Action? late = null, Action<Exception>? unreadable = null)
     {
         if (GameVerdicts.Current.HasAntiCheat(game)) return AntiCheat.Other;
+        // Exo build: a folder holding a known anti-cheat module is an anti-cheat game whatever else it holds (never recorded or injected)
+        if (ExoBuild.Enabled && ExoBuild.AntiCheatModuleIn(game.InstallDir) != null) return AntiCheat.Other;
         if (WeGameId(game) is not { } wegame) return Walked(game, quick, budget, ignore, at, steamRoot, late, unreadable);
         if (GameVerdicts.Current.HasAntiCheat(wegame)) return AntiCheat.Other;
         string? marker = null;

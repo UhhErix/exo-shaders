@@ -132,7 +132,7 @@ public sealed partial class ScsKiller
     /// <summary><see cref="OfflineEac.Of"/>, never for a game added by hand before its folder is confirmed (as the recorder), nor
     /// where this OS has no offline sessions (<see cref="OfflineUnavailable"/>); an unsupported engine only while Settings.RecordAntiCheatGames is on.</summary>
     OfflineEacGame? OfflineEntry(Game g, AntiCheat antiCheat, EngineInfo? engine) =>
-        OfflineUnavailable != null || Unconfirmed(g) || RecorderCrashes(g) || GameFiles.WeGameId(g) != null ? null : OfflineEac.Of(g, antiCheat, engine, unsupported: Settings.RecordAntiCheatGames);
+        ExoBuild.Enabled || OfflineUnavailable != null || Unconfirmed(g) || RecorderCrashes(g) || GameFiles.WeGameId(g) != null ? null : OfflineEac.Of(g, antiCheat, engine, unsupported: Settings.RecordAntiCheatGames);
 
     /// <summary>Why this OS has no offline sessions: they start the game suspended (<see cref="StartAttested"/>), which only
     /// Windows does. Null where it has them.</summary>
@@ -153,7 +153,7 @@ public sealed partial class ScsKiller
     static partial void NoRiskSessions(ref string? why);
 
     /// <summary>Settings.RecordAntiCheatGames, read as off where this OS has no risk sessions: settings.json keeps the user's value.</summary>
-    bool RecordsAntiCheat => RiskUnavailable == null && Settings.RecordAntiCheatGames;
+    bool RecordsAntiCheat => !ExoBuild.Enabled && RiskUnavailable == null && Settings.RecordAntiCheatGames;   // Exo build: no session in an anti-cheat game
 
     public void SetOfflineRecording(string gameId, bool on)
     {

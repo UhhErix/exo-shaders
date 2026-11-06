@@ -3,7 +3,8 @@
   <!-- Exo Shaders engine service: hosts one ScsKiller (SCSKiller.Core) headlessly and speaks NDJSON over stdin/stdout.
        See CONTRACT.md. GPL-3.0-or-later with the SCSKiller additional permission (LICENSE, LICENSE-EXCEPTION.txt). -->
   <ItemGroup>
-    <ProjectReference Include="..\..\..\src\SCSKiller.Core\SCSKiller.Core.csproj" />
+    <!-- ExoBuild: the Core compiles as the Exo build (local-only, App/ExoBuild.cs, EXO_BUILD) -->
+    <ProjectReference Include="..\..\..\src\SCSKiller.Core\SCSKiller.Core.csproj" AdditionalProperties="ExoBuild=true" />
   </ItemGroup>
 
   <PropertyGroup>

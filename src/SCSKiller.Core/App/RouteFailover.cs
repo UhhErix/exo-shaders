@@ -29,12 +29,18 @@ public sealed class RouteFailover : DelegatingHandler
     int current;               // index of the route that answered last
     DateTimeOffset stickyUntil;
 
-    public RouteFailover(HttpMessageHandler? inner = null, IReadOnlyList<Uri>? routes = null, TimeProvider? clock = null, TimeSpan? headersTimeout = null)
+    /// <summary>Local-only (the Exo build, <see cref="ExoBuild.Enabled"/>): a request to SCSKiller's servers or Patreon fails before it is
+    /// sent. Other hosts pass through.</summary>
+    public bool LocalOnly { get; }
+
+    public RouteFailover(HttpMessageHandler? inner = null, IReadOnlyList<Uri>? routes = null, TimeProvider? clock = null, TimeSpan? headersTimeout = null,
+        bool? localOnly = null)
         : base(inner ?? new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(3), PooledConnectionLifetime = TimeSpan.FromMinutes(5) })   // lifetime: DNS changes reach a tray process
     {
         Routes = routes ?? FromEnvironment() ?? DefaultRoutes;
         this.clock = clock ?? TimeProvider.System;
         this.headersTimeout = headersTimeout ?? TimeSpan.FromSeconds(15);
+        LocalOnly = localOnly ?? ExoBuild.Enabled;
     }
 
     static Uri[]? FromEnvironment() => Environment.GetEnvironmentVariable("SCSKILLER_API") is { Length: > 0 } v
@@ -111,6 +117,8 @@ public sealed class RouteFailover : DelegatingHandler
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
         var uri = request.RequestUri!;
+        if (LocalOnly && ExoBuild.BlockedHost(uri))
+            throw new HttpRequestException($"{uri.Host} is off in this build: Exo Shaders is local-only");
         if (Uri.Compare(uri, Primary, UriComponents.SchemeAndServer, UriFormat.Unescaped, StringComparison.OrdinalIgnoreCase) != 0)
             return await SendWithAgent(request, ct).ConfigureAwait(false);
         var path = uri.PathAndQuery.TrimStart('/');

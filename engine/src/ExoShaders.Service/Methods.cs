@@ -56,6 +56,8 @@ internal sealed partial class Host
     {
         if (Quitting && method != "shutdown" && method != "snapshot") throw new ServiceError("the service is stopping");
         if (PolicyOwned.Contains(method)) throw new ServiceError("Exo Shaders sets this itself: there is no option for it");
+        // the Exo build is local-only (ExoBuild): no sharing or upload to SCSKiller's servers, and nothing offered for it
+        if (ExoBuild.Enabled && method.StartsWith("sharing.", StringComparison.Ordinal)) throw new ServiceError("sharing is off in Exo Shaders: it stays on this PC");
         if (_opt.Safe && Unsafe.Contains(method)) throw new ServiceError("not available in safe mode");
         // Exo's page shows the games from the last state the service left; the first scan lists them again a second or
         // two after start. A click on one in that time waits for the list (at most a minute) and finds its game.
